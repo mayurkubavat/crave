@@ -116,3 +116,12 @@ if(SystemCLanguage_FOUND)
   add_all_tests( SystemC_Data core/test_SystemC_Data.cpp)
   target_link_libraries ( SystemC_Data SystemC::systemc Boost::filesystem ${PROJECT_NAME})
 endif(SystemCLanguage_FOUND)
+
+if(WITH_SYSTEMC)
+  # the values generated in a SystemC process must not depend on the other processes
+  add_executable (sysc_process_stability sysc/process_stability.cpp)
+  add_test (NAME sysc_process_stability
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:sysc_process_stability>
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/sysc/process_stability.cmake)
+  set_tests_properties (sysc_process_stability PROPERTIES TIMEOUT ${CRAVE_TIMEOUT})
+endif()

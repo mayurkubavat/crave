@@ -29,11 +29,14 @@
 
 #include <vector>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "VariableSolver.hpp"
 
 namespace crave {
+
+class BddSampler;
 
 struct VariableDefaultSolver : VariableSolver {
   static bool bypass_constraint_analysis;
@@ -48,7 +51,7 @@ struct VariableDefaultSolver : VariableSolver {
   void analyseHards();
   void analyseSofts();
 
-  std::map<int, SolverPtr> bdd_solvers_;
+  std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
 };
 }  // namespace crave
