@@ -33,7 +33,7 @@ ExternalProject_Add(z3_ext
     ${Z3_SOURCE_ARGS}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     UPDATE_COMMAND ""
-    PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> git apply -p0 ${CMAKE_CURRENT_LIST_DIR}/z3-z3-4.6.0__permutation_matrix.patch
+    PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> git apply -p0 ${CMAKE_CURRENT_LIST_DIR}/z3-z3-4.6.0__permutation_matrix.patch ${CMAKE_CURRENT_LIST_DIR}/z3-z3-4.6.0__lp_dependent_names.patch
     CONFIGURE_COMMAND <SOURCE_DIR>/configure --staticlib ${Z3_OPENMP} --prefix=${install_dir}
     BUILD_COMMAND make -C build -j${CRAVE_BUILD_JOBS}
     INSTALL_COMMAND make -C build install
