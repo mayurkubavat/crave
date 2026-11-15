@@ -63,7 +63,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules )
 
 set(Boost_NO_BOOST_CMAKE true)
 set(Boost_NO_SYSTEM_PATHS true)
-if(NOT TARGET Boost::system OR NOT TARGET Boost::filesystem OR NOT TARGET Boost::unit_test_framework)
+if(NOT TARGET Boost::system OR NOT TARGET Boost::filesystem)
   message(FATAL_ERROR "Boost targets are missing. Ensure crave_find_or_fetch_boost() ran before configuring metaSMT.")
 endif()
 
