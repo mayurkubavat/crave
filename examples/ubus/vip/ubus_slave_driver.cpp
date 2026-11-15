@@ -49,8 +49,16 @@ void ubus_slave_driver::build_phase(uvm::uvm_phase& phase)
 
 void ubus_slave_driver::run_phase(uvm::uvm_phase& phase)
 {
+  // The randomized ubus_transfer objects are large, and get_and_drive and the
+  // sequencer functions it calls keep several of them on the stack. This
+  // does not fit into the default stack of a SystemC thread.
+  sc_core::sc_spawn_options get_and_drive_opts;
+  get_and_drive_opts.set_stack_size(0x100000);
+
   SC_FORK
-    sc_core::sc_spawn(sc_bind(&ubus_slave_driver::get_and_drive, this)),
+    sc_core::sc_spawn(sc_bind(&ubus_slave_driver::get_and_drive, this),
+                      sc_core::sc_gen_unique_name("get_and_drive"),
+                      &get_and_drive_opts),
     sc_core::sc_spawn(sc_bind(&ubus_slave_driver::reset_signals, this))
   SC_JOIN
 }
