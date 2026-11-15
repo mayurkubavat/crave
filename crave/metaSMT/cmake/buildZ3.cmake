@@ -62,8 +62,13 @@ set(SOLVER_VARNAME "z3")
 set(SOLVER_LIBNAME "libz3.a")
 set(SOLVER_LIBDIR "lib")
 set(SOLVER_INCLUDEDIR "include")
-set(SOLVER_FIND_DEPS "find_dependency(Threads)\nfind_dependency(OpenMP QUIET)")
-set(SOLVER_SET_LINK_LIBS "set_property(TARGET z3::z3 APPEND PROPERTY INTERFACE_LINK_LIBRARIES Threads::Threads)\nif(TARGET OpenMP::OpenMP_CXX)\n    set_property(TARGET z3::z3 APPEND PROPERTY INTERFACE_LINK_LIBRARIES OpenMP::OpenMP_CXX)\nendif()")
+set(SOLVER_FIND_DEPS "find_dependency(Threads)")
+set(SOLVER_SET_LINK_LIBS "set_property(TARGET z3::z3 APPEND PROPERTY INTERFACE_LINK_LIBRARIES Threads::Threads)")
+if(OPENMP_FOUND)
+  # only depend on OpenMP if Z3 has actually been built with it
+  string(APPEND SOLVER_FIND_DEPS "\nfind_dependency(OpenMP)")
+  string(APPEND SOLVER_SET_LINK_LIBS "\n    set_property(TARGET z3::z3 APPEND PROPERTY INTERFACE_LINK_LIBRARIES OpenMP::OpenMP_CXX)")
+endif()
 
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/z3-config-version.cmake
