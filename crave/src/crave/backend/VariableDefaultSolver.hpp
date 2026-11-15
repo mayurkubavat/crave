@@ -30,6 +30,7 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 #include "VariableSolver.hpp"
@@ -52,6 +53,7 @@ struct VariableDefaultSolver : VariableSolver {
   void analyseSofts();
 
   std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
+  std::set<int> replaced_dist_refs_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
 };
 }  // namespace crave

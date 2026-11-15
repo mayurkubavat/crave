@@ -37,6 +37,7 @@ VariableSolver::VariableSolver(const VariableContainer& vcon, const ConstraintPa
       var_ctn_.dist_references.push_back(pair);
       assert(vcon.dist_ref_to_var_map.find(pair.first) != vcon.dist_ref_to_var_map.end());
       var_ctn_.dist_ref_to_var_map[pair.first] = vcon.dist_ref_to_var_map.at(pair.first);
+      if (vcon.implicit_dist_references.count(pair.first)) var_ctn_.implicit_dist_references.insert(pair.first);
     }
   }
   for(VariableContainer::WriteRefPair const & pair : vcon.write_references) {
