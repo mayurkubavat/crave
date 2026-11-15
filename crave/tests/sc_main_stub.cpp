@@ -25,7 +25,10 @@
 //****************************************************************************************
 
 // The tests and examples of CRAVE provide their own main() and only use the
-// SystemC data types. A shared SystemC library on macOS still needs sc_main()
-// to be resolvable when it is loaded, so provide an empty one.
+// SystemC data types. A shared SystemC library still refers to sc_main(): the
+// reference has to be resolved when the programs are linked (ELF) or when the
+// library is loaded (macOS). So provide an empty one. It is weak, so that a
+// program can still define its own sc_main(), and it does no harm with a
+// static SystemC library.
 
 extern "C" __attribute__((weak)) int sc_main(int, char* []) { return 0; }
