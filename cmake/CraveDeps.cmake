@@ -54,6 +54,7 @@ function(crave_find_or_fetch_boost)
 
     if(NOT do_fetch AND Boost_FOUND AND TARGET Boost::system)
         message(STATUS "Boost: ${Boost_VERSION} @ ${Boost_INCLUDE_DIRS}")
+        set(Boost_INCLUDE_DIRS "${Boost_INCLUDE_DIRS}" PARENT_SCOPE)
         return()
     endif()
     if(do_fetch)
