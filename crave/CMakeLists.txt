@@ -43,6 +43,10 @@ option(CRAVE_BUILD_EXAMPLES "build and test examples" ON)
 if(WITH_SYSTEMC)
     crave_find_or_fetch_systemc()
     find_package(Threads REQUIRED)
+    if(APPLE)
+        # see tests/sc_main_stub.cpp
+        add_library(${PROJECT_NAME}_sc_main_stub OBJECT tests/sc_main_stub.cpp)
+    endif()
 endif()
 
 add_subdirectory(metaSMT)
