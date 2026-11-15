@@ -44,7 +44,12 @@ function(crave_find_or_fetch_boost)
             set(BOOST_ROOT "$ENV{BOOST_ROOT}" CACHE PATH "" FORCE)
             set(Boost_ROOT "$ENV{BOOST_ROOT}" CACHE PATH "" FORCE)
         endif()
-        find_package(Boost QUIET COMPONENTS system filesystem unit_test_framework)
+        # Boost.System is header-only; Boost 1.89 dropped its stub library.
+        find_package(Boost QUIET COMPONENTS filesystem unit_test_framework OPTIONAL_COMPONENTS system)
+        if(Boost_FOUND AND NOT TARGET Boost::system)
+            add_library(Boost::system INTERFACE IMPORTED)
+            target_link_libraries(Boost::system INTERFACE Boost::boost)
+        endif()
     endif()
 
     if(NOT do_fetch AND Boost_FOUND AND TARGET Boost::system)
