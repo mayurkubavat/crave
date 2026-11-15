@@ -147,6 +147,9 @@ struct Generator {
 
   VariableContainer* getVarCtn ();
  private:
+  void resetConstraints();
+
+ private:
   // constraints
   ConstraintManager constr_mng_;
   ConstraintPartitioner constr_pttn_;

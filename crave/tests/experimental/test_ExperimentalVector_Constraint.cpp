@@ -300,6 +300,29 @@ BOOST_AUTO_TEST_CASE(bool_rand_vec) {
   for (unsigned i = 1; i < item.a.size(); i++) BOOST_REQUIRE(item.a[i] != item.a[i - 1]);
 }
 
+struct s_vector_size_only : public crv_sequence_item {
+  s_vector_size_only(crv_object_name) {}
+
+  crv_variable<unsigned int> length;
+  crv_vector<unsigned int> v;
+  crv_constraint c_length = {1 <= length() && length() <= 8};
+  crv_constraint c_size = {v().size() == length()};
+};
+
+BOOST_AUTO_TEST_CASE(vector_size_only) {
+  s_vector_size_only item("item");
+  std::set<unsigned int> values;
+  unsigned total = 0;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.v.size(), item.length);
+    for (unsigned j = 0; j < item.v.size(); j++) values.insert(item.v[j]);
+    total += item.v.size();
+  }
+  // the elements are not constrained, so nearly all of them differ
+  BOOST_REQUIRE_GE(values.size(), total * 9 / 10);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
