@@ -42,13 +42,12 @@
 #include "../crave/ir/visitor/metaSMTNodeVisitor.hpp"
 #include "../crave/frontend/AssignResult.hpp"
 #include "../crave/frontend/RandomBase.hpp"
+#include "RandomShuffle.hpp"
 
 namespace crave {
 namespace preds = metaSMT::logic;
 namespace qf_bv = metaSMT::logic::QF_BV;
 using metaSMT::evaluate;
-
-extern std::function<unsigned(unsigned)> random_unsigned;
 
 template <typename SolverType>
 class metaSMTVisitorImpl : public metaSMTVisitor {
@@ -658,8 +657,8 @@ template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
   bool result = false;
 
-  std::random_shuffle(assumptions_.begin(), assumptions_.end(), crave::random_unsigned);
-  std::random_shuffle(suggestions_.begin(), suggestions_.end(), crave::random_unsigned);
+  crave::random_shuffle(assumptions_.begin(), assumptions_.end());
+  crave::random_shuffle(suggestions_.begin(), suggestions_.end());
 
   while (true) {
     for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
