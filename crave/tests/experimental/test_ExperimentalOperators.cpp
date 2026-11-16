@@ -663,4 +663,30 @@ BOOST_AUTO_TEST_CASE(array_bitwise_t1) {
   }
 }
 
+struct array_bool_s1 : public crv_sequence_item {
+  array_bool_s1(crv_object_name) {}
+  crv_array<bool, 3> arr;
+  crv_constraint con = {arr.and_() == false, arr.or_() == true, arr.xor_() == false};
+};
+
+struct array_bool_s2 : public crv_sequence_item {
+  array_bool_s2(crv_object_name) {}
+  crv_array<bool, 3> arr;
+  crv_constraint con = {arr.product()};
+};
+
+BOOST_AUTO_TEST_CASE(array_bool_t1) {
+  array_bool_s1 item("item");
+
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    // exactly two elements are true
+    BOOST_REQUIRE_EQUAL(item.arr[0] + item.arr[1] + item.arr[2], 2);
+  }
+
+  array_bool_s2 item2("item2");
+  BOOST_REQUIRE(item2.randomize());
+  BOOST_REQUIRE(item2.arr[0] && item2.arr[1] && item2.arr[2]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
