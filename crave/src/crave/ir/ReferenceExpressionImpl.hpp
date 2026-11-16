@@ -32,6 +32,20 @@
 
 namespace crave {
 
+/**
+ * Convert a referenced value to an instance of Constant, with to_constant_expr if it
+ * supports the type of the value, as it does for SystemC data types.
+ */
+template <typename Integer>
+auto reference_constant(Integer const& value, unsigned, bool, int) -> decltype(to_constant_expr<Integer>()(value)) {
+  return to_constant_expr<Integer>()(value);
+}
+
+template <typename Integer>
+Constant reference_constant(Integer const& value, unsigned width, bool sign, long) {
+  return Constant(value, width, sign);
+}
+
 template <typename Integer>
 struct ReferenceExpressionImpl : public ReferenceExpression {
  public:
@@ -43,7 +57,7 @@ struct ReferenceExpressionImpl : public ReferenceExpression {
   virtual ReferenceExpression::result_type expr() const {
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
-    return new EqualOpr(expr_, new Constant(value_, width, sign));
+    return new EqualOpr(expr_, new Constant(reference_constant(value_, width, sign, 0)));
   }
 
  private:
