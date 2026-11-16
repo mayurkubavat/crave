@@ -27,10 +27,115 @@
 
 #include "../crave/ir/visitor/EvalVisitor.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <set>
 
 namespace crave {
+
+namespace {
+uint64_t mask(unsigned width) { return width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1; }
+
+bool isNegative(Constant const& c) { return c.sign() && (c.value() >> 63) != 0; }
+
+// compares the values of the integers, also if one is signed and the other unsigned, as the solver does
+int compare(Constant const& a, Constant const& b) {
+  if (isNegative(a) != isNegative(b)) return isNegative(a) ? -1 : 1;
+  return a.value() < b.value() ? -1 : (a.value() > b.value() ? 1 : 0);
+}
+}  // namespace
+
+// In the exact mode, a value is kept truncated to its width, and sign-extended if it is signed.
+void EvalVisitor::pushExact(uint64_t value, unsigned width, bool sign, bool valid) {
+  value &= mask(width);
+  if (sign && width > 0 && width < 64 && ((value >> (width - 1)) & 1)) value |= ~mask(width);
+  exprStack_.push(std::make_pair(Constant(value, width, sign), valid));
+}
+
+// evaluates the arithmetic and bitwise operators in the exact mode, as the solver does
+bool EvalVisitor::exactBinExpr(BinaryExpression const& b) {
+  if (!exact_) return false;
+  stack_entry lhs, rhs;
+  evalBinExpr(b, lhs, rhs);
+  Constant const& l = lhs.first;
+  Constant const& r = rhs.first;
+  bool valid = lhs.second && rhs.second;
+  unsigned const width = l.bitsize();
+  bool const sign = l.sign() || r.sign();
+  uint64_t value = 0;
+  if (dynamic_cast<AndOpr const*>(&b)) {
+    value = l.value() & r.value();
+  } else if (dynamic_cast<OrOpr const*>(&b)) {
+    value = l.value() | r.value();
+  } else if (dynamic_cast<XorOpr const*>(&b)) {
+    value = l.value() ^ r.value();
+  } else if (dynamic_cast<PlusOpr const*>(&b)) {
+    value = l.value() + r.value();
+  } else if (dynamic_cast<MinusOpr const*>(&b)) {
+    value = l.value() - r.value();
+  } else if (dynamic_cast<MultipliesOpr const*>(&b)) {
+    value = l.value() * r.value();
+  } else if (dynamic_cast<DevideOpr const*>(&b) || dynamic_cast<ModuloOpr const*>(&b)) {
+    bool const divide = dynamic_cast<DevideOpr const*>(&b) != 0;
+    if (r.value() == 0) {
+      exprStack_.push(std::make_pair(Constant(), false));
+      return true;
+    }
+    // as the solver, a division is signed if both operands are signed, a remainder if its dividend is
+    if (divide ? (l.sign() && r.sign()) : l.sign()) {
+      int64_t const x = static_cast<int64_t>(l.value());
+      int64_t const y = static_cast<int64_t>(r.value());
+      if (y == -1)
+        value = divide ? uint64_t(0) - l.value() : 0;
+      else
+        value = static_cast<uint64_t>(divide ? x / y : x % y);
+    } else {
+      uint64_t const x = l.value() & mask(width);
+      uint64_t const y = r.value() & mask(width);
+      value = divide ? x / y : x % y;
+    }
+  } else {
+    // shifts, whose type is the type of the left operand; a right shift is a logical shift
+    uint64_t const amount = r.value() & mask(r.bitsize());
+    uint64_t const v = l.value() & mask(width);
+    if (amount >= width)
+      value = 0;
+    else if (dynamic_cast<ShiftLeftOpr const*>(&b))
+      value = v << amount;
+    else
+      value = v >> amount;
+    pushExact(value, width, l.sign(), valid);
+    return true;
+  }
+  pushExact(value, width, sign, valid);
+  return true;
+}
+
+// evaluates the relational and equality operators in the exact mode, as the solver does
+bool EvalVisitor::exactCompare(BinaryExpression const& b) {
+  if (!exact_) return false;
+  stack_entry lhs, rhs;
+  evalBinExpr(b, lhs, rhs);
+  Constant const& l = lhs.first;
+  Constant const& r = rhs.first;
+  bool result;
+  if (dynamic_cast<EqualOpr const*>(&b) || dynamic_cast<NotEqualOpr const*>(&b)) {
+    uint64_t const m = mask(std::max(l.bitsize(), r.bitsize()));
+    result = ((l.value() & m) == (r.value() & m)) == (dynamic_cast<EqualOpr const*>(&b) != 0);
+  } else {
+    int const c = compare(l, r);
+    if (dynamic_cast<LessOpr const*>(&b))
+      result = c < 0;
+    else if (dynamic_cast<LessEqualOpr const*>(&b))
+      result = c <= 0;
+    else if (dynamic_cast<GreaterOpr const*>(&b))
+      result = c > 0;
+    else
+      result = c >= 0;
+  }
+  exprStack_.push(std::make_pair(Constant(result), lhs.second && rhs.second));
+  return true;
+}
 
 void EvalVisitor::visitNode(const Node&) {}
 
@@ -63,7 +168,12 @@ void EvalVisitor::visitVariableExpr(const VariableExpr& v) {
     exprStack_.push(std::make_pair(Constant(), false));
 }
 
-void EvalVisitor::visitConstant(const Constant& c) { exprStack_.push(std::make_pair(c, true)); }
+void EvalVisitor::visitConstant(const Constant& c) {
+  if (exact_ && !c.isBool())
+    pushExact(c.value(), c.bitsize(), c.sign(), true);
+  else
+    exprStack_.push(std::make_pair(c, true));
+}
 
 void EvalVisitor::visitVectorExpr(const VectorExpr& v) {
   eval_map::const_iterator ite(evalMap_->find(v.id()));
@@ -88,7 +198,10 @@ void EvalVisitor::visitNegOpr(const NegOpr& n) {
   stack_entry e;
   pop(e);
 
-  exprStack_.push(std::make_pair(Constant(-e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
+  if (exact_)
+    pushExact(uint64_t(0) - e.first.value(), e.first.bitsize(), e.first.sign(), e.second);
+  else
+    exprStack_.push(std::make_pair(Constant(-e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
 }
 
 void EvalVisitor::visitComplementOpr(const ComplementOpr& c) {
@@ -97,7 +210,10 @@ void EvalVisitor::visitComplementOpr(const ComplementOpr& c) {
   stack_entry e;
   pop(e);
 
-  exprStack_.push(std::make_pair(Constant(~e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
+  if (exact_)
+    pushExact(~e.first.value(), e.first.bitsize(), e.first.sign(), e.second);
+  else
+    exprStack_.push(std::make_pair(Constant(~e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
 }
 
 void EvalVisitor::visitInside(const Inside& i) {
@@ -108,8 +224,9 @@ void EvalVisitor::visitInside(const Inside& i) {
 
   bool result = false;
 
+  uint64_t const m = exact_ ? mask(e.first.bitsize()) : ~uint64_t(0);
   for (std::set<Constant>::iterator ite = i.collection().begin(); ite != i.collection().end(); ++ite)
-    if (*ite == e.first.value()) result = true;
+    if ((ite->value() & m) == (e.first.value() & m)) result = true;
 
   exprStack_.push(std::make_pair(Constant(result), e.second));
 }
@@ -121,11 +238,17 @@ void EvalVisitor::visitExtendExpr(const ExtendExpression& e) {
   pop(entry);
 
   Constant const& child = entry.first;
+  if (exact_) {
+    // the value of the child is already sign-extended if it is signed
+    pushExact(child.value(), child.bitsize() + e.value(), child.sign(), entry.second);
+    return;
+  }
   Constant constant(child.value(), child.bitsize() + e.value(), child.sign());
   exprStack_.push(std::make_pair(constant, entry.second));
 }
 
 void EvalVisitor::visitAndOpr(const AndOpr& a) {
+  if (exactBinExpr(a)) return;
   stack_entry lhs, rhs;
   evalBinExpr(a, lhs, rhs);
 
@@ -135,6 +258,7 @@ void EvalVisitor::visitAndOpr(const AndOpr& a) {
 }
 
 void EvalVisitor::visitOrOpr(const OrOpr& o) {
+  if (exactBinExpr(o)) return;
   stack_entry lhs, rhs;
   evalBinExpr(o, lhs, rhs);
 
@@ -158,6 +282,7 @@ void EvalVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) {
 }
 
 void EvalVisitor::visitXorOpr(const XorOpr& x) {
+  if (exactBinExpr(x)) return;
   stack_entry lhs, rhs;
   evalBinExpr(x, lhs, rhs);
 
@@ -168,10 +293,10 @@ void EvalVisitor::visitXorOpr(const XorOpr& x) {
 
 void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
   // include tmp variable for inside operation
-  VariableExpr* v1 = static_cast<VariableExpr*>(eq.lhs().get());
-  VariableExpr* v2 = static_cast<VariableExpr*>(eq.rhs().get());
+  VariableExpr* v1 = exact_ ? dynamic_cast<VariableExpr*>(eq.lhs().get()) : static_cast<VariableExpr*>(eq.lhs().get());
+  VariableExpr* v2 = exact_ ? dynamic_cast<VariableExpr*>(eq.rhs().get()) : static_cast<VariableExpr*>(eq.rhs().get());
 
-  if (v1->id() != 0 && v2->id() != 0) {
+  if (v1 && v2 && v1->id() != 0 && v2->id() != 0) {
     // both operands are variables
     eval_map::iterator ite1 = evalMap_->find(v1->id());
     eval_map::iterator ite2 = evalMap_->find(v2->id());
@@ -184,6 +309,7 @@ void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
   }
 
   // regular evaluation
+  if (exactCompare(eq)) return;
   stack_entry lhs, rhs;
   evalBinExpr(eq, lhs, rhs);
 
@@ -191,6 +317,7 @@ void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
 }
 
 void EvalVisitor::visitNotEqualOpr(const NotEqualOpr& neq) {
+  if (exactCompare(neq)) return;
   stack_entry lhs, rhs;
   evalBinExpr(neq, lhs, rhs);
 
@@ -198,6 +325,7 @@ void EvalVisitor::visitNotEqualOpr(const NotEqualOpr& neq) {
 }
 
 void EvalVisitor::visitLessOpr(const LessOpr& l) {
+  if (exactCompare(l)) return;
   stack_entry lhs, rhs;
   evalBinExpr(l, lhs, rhs);
 
@@ -205,6 +333,7 @@ void EvalVisitor::visitLessOpr(const LessOpr& l) {
 }
 
 void EvalVisitor::visitLessEqualOpr(const LessEqualOpr& le) {
+  if (exactCompare(le)) return;
   stack_entry lhs, rhs;
   evalBinExpr(le, lhs, rhs);
 
@@ -212,6 +341,7 @@ void EvalVisitor::visitLessEqualOpr(const LessEqualOpr& le) {
 }
 
 void EvalVisitor::visitGreaterOpr(const GreaterOpr& g) {
+  if (exactCompare(g)) return;
   stack_entry lhs, rhs;
   evalBinExpr(g, lhs, rhs);
 
@@ -219,6 +349,7 @@ void EvalVisitor::visitGreaterOpr(const GreaterOpr& g) {
 }
 
 void EvalVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) {
+  if (exactCompare(ge)) return;
   stack_entry lhs, rhs;
   evalBinExpr(ge, lhs, rhs);
 
@@ -226,6 +357,7 @@ void EvalVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) {
 }
 
 void EvalVisitor::visitPlusOpr(const PlusOpr& p) {
+  if (exactBinExpr(p)) return;
   stack_entry lhs, rhs;
   evalBinExpr(p, lhs, rhs);
 
@@ -235,6 +367,7 @@ void EvalVisitor::visitPlusOpr(const PlusOpr& p) {
 }
 
 void EvalVisitor::visitMinusOpr(const MinusOpr& m) {
+  if (exactBinExpr(m)) return;
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
@@ -244,6 +377,7 @@ void EvalVisitor::visitMinusOpr(const MinusOpr& m) {
 }
 
 void EvalVisitor::visitMultipliesOpr(const MultipliesOpr& m) {
+  if (exactBinExpr(m)) return;
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
@@ -253,6 +387,7 @@ void EvalVisitor::visitMultipliesOpr(const MultipliesOpr& m) {
 }
 
 void EvalVisitor::visitDevideOpr(const DevideOpr& d) {
+  if (exactBinExpr(d)) return;
   stack_entry lhs, rhs;
   evalBinExpr(d, lhs, rhs);
 
@@ -275,6 +410,7 @@ void EvalVisitor::visitDevideOpr(const DevideOpr& d) {
 }
 
 void EvalVisitor::visitModuloOpr(const ModuloOpr& m) {
+  if (exactBinExpr(m)) return;
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
@@ -297,6 +433,7 @@ void EvalVisitor::visitModuloOpr(const ModuloOpr& m) {
 }
 
 void EvalVisitor::visitShiftLeftOpr(const ShiftLeftOpr& shl) {
+  if (exactBinExpr(shl)) return;
   stack_entry lhs, rhs;
   evalBinExpr(shl, lhs, rhs);
 
@@ -306,6 +443,7 @@ void EvalVisitor::visitShiftLeftOpr(const ShiftLeftOpr& shl) {
 }
 
 void EvalVisitor::visitShiftRightOpr(const ShiftRightOpr& shr) {
+  if (exactBinExpr(shr)) return;
   stack_entry lhs, rhs;
   evalBinExpr(shr, lhs, rhs);
 
@@ -342,7 +480,7 @@ void EvalVisitor::visitBitslice(const Bitslice& b) {
   unsigned long long v = 0;
   for (int i = b.l(); i <= b.r(); i++) v |= (1LL << i);
   Constant constant((v & child.value()) >> b.l(), b.r() - b.l() + 1, false);
-  exprStack_.push(std::make_pair(constant, false));
+  exprStack_.push(std::make_pair(constant, exact_ ? entry.second : false));
 }
 
 }  // end namespace crave

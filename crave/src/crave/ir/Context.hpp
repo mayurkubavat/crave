@@ -53,6 +53,8 @@
 
 namespace crave {
 
+bool sv_signedness();
+
 struct Context : boost::proto::callable_context<Context, boost::proto::null_context> {
  public:
   typedef NodePtr result_type;
@@ -273,6 +275,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
     if (i >= 0) {
+      // With the signedness rules of SystemVerilog, a constant keeps its signedness, in one bit more.
+      if (sign && sv_signedness()) {
+        for (unsigned int j = 1; j + 1 < width; ++j)
+          if ((i >> j) == 0) return new Constant(i, j + 1, true);
+        return new Constant(i, width, sign);
+      }
       for (unsigned int j = 1; j < width; ++j)
         if ((i >> j) == 0) return new Constant(i, j, false);
     }

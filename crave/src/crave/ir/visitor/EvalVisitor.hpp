@@ -42,7 +42,13 @@ class EvalVisitor : NodeVisitor {
  public:
   typedef std::map<unsigned int, Constant> eval_map;
 
-  explicit EvalVisitor(eval_map* m) : NodeVisitor(), exprStack_(), evalMap_(m), result_() {}
+  explicit EvalVisitor(eval_map* m) : NodeVisitor(), exprStack_(), evalMap_(m), result_(), exact_(false) {}
+
+  /**
+   * In the exact mode, the values are computed in the widths and signedness of the operands, as the solver
+   * does, for an expression whose operands have been fixed by FixWidthVisitor.
+   */
+  void set_exact(bool exact) { exact_ = exact; }
 
  private:
   virtual void visitNode(Node const&);
@@ -89,6 +95,9 @@ class EvalVisitor : NodeVisitor {
   void pop3(stack_entry&, stack_entry&, stack_entry&);
   void evalBinExpr(BinaryExpression const&, stack_entry&, stack_entry&);
   void evalTernExpr(TernaryExpression const&, stack_entry&, stack_entry&, stack_entry&);
+  void pushExact(uint64_t value, unsigned width, bool sign, bool valid);
+  bool exactBinExpr(BinaryExpression const&);
+  bool exactCompare(BinaryExpression const&);
 
  public:
   Constant result() const { return result_; }
@@ -107,6 +116,7 @@ class EvalVisitor : NodeVisitor {
   eval_map* evalMap_;
 
   Constant result_;
+  bool exact_;
 };
 
 inline void EvalVisitor::pop(stack_entry& fst) {

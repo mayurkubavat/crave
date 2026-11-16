@@ -27,6 +27,7 @@
 
 #include "../crave/ir/visitor/FixWidthVisitor.hpp"
 #include "../crave/frontend/bitsize_traits.hpp"
+#include "../crave/ConstrainedRandom.hpp"
 
 #include <stdexcept>
 
@@ -46,7 +47,139 @@ bool isBoolean(Node const& n) {
   if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return isBoolean(*va->lhs());
   return false;
 }
+
+template <typename T>
+bool is(Node const& n) {
+  return dynamic_cast<T const*>(&n) != 0;
+}
+
+// IEEE 1800-2017 11.8.1: an expression is unsigned if any of its operands is unsigned, a bit-select or
+// part-select is unsigned, and the type of a shift is the type of its left operand.
+bool svSigned(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
+  if (is<Bitslice>(n)) return false;
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return svSigned(*va->lhs());
+  if (is<ExtendExpression>(n) || is<NegOpr>(n) || is<ComplementOpr>(n))
+    return svSigned(*static_cast<UnaryExpression const&>(n).child());
+  if (is<ShiftLeftOpr>(n) || is<ShiftRightOpr>(n)) return svSigned(*static_cast<BinaryExpression const&>(n).lhs());
+  if (is<PlusOpr>(n) || is<MinusOpr>(n) || is<MultipliesOpr>(n) || is<DevideOpr>(n) || is<ModuloOpr>(n) ||
+      is<AndOpr>(n) || is<OrOpr>(n) || is<XorOpr>(n)) {
+    BinaryExpression const& b = static_cast<BinaryExpression const&>(n);
+    return svSigned(*b.lhs()) && svSigned(*b.rhs());
+  }
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return svSigned(*ite->b()) && svSigned(*ite->c());
+  return false;
+}
+
+typedef boost::intrusive_ptr<Node> NodeRef;
+
+NodeRef svInteger(NodeRef const& n, bool sign);
+NodeRef svBoolean(NodeRef const& n);
+
+// A self-determined operand has its own type.
+NodeRef svSelf(NodeRef const& n) { return svInteger(n, svSigned(*n)); }
+
+template <typename T>
+NodeRef svBinary(Node const& n, bool sign) {
+  T const& b = static_cast<T const&>(n);
+  return new T(svInteger(b.lhs(), sign), svInteger(b.rhs(), sign));
+}
+
+template <typename T>
+NodeRef svShift(Node const& n, bool sign) {
+  T const& b = static_cast<T const&>(n);
+  return new T(svInteger(b.lhs(), sign), svSelf(b.rhs()));
+}
+
+// The operands of a relational or an equality operator are converted to a common type, which is unsigned
+// if one of them is unsigned (IEEE 1800-2017 11.8.1).
+template <typename T>
+NodeRef svCompare(Node const& n) {
+  T const& b = static_cast<T const&>(n);
+  bool const sign = svSigned(*b.lhs()) && svSigned(*b.rhs());
+  return new T(svInteger(b.lhs(), sign), svInteger(b.rhs(), sign));
+}
+
+// IEEE 1800-2017 11.8.2: the type of an expression is propagated to its context-determined operands, an
+// operand is converted to that type and sign-extended only if that type is signed. A signed operand in an
+// unsigned context is converted by a bit-select of all its bits, which is unsigned. As every operand of an
+// unsigned context is unsigned then, an extension of an operand in it is a zero extension.
+NodeRef svInteger(NodeRef const& n, bool sign) {
+  Node const& node = *n;
+  if (Constant const* c = dynamic_cast<Constant const*>(&node)) {
+    if (sign || !c->sign()) return n;
+    uint64_t const mask = c->bitsize() >= 64 ? ~uint64_t(0) : (uint64_t(1) << c->bitsize()) - 1;
+    return new Constant(c->value() & mask, c->bitsize(), false);
+  }
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&node)) {
+    if (sign || !t->sign()) return n;
+    return new Bitslice(n, t->bitsize() - 1, 0);
+  }
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&node)) {
+    Terminal const* t = dynamic_cast<Terminal const*>(va->lhs().get());
+    if (sign || !t || !t->sign()) return n;
+    return new Bitslice(n, t->bitsize() - 1, 0);
+  }
+  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&node)) return new Bitslice(svSelf(b->child()), b->r(), b->l());
+  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&node))
+    return new ExtendExpression(svInteger(e->child(), sign), e->value());
+  if (NegOpr const* o = dynamic_cast<NegOpr const*>(&node)) return new NegOpr(svInteger(o->child(), sign));
+  if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&node))
+    return new ComplementOpr(svInteger(o->child(), sign));
+  if (is<ShiftLeftOpr>(node)) return svShift<ShiftLeftOpr>(node, sign);
+  if (is<ShiftRightOpr>(node)) return svShift<ShiftRightOpr>(node, sign);
+  if (is<PlusOpr>(node)) return svBinary<PlusOpr>(node, sign);
+  if (is<MinusOpr>(node)) return svBinary<MinusOpr>(node, sign);
+  if (is<MultipliesOpr>(node)) return svBinary<MultipliesOpr>(node, sign);
+  if (is<DevideOpr>(node)) return svBinary<DevideOpr>(node, sign);
+  if (is<ModuloOpr>(node)) return svBinary<ModuloOpr>(node, sign);
+  if (is<AndOpr>(node)) return svBinary<AndOpr>(node, sign);
+  if (is<OrOpr>(node)) return svBinary<OrOpr>(node, sign);
+  if (is<XorOpr>(node)) return svBinary<XorOpr>(node, sign);
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
+    return new IfThenElse(svBoolean(ite->a()), svInteger(ite->b(), sign), svInteger(ite->c(), sign));
+  return n;
+}
+
+NodeRef svBoolean(NodeRef const& n) {
+  Node const& node = *n;
+  if (NotOpr const* o = dynamic_cast<NotOpr const*>(&node)) return new NotOpr(svBoolean(o->child()));
+  if (LogicalAndOpr const* o = dynamic_cast<LogicalAndOpr const*>(&node))
+    return new LogicalAndOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
+  if (LogicalOrOpr const* o = dynamic_cast<LogicalOrOpr const*>(&node))
+    return new LogicalOrOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
+  if (is<EqualOpr>(node)) return svCompare<EqualOpr>(node);
+  if (is<NotEqualOpr>(node)) return svCompare<NotEqualOpr>(node);
+  if (is<LessOpr>(node)) return svCompare<LessOpr>(node);
+  if (is<LessEqualOpr>(node)) return svCompare<LessEqualOpr>(node);
+  if (is<GreaterOpr>(node)) return svCompare<GreaterOpr>(node);
+  if (is<GreaterEqualOpr>(node)) return svCompare<GreaterEqualOpr>(node);
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
+    return new IfThenElse(svBoolean(ite->a()), svBoolean(ite->b()), svBoolean(ite->c()));
+  if (Inside const* in = dynamic_cast<Inside const*>(&node)) return new Inside(svSelf(in->child()), in->collection());
+  if (ForEach const* fe = dynamic_cast<ForEach const*>(&node)) return new ForEach(fe->lhs(), svBoolean(fe->rhs()));
+  return n;
+}
 }  // namespace
+
+FixWidthVisitor::FixWidthVisitor() : NodeVisitor(), exprStack_(), sv_signedness_(sv_signedness()) {}
+
+FixWidthVisitor::result_type FixWidthVisitor::fixWidth(Node const& expr) {
+  expr.visit(this);
+  stack_entry entry;
+  pop(entry);
+  // As in C++, a constraint, which is an integer expression, stands for its comparison with zero.
+  result_type result = toBoolean(entry);
+  return sv_signedness_ ? svBoolean(result) : result;
+}
+
+FixWidthVisitor::result_type FixWidthVisitor::fixWidthExpr(Node const& expr) {
+  expr.visit(this);
+  stack_entry entry;
+  pop(entry);
+  if (!sv_signedness_) return entry.first;
+  return isBoolean(*entry.first) ? svBoolean(entry.first) : svSelf(entry.first);
+}
 
 void FixWidthVisitor::pop(stack_entry& fst) {
   assert(exprStack_.size() >= 1);
@@ -165,7 +298,8 @@ FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
 void FixWidthVisitor::promoteToInteger(stack_entry& e) {
   if (!isBoolean(*e.first)) return;
   unsigned const width = bitsize_traits<int>::value;
-  bool const sign = crave::is_signed<int>::value;
+  // A boolean is an unsigned bit in SystemVerilog, which is zero-extended.
+  bool const sign = sv_signedness_ ? false : crave::is_signed<int>::value;
   e.first = new IfThenElse(e.first, new Constant(1, width, sign), new Constant(0, width, sign));
   e.second = width;
 }

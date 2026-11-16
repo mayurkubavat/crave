@@ -42,7 +42,10 @@ class FixWidthVisitor : NodeVisitor {
   typedef std::pair<result_type, int> stack_entry;
 
  public:
-  FixWidthVisitor() : NodeVisitor(), exprStack_() {}
+  /**
+   * Creates a visitor, which applies the signedness rules selected by crave::set_sv_signedness() at its creation.
+   */
+  FixWidthVisitor();
 
  private:
   virtual void visitNode(Node const&);
@@ -104,16 +107,19 @@ class FixWidthVisitor : NodeVisitor {
   void promoteToInteger(stack_entry&);
 
  public:
-  result_type fixWidth(Node const& expr) {
-    expr.visit(this);
-    stack_entry entry;
-    pop(entry);
-    // As in C++, a constraint, which is an integer expression, stands for its comparison with zero.
-    return toBoolean(entry);
-  }
+  /**
+   * Fixes the widths of the operands of a constraint, which is a boolean expression afterwards.
+   */
+  result_type fixWidth(Node const& expr);
+
+  /**
+   * Fixes the widths of the operands of an expression, which keeps its type.
+   */
+  result_type fixWidthExpr(Node const& expr);
 
  private:
   std::stack<stack_entry> exprStack_;
+  bool sv_signedness_;
 };
 
 }  // end namespace crave
