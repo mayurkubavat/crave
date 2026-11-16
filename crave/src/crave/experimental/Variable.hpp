@@ -242,6 +242,7 @@ class crv_variable<T, typename std::enable_if<std::is_integral<T>::value>::type>
    * generate random value
    */
   bool randomize() override {
+    if (!this->rand_mode()) return true;
     static distribution<T> dist;
     this->value = dist.nextValue();
     return true;
@@ -273,6 +274,7 @@ class crv_variable<bool> : public crv_var, public crv_variable_base<bool> {
    * generate random value
    */
   bool randomize() override {
+    if (!rand_mode()) return true;
     static distribution<bool> dist;
     this->value = dist.nextValue();
     return true;

@@ -31,6 +31,7 @@
 #include <crave/experimental/Constraint.hpp>
 
 #include <ostream>
+#include <set>
 using std::ostream;
 
 using namespace crave;
@@ -133,6 +134,94 @@ BOOST_AUTO_TEST_CASE(test2) {
 
   BOOST_REQUIRE(!it.randomize());
   BOOST_REQUIRE(!it.item.randomize());
+}
+
+struct rand_mode_inner : public crv_sequence_item {
+  rand_mode_inner(crv_object_name) {}
+  crv_variable<unsigned> y;
+  crv_array<unsigned char, 2> arr;
+  crv_constraint con{y() < 1000u, arr[0]() != arr[1]()};
+};
+
+struct rand_mode_item : public crv_sequence_item {
+  rand_mode_item(crv_object_name) : inner("inner") {}
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  rand_mode_inner inner;
+  crv_constraint con{a() < 100u, b() == a() + 1u};
+};
+
+BOOST_AUTO_TEST_CASE(rand_mode_variable) {
+  rand_mode_item item("item");
+  BOOST_REQUIRE(item.a.rand_mode());
+
+  // a variable with rand_mode off keeps its value and is a state variable in the constraints
+  item.a = 41;
+  item.a.rand_mode(false);
+  BOOST_REQUIRE(!item.a.rand_mode());
+  for (unsigned i = 0; i < 5; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 41u);
+    BOOST_REQUIRE_EQUAL(item.b, 42u);
+  }
+
+  // the constraints use its current value
+  item.a = 7;
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 7u);
+  BOOST_REQUIRE_EQUAL(item.b, 8u);
+  BOOST_REQUIRE(item.randomize_with(item.b() > 5u));
+  BOOST_REQUIRE_EQUAL(item.a, 7u);
+  BOOST_REQUIRE_EQUAL(item.b, 8u);
+  BOOST_REQUIRE(!item.randomize_with(item.b() > 8u));
+  BOOST_REQUIRE_EQUAL(item.a, 7u);
+
+  // randomize() fails if its value violates a constraint
+  item.a = 200;
+  BOOST_REQUIRE(!item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 200u);
+
+  item.a.rand_mode(true);
+  BOOST_REQUIRE(item.a.rand_mode());
+  std::set<unsigned> values;
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_LT(item.a, 100u);
+    BOOST_REQUIRE_EQUAL(item.b, item.a + 1);
+    values.insert(item.a);
+  }
+  BOOST_REQUIRE_GT(values.size(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(rand_mode_object) {
+  rand_mode_item item("item");
+  item.a = 3;
+  item.b = 4;
+  item.inner.y = 2000;
+  item.inner.arr[0] = 5;
+  item.inner.arr[1] = 5;
+
+  // rand_mode of an object applies to all variables in its hierarchy, so the constraints fail
+  item.rand_mode(false);
+  BOOST_REQUIRE(!item.a.rand_mode());
+  BOOST_REQUIRE(!item.inner.y.rand_mode());
+  BOOST_REQUIRE(!item.inner.arr[1].rand_mode());
+  BOOST_REQUIRE(!item.randomize());
+
+  item.inner.y = 999;
+  item.inner.arr.rand_mode(true);
+  for (unsigned i = 0; i < 5; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 3u);
+    BOOST_REQUIRE_EQUAL(item.b, 4u);
+    BOOST_REQUIRE_EQUAL(item.inner.y, 999u);
+    BOOST_REQUIRE_NE(item.inner.arr[0], item.inner.arr[1]);
+  }
+
+  item.rand_mode(true);
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.b, item.a + 1);
+  BOOST_REQUIRE_LT(item.inner.y, 1000u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // ConstraintManagement

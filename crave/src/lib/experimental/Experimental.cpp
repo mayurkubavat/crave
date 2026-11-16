@@ -41,6 +41,15 @@ void crv_object::recursive_build(Generator& gen) const {
   }
 }
 
+void crv_variable_base_::recursive_build(Generator& gen) const {
+  if (rand_mode_) {
+    crv_object::recursive_build(gen);
+    return;
+  }
+  // a variable, whose randomization is disabled, keeps its current value
+  gen(state_expr());
+}
+
 VariableContainer* crv_object::check_default_constraints(Generator& gen) {
 	return gen.getVarCtn();
 }
