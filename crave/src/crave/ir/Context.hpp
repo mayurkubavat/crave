@@ -69,7 +69,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
         write_references_(vars->write_references),
         dist_references_(vars->dist_references),
         dist_ref_to_var_map(vars->dist_ref_to_var_map),
-        implicit_dist_references_(vars->implicit_dist_references) {}
+        implicit_dist_references_(vars->implicit_dist_references),
+        user_dist_references_(vars->user_dist_references) {}
 
   result_type new_var(unsigned id, unsigned width, bool sign) {
     return (variables_[id] = new VariableExpr(id, width, sign));
@@ -359,7 +360,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     result_type tmp_var = new_var(id, width, sign);
     std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
     dist_references_.push_back(std::make_pair(id, ref_expr));
-    if (dist.isImplicit()) implicit_dist_references_.insert(id);
+    if (dist.isImplicit())
+      implicit_dist_references_.insert(id);
+    else
+      user_dist_references_.insert(id);
 
     result_type in_ranges;
     for(weighted_range<DistValue> const & r : dist.ranges()) {
@@ -389,6 +393,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     result_type tmp_var = new_var(id, width, sign);
     std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
     dist_references_.push_back(std::make_pair(id, ref_expr));
+    user_dist_references_.insert(id);
 
     result_type in_ranges;
     for(weighted_range<DistValue> const & r : dist.ranges()) {
@@ -453,6 +458,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   std::vector<ReadRefPair>& dist_references_;
   std::map<int, int>& dist_ref_to_var_map;
   std::set<int>& implicit_dist_references_;
+  std::set<int>& user_dist_references_;
 };
 // Context
 

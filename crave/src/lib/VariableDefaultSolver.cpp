@@ -87,8 +87,17 @@ NodePtr randcInside(NodePtr var, std::vector<uint64_t> const& values) {
   return new Inside(var, constants);
 }
 
+void removeValue(std::vector<uint64_t>& values, uint64_t value) {
+  std::vector<uint64_t>::iterator ite = std::find(values.begin(), values.end(), value);
+  if (ite == values.end()) return;
+  *ite = values.back();
+  values.pop_back();
+}
+
 void startCycle(RandcState& state, unsigned width) {
   state.used.clear();
+  state.listed.clear();
+  state.complete = false;
   state.unused.resize(uint64_t(1) << width);
   for (uint64_t i = 0; i < state.unused.size(); ++i) state.unused[i] = i;
   state.started = true;
@@ -103,9 +112,16 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     : VariableSolver(vcon, cp) {
   LOG(INFO) << "Create solver for partition " << constr_pttn_;
 
+  bool has_randc = false;
+  for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables)
+    if (randc_state(pair.first)) has_randc = true;
+
   for(ConstraintPtr c : constr_pttn_) {
     if (c->isCover()) continue;  // default solver ignores cover constraints
-    if (c->isSoft()) {
+    if (c->isSoft() && has_randc) {
+      // the soft constraints are decided after the values of the randc variables have been chosen
+      randc_softs_.push_back(c->expr());
+    } else if (c->isSoft()) {
       solver_->makeSoftAssertion(*c->expr());
     } else {
       solver_->makeAssertion(*c->expr());
@@ -197,6 +213,12 @@ bool VariableDefaultSolver::solve() {
     std::shared_ptr<RandcState> state = randc_state(pair.first);
     if (state) randc[pair.first] = state;
   }
+  // As in SystemVerilog, a randc variable must not have a distribution.
+  for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!var_ctn_.user_dist_references.count(pair.first)) continue;
+    if (randc.count(var_ctn_.dist_ref_to_var_map.at(pair.first)))
+      throw std::runtime_error("A randc variable must not have a distribution.");
+  }
 
   // As in SystemVerilog, the values of the randc variables are chosen before the other variables are solved.
   std::vector<NodePtr> assumptions;
@@ -204,6 +226,17 @@ bool VariableDefaultSolver::solve() {
   for (RandcMap::value_type const& pair : randc) {
     if (!solved) break;
     solved = solveRandc(pair.first, *pair.second, assumptions, randc);
+  }
+
+  // As the randc variables are solved first, a soft constraint, which contradicts their values, is dropped.
+  if (solved && !randc_softs_.empty()) {
+    bool model = true;
+    for (NodePtr const& soft : randc_softs_) {
+      assumptions.push_back(soft);
+      model = solveWith(assumptions, randc);
+      if (!model) assumptions.pop_back();
+    }
+    if (!model) solved = solveWith(assumptions, randc);
   }
 
   if (solved) {
@@ -274,6 +307,25 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
     state.signature = signature();
   }
 
+  // tries the given values in a random order, the ones, which have been tried, are moved behind n
+  auto tryValues = [&](std::vector<uint64_t>& values, unsigned max_tries) {
+    std::size_t n = values.size();
+    for (unsigned tries = 0; n > 0 && tries < max_tries; ++tries) {
+      std::swap(values[random_unsigned(n)], values[n - 1]);
+      --n;
+      uint64_t const value = values[n];
+      assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
+      if (solveWith(assumptions, randc)) {
+        removeValue(state.unused, value);
+        removeValue(state.listed, value);
+        state.used.push_back(value);
+        return true;
+      }
+      assumptions.pop_back();
+    }
+    return false;
+  };
+
   for (unsigned round = 0; round < 2; ++round) {
     if (round == 1) {
       // either no value satisfies the constraints, or all of them have been generated in this cycle
@@ -282,45 +334,39 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       startCycle(state, v->bitsize());
     }
 
-    // try the unused values in a random order, the ones, which have been tried, are moved behind n
-    std::vector<uint64_t>& unused = state.unused;
-    std::size_t n = unused.size();
-    for (unsigned tries = 0; n > 0 && tries < randc_max_tries; ++tries) {
-      std::swap(unused[random_unsigned(n)], unused[n - 1]);
-      --n;
-      uint64_t const value = unused[n];
-      assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
-      if (solveWith(assumptions, randc)) {
-        std::swap(unused[n], unused.back());
-        unused.pop_back();
-        state.used.push_back(value);
-        return true;
-      }
-      assumptions.pop_back();
-    }
-    if (n == 0) continue;
+    // Unless all unused values, which satisfy the constraints, have been listed, values are tried at random.
+    if (!state.complete && tryValues(state.unused, randc_max_tries)) return true;
+    if (tryValues(state.listed, randc_max_listed)) return true;
 
-    // let the solver choose one of the unused values
-    assumptions.push_back(state.used.size() <= unused.size() ? NodePtr(new NotOpr(randcInside(var, state.used)))
-                                                             : randcInside(var, unused));
-    bool const found = solveWith(assumptions, randc);
-    assumptions.pop_back();
-    if (!found) continue;
-    std::string str;
-    solver_->read(*var, str);
-    uint64_t value = 0;
-    for (char c : str) value = (value << 1) | (c == '1' ? 1 : 0);
-    if (v->isBool() && (str == "true" || str == "1")) value = 1;
-    assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
-    if (!solveWith(assumptions, randc)) {
+    // The solver lists unused values, which satisfy the constraints.
+    std::vector<uint64_t> listed;
+    std::set<uint64_t> excluded(state.used.begin(), state.used.end());
+    while (listed.size() < randc_max_listed) {
+      std::vector<uint64_t> values;
+      bool const inside = state.unused.size() - listed.size() < excluded.size();
+      if (inside) {
+        for (uint64_t value : state.unused)
+          if (!excluded.count(value)) values.push_back(value);
+      } else {
+        values.assign(excluded.begin(), excluded.end());
+      }
+      assumptions.push_back(inside ? randcInside(var, values) : NodePtr(new NotOpr(randcInside(var, values))));
+      bool const found = solveWith(assumptions, randc);
       assumptions.pop_back();
-      return false;
+      if (!found) break;
+      std::string str;
+      solver_->read(*var, str);
+      uint64_t value = 0;
+      for (char c : str) value = (value << 1) | (c == '1' ? 1 : 0);
+      if (v->isBool() && (str == "true" || str == "1")) value = 1;
+      if (excluded.count(value)) break;  // cannot happen, as the value satisfies the constraint above
+      excluded.insert(value);
+      listed.push_back(value);
     }
-    std::vector<uint64_t>::iterator ite = std::find(unused.begin(), unused.end(), value);
-    if (ite == unused.end()) return false;  // cannot happen, as the value satisfies the constraint above
-    unused.erase(ite);
-    state.used.push_back(value);
-    return true;
+    if (listed.empty()) continue;
+    state.complete = listed.size() < randc_max_listed;
+    state.listed.swap(listed);
+    if (tryValues(state.listed, randc_max_listed)) return true;
   }
   return false;
 }

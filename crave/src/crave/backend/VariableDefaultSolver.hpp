@@ -62,5 +62,6 @@ struct VariableDefaultSolver : VariableSolver {
   std::set<int> replaced_dist_refs_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
   std::string signature_;
+  std::vector<NodePtr> randc_softs_;
 };
 }  // namespace crave

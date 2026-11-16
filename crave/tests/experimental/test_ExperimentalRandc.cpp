@@ -177,4 +177,36 @@ BOOST_AUTO_TEST_CASE(randc_off_and_width) {
   BOOST_REQUIRE(!wide.randc());
 }
 
+struct randc_soft_item : public crv_sequence_item {
+  crv_variable<unsigned char> x;
+  crv_constraint c{x() < 5u};
+  crv_soft_constraint s{x() == 3u};
+  randc_soft_item(crv_object_name) { x.randc(true); }
+};
+
+// a soft constraint, which contradicts the value of a randc variable, is dropped
+BOOST_AUTO_TEST_CASE(randc_soft) {
+  randc_soft_item item("item");
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    std::vector<int> values;
+    for (int i = 0; i < 5; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      values.push_back(item.x);
+    }
+    require_cycle(values, values_up_to(4));
+  }
+}
+
+struct randc_dist_item : public crv_sequence_item {
+  crv_variable<unsigned char> x;
+  crv_constraint c{x() < 4u, dist(x(), make_distribution(weighted_range<unsigned char>(0, 0, 100),
+                                                         weighted_range<unsigned char>(1, 3, 1)))};
+  randc_dist_item(crv_object_name) { x.randc(true); }
+};
+
+BOOST_AUTO_TEST_CASE(randc_dist) {
+  randc_dist_item item("item");
+  BOOST_REQUIRE_THROW(item.randomize(), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // ExperimentalRandc_t

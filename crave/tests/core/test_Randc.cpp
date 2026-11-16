@@ -180,6 +180,50 @@ BOOST_AUTO_TEST_CASE(randc_other_generator) {
   require_permutation(values, values_in(0, 9));
 }
 
+// IEEE 1800-2017 18.4.2: a randc variable is solved first, so a soft constraint, which contradicts its value,
+// is dropped, the others hold
+BOOST_AUTO_TEST_CASE(randc_soft) {
+  Variable<unsigned char> x;
+  Variable<unsigned char> y;
+  Generator gen(x < 5u);
+  gen.soft(x == 3u);
+  gen.soft(y == x + 1u);
+  gen.randc(x);
+
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    std::vector<int> values;
+    for (int i = 0; i < 5; ++i) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[y], gen[x] + 1);
+      values.push_back(gen[x]);
+    }
+    require_permutation(values, values_in(0, 4));
+  }
+}
+
+// As in SystemVerilog, a randc variable must not have a distribution.
+BOOST_AUTO_TEST_CASE(randc_dist) {
+  Variable<unsigned char> x;
+  Generator gen(x < 4u);
+  gen(dist(x, distribution<unsigned char>::create(range<unsigned char>(0, 3))));
+  gen.randc(x);
+  BOOST_REQUIRE_THROW(gen.next(), std::runtime_error);
+}
+
+// inside is not a distribution
+BOOST_AUTO_TEST_CASE(randc_inside) {
+  Variable<unsigned char> x;
+  std::set<unsigned char> values;
+  values.insert(3);
+  values.insert(7);
+  values.insert(200);
+  Generator gen(inside(x, values));
+  gen.randc(x);
+
+  std::set<int> expected(values.begin(), values.end());
+  for (int cycle = 0; cycle < 3; ++cycle) require_permutation(generate(gen, x, 3), expected);
+}
+
 BOOST_AUTO_TEST_CASE(randc_unsatisfiable) {
   Variable<unsigned char> x;
   Generator gen(x > 3u && x < 2u);
