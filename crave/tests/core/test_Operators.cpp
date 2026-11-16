@@ -422,40 +422,42 @@ BOOST_AUTO_TEST_CASE(divide) {
   VariableDefaultSolver::bypass_constraint_analysis = false;
 }
 
-// The quotient of a signed and an unsigned operand is the one of their values, truncated to their width.
+// The quotient of a signed and an unsigned operand is the one of their values, as in C++ after the promotion
+// of both operands to int.
 BOOST_AUTO_TEST_CASE(divide_mixed_signedness) {
   Variable<signed char> s;
   Variable<unsigned char> u;
-  Variable<int> q;
+  Variable<short> q;
+  Variable<short> s16;
+  Variable<short> u16;
 
-  unsigned char const divisors[] = {1, 2, 3, 127, 128, 200, 255};
-  for (unsigned char d : divisors) {
-    for (int v = -128; v < 128; ++v) {
-      Generator gen(s == v && u == d);
-      gen(q == s / u);
-      BOOST_REQUIRE(gen.next());
-      BOOST_REQUIRE_EQUAL(gen[q], static_cast<signed char>(v / static_cast<int>(d)));
-    }
-  }
+  // for all values of both 8-bit operands, the quotients equal the ones of the 16-bit signed operands
+  Generator gen1(u != 0u && s16 == s && u16 == u);
+  gen1(q == s / u)(q != s16 / u16);
+  BOOST_REQUIRE(!gen1.next());
+  Generator gen2(s != 0 && s16 == s && u16 == u);
+  gen2(q == u / s)(q != u16 / s16);
+  BOOST_REQUIRE(!gen2.next());
 
-  unsigned char const dividends[] = {0, 1, 7, 128, 200, 255};
-  for (unsigned char d : dividends) {
-    for (int v = -128; v < 128; ++v) {
-      if (v == 0) continue;
-      Generator gen(s == v && u == d);
-      gen(q == u / s);
-      BOOST_REQUIRE(gen.next());
-      BOOST_REQUIRE_EQUAL(gen[q], static_cast<signed char>(static_cast<int>(d) / v));
-    }
+  int const values[][2] = {{-1, 129}, {1, 128}, {1, 255}, {-1, 255}, {-128, 255}, {-7, 2}, {-128, 1}, {127, 200}};
+  for (int const* v : values) {
+    Generator gen(s == v[0] && u == v[1]);
+    Variable<int> a;
+    Variable<int> b;
+    gen(a == u / s)(b == s / u);
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], v[1] / v[0]);
+    BOOST_REQUIRE_EQUAL(gen[b], v[0] / v[1]);
   }
 
   Variable<int> x;
+  Variable<int> xq;
   Variable<long long> l;
   Variable<long long> lq;
   Generator gen(x == -8 && l == -9);
-  gen(q == x / 2u)(lq == l / 2u);
+  gen(xq == x / 2u)(lq == l / 2u);
   BOOST_REQUIRE(gen.next());
-  BOOST_REQUIRE_EQUAL(gen[q], -4);
+  BOOST_REQUIRE_EQUAL(gen[xq], -4);
   BOOST_REQUIRE_EQUAL(gen[lq], -4);
 }
 
