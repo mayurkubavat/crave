@@ -25,15 +25,37 @@
 //****************************************************************************************
 
 #include "../crave/backend/VectorGenerator.hpp"
+#include "../crave/ir/visitor/GetSupportSetVisitor.hpp"
 #include "../crave/utils/Logging.hpp"
+#include "BddSampler.hpp"
 
+#include <functional>
 #include <string>
 
 namespace crave {
+
+extern std::function<bool(void)> random_bit;
+
+namespace {
+// converts a value read from a solver, where a bit can also be a don't care
+Constant to_constant(std::string const& str, unsigned bitsize, bool sign) {
+  uint64_t val = (sign && !str.empty() && str[0] == '1') ? ~uint64_t(0) : 0;
+  for (char c : str) {
+    val <<= 1;
+    if (c == '1' || (c != '0' && random_bit())) val |= 1;
+  }
+  return Constant(val, bitsize, sign);
+}
+}  // namespace
+
 VectorSolver::VectorSolver(int vector_id)
     : constraints_(), vector_id_(vector_id), solver_(FactoryMetaSMT::getNewInstance()), vec_elements_() {}
 
-void VectorSolver::addConstraint(VectorConstraintPtr vc) { constraints_.push_back(vc); }
+void VectorSolver::addConstraint(VectorConstraintPtr vc) {
+  constraints_.push_back(vc);
+  elem_samplers_.clear();
+  samplers_.clear();
+}
 
 bool VectorSolver::solve(const VariableGenerator& var_gen) {
   std::string cstr_name_list;
@@ -51,7 +73,12 @@ bool VectorSolver::solve(const VariableGenerator& var_gen) {
     LOG(INFO) << "Size of vector " << vector_id_ << " = " << size;
   }
   resetSolver(size);
-  bool result = solver_->solve(false) || solver_->solve(true);
+  makeSuggestions();
+  bool result = solver_->solve(false);
+  if (!result) {
+    makeSuggestions();
+    result = solver_->solve(true);
+  }
   if (result) {
     solver_->readVector(vec_elements_, vector);
     LOG(INFO) << "Done solving vector " << vector_id_;
@@ -67,14 +94,48 @@ void VectorSolver::resetSolver(unsigned int const size) {
   buildSolver(size);
 }
 
+// Without suggestions the solver returns the same solution in every run. So sample the solutions of
+// the hard constraints on each single element with a BDD, as VariableDefaultSolver does for the
+// constraints on a single variable, and suggest the values to the solver. Suggestions which contradict
+// other constraints, e.g. between elements, are dropped by the solver.
+void VectorSolver::makeSuggestions() {
+  // Elements with the same constraints share a sampler. Constraints which depend on the index need
+  // a sampler per element, so only the first of these elements get one.
+  static const unsigned max_samplers = 16;
+
+  for (unsigned int i = 0u; i < elem_constraints_.size(); ++i) {
+    if (elem_constraints_[i].empty()) continue;
+    VariablePtr var = vec_elements_[i];
+    auto ite = elem_samplers_.find(var->id());
+    if (ite == elem_samplers_.end()) {
+      std::shared_ptr<BddSampler> sampler = BddSampler::get(elem_constraints_[i], samplers_.size() < max_samplers);
+      if (sampler) samplers_.insert(sampler.get());
+      ite = elem_samplers_.insert(std::make_pair(var->id(), sampler)).first;
+    }
+    std::string str;
+    if (!ite->second || !ite->second->sample(&str)) continue;
+    NodePtr value(new Constant(to_constant(str, var->bitsize(), var->sign())));
+    NodePtr eq(new EqualOpr(var, value));
+    solver_->makeSuggestion(*eq);
+  }
+}
+
 void VectorSolver::buildSolver(unsigned int const size) {
   if (vec_elements_.size() != size) {
     unsigned int old_size = vec_elements_.size();
+    if (size < old_size) {
+      for (unsigned int i = size; i < old_size; ++i) elem_samplers_.erase(vec_elements_[i]->id());
+      samplers_.clear();
+      for (auto const& entry : elem_samplers_)
+        if (entry.second) samplers_.insert(entry.second.get());
+    }
     vec_elements_.resize(size);
     for (unsigned int i = old_size; i < size; ++i) {
       vec_elements_[i] = new VariableExpr(new_var_id(), 1u, true);
     }
   }
+
+  elem_constraints_.assign(size, std::vector<NodePtr>());
 
   for(VectorConstraintPtr constraint : constraints_) {
     if (!constraint->isUnique()) {
@@ -84,10 +145,17 @@ void VectorSolver::buildSolver(unsigned int const size) {
         constraint->expr()->visit(&replacer);
 
         if (replacer.okay()) {
-          if (constraint->isSoft())
+          if (constraint->isSoft()) {
             solver_->makeSoftAssertion(*replacer.result());
-          else
+          } else {
             solver_->makeAssertion(*replacer.result());
+
+            GetSupportSetVisitor gssv;
+            replacer.result()->visit(&gssv);
+            std::set<int> const& support = gssv.getSupportVars();
+            if (support.size() == 1 && *support.begin() == static_cast<int>(vec_elements_[i]->id()))
+              elem_constraints_[i].push_back(replacer.result());
+          }
         }
 
         replacer.reset();

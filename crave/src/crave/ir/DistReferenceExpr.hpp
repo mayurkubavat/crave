@@ -31,9 +31,34 @@
 
 namespace crave {
 
+/**
+ * get a distribution of T as a distribution of the builtin integer type that holds the values of T
+ */
+template <typename T>
+typename std::enable_if<std::is_same<T, typename distribution_value_type<T>::type>::value,
+                        distribution<T> const&>::type
+value_distribution(distribution<T> const& dist) {
+  return dist;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_same<T, typename distribution_value_type<T>::type>::value,
+                        distribution<typename distribution_value_type<T>::type> >::type
+value_distribution(distribution<T> const& dist) {
+  typedef distribution_value_type<T> value_type;
+  distribution<typename value_type::type> result;
+  for (weighted_range<T> const& r : dist.ranges())
+    result(weighted_range<typename value_type::type>(value_type::value(r.left_), value_type::value(r.right_),
+                                                     r.weight_));
+  result.setImplicit(dist.isImplicit());
+  return result;
+}
+
 template <typename Integer>
 struct DistReferenceExpr : ReferenceExpression {
-  DistReferenceExpr(distribution<Integer> dist, ReferenceExpression::result_type expr) : dist_(dist), expr_(expr) {}
+  typedef typename distribution_value_type<Integer>::type value_type;
+
+  DistReferenceExpr(distribution<value_type> dist, ReferenceExpression::result_type expr) : dist_(dist), expr_(expr) {}
 
   virtual ReferenceExpression::result_type expr() const {
     unsigned width = bitsize_traits<Integer>::value;
@@ -42,7 +67,7 @@ struct DistReferenceExpr : ReferenceExpression {
   }
 
  private:
-  distribution<Integer> dist_;
+  distribution<value_type> dist_;
   ReferenceExpression::result_type expr_;
 };
 }  // namespace crave

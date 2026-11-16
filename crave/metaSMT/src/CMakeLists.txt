@@ -28,6 +28,10 @@ add_library(metaSMT STATIC
 
 add_library(metaSMT::metaSMT ALIAS metaSMT)
 
+if(metaSMT_REQUIRE_CXX11)
+  target_compile_features(metaSMT PUBLIC cxx_std_11)
+endif()
+
 target_link_libraries(metaSMT PUBLIC ${metaSMT_LIBS})
 target_include_directories(metaSMT PUBLIC 
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>

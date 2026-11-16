@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include "bitsize_traits.hpp"
+
 namespace crave {
 
 /**
@@ -99,7 +101,8 @@ struct range : weighted_range<T> {
    * \param l Left value of the range (inclusive)
    * \param r Right value of the range (inclusive)
    */
-  range(T l, T r) : weighted_range<T>(l, r, r + 1 - l) {}
+  range(T l, T r)
+      : weighted_range<T>(l, r, distribution_value_type<T>::value(r) + 1 - distribution_value_type<T>::value(l)) {}
 };
 
 /**

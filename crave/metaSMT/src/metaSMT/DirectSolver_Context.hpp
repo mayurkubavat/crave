@@ -71,7 +71,7 @@ namespace metaSMT {
       , /* then = */ option::SetupOptionMapCommand
       , /* else = */ option::NOPCommand
       >::type Command;
-      Command::template action( static_cast<SolverContext&>(*this), opt );
+      Command::action( static_cast<SolverContext&>(*this), opt );
     }
 
     DirectSolver_Context(Options const &opt)
@@ -361,7 +361,7 @@ namespace metaSMT {
       , /* then = */ option::SetOptionCommand
       , /* else = */ option::NOPCommand
       >::type Command;
-      Command::template action( static_cast<SolverContext&>(*this), opt, key, value );
+      Command::action( static_cast<SolverContext&>(*this), opt, key, value );
     }
 
     std::string command( get_option_cmd const &, std::string const &key ) {

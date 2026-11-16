@@ -42,13 +42,12 @@
 #include "../crave/ir/visitor/metaSMTNodeVisitor.hpp"
 #include "../crave/frontend/AssignResult.hpp"
 #include "../crave/frontend/RandomBase.hpp"
+#include "RandomShuffle.hpp"
 
 namespace crave {
 namespace preds = metaSMT::logic;
 namespace qf_bv = metaSMT::logic::QF_BV;
 using metaSMT::evaluate;
-
-extern std::function<unsigned(unsigned)> random_unsigned;
 
 template <typename SolverType>
 class metaSMTVisitorImpl : public metaSMTVisitor {
@@ -541,7 +540,7 @@ void metaSMTVisitorImpl<SolverType>::visitIfThenElse(IfThenElse const &ite) {
   stack_entry fst, snd, trd;
   evalTernExpr(ite, fst, snd, trd);
   result_type result = evaluate(solver_, preds::Ite(preds::equal(fst.first, preds::True), snd.first, trd.first));
-  exprStack_.push(std::make_pair(result, false));
+  exprStack_.push(std::make_pair(result, snd.second || trd.second));
 }
 
 template <typename SolverType>
@@ -657,9 +656,10 @@ std::vector<std::vector<unsigned int> > metaSMTVisitorImpl<SolverType>::analyseC
 template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
   bool result = false;
+  unsigned failures = 0;
 
-  std::random_shuffle(assumptions_.begin(), assumptions_.end(), crave::random_unsigned);
-  std::random_shuffle(suggestions_.begin(), suggestions_.end(), crave::random_unsigned);
+  crave::random_shuffle(assumptions_.begin(), assumptions_.end());
+  crave::random_shuffle(suggestions_.begin(), suggestions_.end());
 
   while (true) {
     for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
@@ -677,9 +677,14 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
 
     if (suggestions_.empty()) break;
 
-    unsigned select = crave::random_unsigned(suggestions_.size());
-    std::swap(suggestions_[select], suggestions_.back());
-    suggestions_.pop_back();
+    // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
+    // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
+    unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
+    for (unsigned i = 0; i < drop; i++) {
+      unsigned select = crave::random_unsigned(suggestions_.size());
+      std::swap(suggestions_[select], suggestions_.back());
+      suggestions_.pop_back();
+    }
   }
 
   assumptions_.clear();

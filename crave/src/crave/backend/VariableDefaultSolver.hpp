@@ -29,11 +29,16 @@
 
 #include <vector>
 #include <map>
+#include <memory>
+#include <set>
 #include <string>
 
 #include "VariableSolver.hpp"
+#include "Randc.hpp"
 
 namespace crave {
+
+class BddSampler;
 
 struct VariableDefaultSolver : VariableSolver {
   static bool bypass_constraint_analysis;
@@ -44,11 +49,19 @@ struct VariableDefaultSolver : VariableSolver {
   virtual bool solve();
 
  private:
+  typedef std::map<int, std::shared_ptr<RandcState> > RandcMap;
+
   void analyseConstraints();
   void analyseHards();
   void analyseSofts();
+  bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc);
+  bool solveRandc(int id, RandcState& state, std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  std::string const& signature();
 
-  std::map<int, SolverPtr> bdd_solvers_;
+  std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
+  std::set<int> replaced_dist_refs_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
+  std::string signature_;
+  std::vector<NodePtr> randc_softs_;
 };
 }  // namespace crave

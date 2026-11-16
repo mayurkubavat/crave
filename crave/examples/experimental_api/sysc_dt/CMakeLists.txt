@@ -26,4 +26,7 @@
 
 add_executable(sysc_dt_experimental main.cpp)
 target_link_libraries(sysc_dt_experimental ${PROJECT_NAME})
+if(TARGET ${PROJECT_NAME}_sc_main_stub)
+  target_sources(sysc_dt_experimental PRIVATE $<TARGET_OBJECTS:${PROJECT_NAME}_sc_main_stub>)
+endif()
 
