@@ -40,7 +40,9 @@
 using namespace crave;
 using namespace sc_dt;
 
-BOOST_AUTO_TEST_SUITE(Ex_SystemC_t)
+struct Ex_SystemC_Fixture {};
+
+BOOST_FIXTURE_TEST_SUITE(Ex_SystemC_t, Ex_SystemC_Fixture)
 
 template <typename T>
 struct sc_item : public crv_sequence_item {
@@ -100,13 +102,21 @@ void check_64_bit_signed() {
   BOOST_REQUIRE(positive);
 }
 
-BOOST_AUTO_TEST_CASE(sc_uint_64_t) { check_64_bit_unsigned<sc_uint<64> >(); }
+BOOST_AUTO_TEST_CASE(sc_uint_64_t) {
+  check_64_bit_unsigned<sc_uint<64> >();
+}
 
-BOOST_AUTO_TEST_CASE(sc_biguint_64_t) { check_64_bit_unsigned<sc_biguint<64> >(); }
+BOOST_AUTO_TEST_CASE(sc_biguint_64_t) {
+  check_64_bit_unsigned<sc_biguint<64> >();
+}
 
-BOOST_AUTO_TEST_CASE(sc_int_64_t) { check_64_bit_signed<sc_int<64> >(); }
+BOOST_AUTO_TEST_CASE(sc_int_64_t) {
+  check_64_bit_signed<sc_int<64> >();
+}
 
-BOOST_AUTO_TEST_CASE(sc_bigint_64_t) { check_64_bit_signed<sc_bigint<64> >(); }
+BOOST_AUTO_TEST_CASE(sc_bigint_64_t) {
+  check_64_bit_signed<sc_bigint<64> >();
+}
 
 BOOST_AUTO_TEST_SUITE_END()  // Ex_SystemC_t
 
