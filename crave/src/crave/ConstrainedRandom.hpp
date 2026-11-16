@@ -80,8 +80,13 @@ void set_solver_backend(std::string const&);
  * the signedness of its type, a boolean, like the result of a comparison, is an unsigned bit, a bit slice is
  * unsigned, the type of a shift is the type of its left operand, and the shift amount and the condition of
  * crave::if_then_else are self-determined. For c of -1, which is converted to 255 then,
- * <code>c > 5u</code> holds and <code>c == 0xFFFFFFFFu</code> does not hold. The widths are not changed: an
- * operation has the width of its widest operand, and a constant the width that its value needs.</p>
+ * <code>c > 5u</code> holds and <code>c == 0xFFFFFFFFu</code> does not hold.</p>
+ * <p>The widths are not changed, the rules of IEEE 1800-2017 11.6 for the widths of expressions are not applied:
+ * an operation has the width of its widest operand, and a constant the width that its value needs. An operand
+ * is extended to the width of the other operand of its operation, not to the width of the whole expression
+ * before an operation on it. For c of -1, <code>~c + 0u == 0u</code> holds, as <code>~c</code> and the sum
+ * have 8 bits, whereas in SystemVerilog c is extended to 32 bits before <code>~</code> and it does not hold.
+ * Likewise, the sum of two <code>unsigned char</code> variables wraps around at 8 bits.</p>
  * <p>The setting applies to the constraints and expressions defined after it is changed, and to
  * crave::Evaluator, which evaluates an expression as the solver does then. It can also be set by the option
  * <code>sv_signedness</code> (true or false) of the config file, see crave::init(). The default is false.</p>
