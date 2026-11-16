@@ -26,10 +26,27 @@
 
 
 #include "../crave/ir/visitor/FixWidthVisitor.hpp"
+#include "../crave/frontend/bitsize_traits.hpp"
 
 #include <stdexcept>
 
 namespace crave {
+
+namespace {
+bool isBoolean(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->isBool();
+  if (dynamic_cast<NotOpr const*>(&n) || dynamic_cast<LogicalAndOpr const*>(&n) ||
+      dynamic_cast<LogicalOrOpr const*>(&n) || dynamic_cast<EqualOpr const*>(&n) ||
+      dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
+      dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
+      dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
+      dynamic_cast<ForEach const*>(&n) || dynamic_cast<Unique const*>(&n))
+    return true;
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return isBoolean(*ite->b());
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return isBoolean(*va->lhs());
+  return false;
+}
+}  // namespace
 
 void FixWidthVisitor::pop(stack_entry& fst) {
   assert(exprStack_.size() >= 1);
@@ -60,6 +77,11 @@ void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst,
   visitBinaryExpr(bin);
   pop2(snd, fst);
   if (!fixWidth) return;
+  // As in C++, a boolean operand of an operation with an integer operand is promoted to an integer.
+  if (isBoolean(*fst.first) != isBoolean(*snd.first)) {
+    promoteToInteger(fst);
+    promoteToInteger(snd);
+  }
   if (fst.second < snd.second) {
     unsigned int diff = snd.second - fst.second;
     fst.first = result_type(new ExtendExpression(fst.first.get(), diff));
@@ -102,6 +124,9 @@ template <typename T>
 void FixWidthVisitor::visitNumberResultBinExpr(const T& object) {
   stack_entry lhs, rhs;
   evalBinExpr(object, lhs, rhs);
+  // As in C++, the boolean operands of an arithmetic or bitwise operator are promoted to integers.
+  promoteToInteger(lhs);
+  promoteToInteger(rhs);
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), lhs.second));
 }
 
@@ -113,11 +138,43 @@ void FixWidthVisitor::visitNumberResultUnaryExpr(const T& object) {
   exprStack_.push(std::make_pair(new T(e.first), e.second));
 }
 
+// As in C++, a boolean operand of an arithmetic or bitwise unary operator is promoted to an integer.
+template <typename T>
+void FixWidthVisitor::visitPromotedUnaryExpr(const T& object) {
+  visitUnaryExpr(object);
+  stack_entry e;
+  pop(e);
+  promoteToInteger(e);
+  exprStack_.push(std::make_pair(new T(e.first), e.second));
+}
+
 template <typename T>
 void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
   stack_entry lhs, rhs;
   evalBinExpr(object, lhs, rhs);
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
+}
+
+// As in C++, an integer operand of a logical operator stands for its comparison with zero.
+FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
+  if (isBoolean(*e.first)) return e.first;
+  return new NotEqualOpr(e.first, new Constant(0, e.second, false));
+}
+
+// As in C++, a boolean promotes to the int 1 for true and 0 for false.
+void FixWidthVisitor::promoteToInteger(stack_entry& e) {
+  if (!isBoolean(*e.first)) return;
+  unsigned const width = bitsize_traits<int>::value;
+  bool const sign = crave::is_signed<int>::value;
+  e.first = new IfThenElse(e.first, new Constant(1, width, sign), new Constant(0, width, sign));
+  e.second = width;
+}
+
+template <typename T>
+void FixWidthVisitor::visitLogicalBinExpr(const T& object) {
+  stack_entry lhs, rhs;
+  evalBinExpr(object, lhs, rhs, false);
+  exprStack_.push(std::make_pair(new T(toBoolean(lhs), toBoolean(rhs)), 1));
 }
 
 void FixWidthVisitor::visitPlaceholder(const Placeholder& pl) {
@@ -136,11 +193,16 @@ void FixWidthVisitor::visitVectorExpr(const VectorExpr& v) {
   exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
 }
 
-void FixWidthVisitor::visitNotOpr(const NotOpr& n) { visitNumberResultUnaryExpr(n); }
+void FixWidthVisitor::visitNotOpr(const NotOpr& n) {
+  visitUnaryExpr(n);
+  stack_entry e;
+  pop(e);
+  exprStack_.push(std::make_pair(new NotOpr(toBoolean(e)), 1));
+}
 
-void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitNumberResultUnaryExpr(n); }
+void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitPromotedUnaryExpr(n); }
 
-void FixWidthVisitor::visitComplementOpr(const ComplementOpr& c) { visitNumberResultUnaryExpr(c); }
+void FixWidthVisitor::visitComplementOpr(const ComplementOpr& c) { visitPromotedUnaryExpr(c); }
 
 void FixWidthVisitor::visitInside(const Inside& i) {
   visitUnaryExpr(i);
@@ -164,9 +226,9 @@ void FixWidthVisitor::visitAndOpr(const AndOpr& a) { visitNumberResultBinExpr(a)
 
 void FixWidthVisitor::visitOrOpr(const OrOpr& o) { visitNumberResultBinExpr(o); }
 
-void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitBooleanResultBinExpr(la); }
+void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitLogicalBinExpr(la); }
 
-void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitBooleanResultBinExpr(lo); }
+void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitLogicalBinExpr(lo); }
 
 void FixWidthVisitor::visitXorOpr(const XorOpr& x) { visitNumberResultBinExpr(x); }
 
@@ -214,7 +276,25 @@ void FixWidthVisitor::visitIfThenElse(const IfThenElse& ite) {
   stack_entry a, b, c;
   evalTernExpr(ite, a, b, c);
 
-  exprStack_.push(std::make_pair(new IfThenElse(a.first, b.first, c.first), a.second));
+  // As in C++, an integer condition stands for its comparison with zero.
+  result_type cond = toBoolean(a);
+  // If one branch is a boolean and the other an integer, the boolean is promoted to an integer.
+  if (isBoolean(*b.first) != isBoolean(*c.first)) {
+    promoteToInteger(b);
+    promoteToInteger(c);
+  }
+  if (isBoolean(*b.first)) {
+    exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), 1));
+    return;
+  }
+  if (b.second < c.second) {
+    b.first = result_type(new ExtendExpression(b.first.get(), c.second - b.second));
+    b.second = c.second;
+  } else if (b.second > c.second) {
+    c.first = result_type(new ExtendExpression(c.first.get(), b.second - c.second));
+    c.second = b.second;
+  }
+  exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), b.second));
 }
 
 void FixWidthVisitor::visitBitslice(const Bitslice& b) {

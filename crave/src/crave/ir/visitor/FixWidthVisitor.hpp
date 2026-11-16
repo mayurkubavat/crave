@@ -95,14 +95,21 @@ class FixWidthVisitor : NodeVisitor {
   template <typename T>
   void visitNumberResultUnaryExpr(const T& object);
   template <typename T>
+  void visitPromotedUnaryExpr(const T& object);
+  template <typename T>
   void visitBooleanResultBinExpr(const T& object);
+  template <typename T>
+  void visitLogicalBinExpr(const T& object);
+  result_type toBoolean(stack_entry const&);
+  void promoteToInteger(stack_entry&);
 
  public:
   result_type fixWidth(Node const& expr) {
     expr.visit(this);
     stack_entry entry;
     pop(entry);
-    return entry.first;
+    // As in C++, a constraint, which is an integer expression, stands for its comparison with zero.
+    return toBoolean(entry);
   }
 
  private:
