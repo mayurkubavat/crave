@@ -26,6 +26,7 @@
 
 
 #include "../crave/ir/visitor/FixWidthVisitor.hpp"
+#include "../crave/frontend/bitsize_traits.hpp"
 
 #include <stdexcept>
 
@@ -123,6 +124,9 @@ template <typename T>
 void FixWidthVisitor::visitNumberResultBinExpr(const T& object) {
   stack_entry lhs, rhs;
   evalBinExpr(object, lhs, rhs);
+  // As in C++, the boolean operands of an arithmetic or bitwise operator are promoted to integers.
+  promoteToInteger(lhs);
+  promoteToInteger(rhs);
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), lhs.second));
 }
 
@@ -131,6 +135,16 @@ void FixWidthVisitor::visitNumberResultUnaryExpr(const T& object) {
   visitUnaryExpr(object);
   stack_entry e;
   pop(e);
+  exprStack_.push(std::make_pair(new T(e.first), e.second));
+}
+
+// As in C++, a boolean operand of an arithmetic or bitwise unary operator is promoted to an integer.
+template <typename T>
+void FixWidthVisitor::visitPromotedUnaryExpr(const T& object) {
+  visitUnaryExpr(object);
+  stack_entry e;
+  pop(e);
+  promoteToInteger(e);
   exprStack_.push(std::make_pair(new T(e.first), e.second));
 }
 
@@ -147,11 +161,13 @@ FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
   return new NotEqualOpr(e.first, new Constant(0, e.second, false));
 }
 
-// As in C++, a boolean promotes to the integer 1 for true and 0 for false.
+// As in C++, a boolean promotes to the int 1 for true and 0 for false.
 void FixWidthVisitor::promoteToInteger(stack_entry& e) {
   if (!isBoolean(*e.first)) return;
-  e.first = new IfThenElse(e.first, new Constant(1, 1, false), new Constant(0, 1, false));
-  e.second = 1;
+  unsigned const width = bitsize_traits<int>::value;
+  bool const sign = crave::is_signed<int>::value;
+  e.first = new IfThenElse(e.first, new Constant(1, width, sign), new Constant(0, width, sign));
+  e.second = width;
 }
 
 template <typename T>
@@ -184,9 +200,9 @@ void FixWidthVisitor::visitNotOpr(const NotOpr& n) {
   exprStack_.push(std::make_pair(new NotOpr(toBoolean(e)), 1));
 }
 
-void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitNumberResultUnaryExpr(n); }
+void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitPromotedUnaryExpr(n); }
 
-void FixWidthVisitor::visitComplementOpr(const ComplementOpr& c) { visitNumberResultUnaryExpr(c); }
+void FixWidthVisitor::visitComplementOpr(const ComplementOpr& c) { visitPromotedUnaryExpr(c); }
 
 void FixWidthVisitor::visitInside(const Inside& i) {
   visitUnaryExpr(i);

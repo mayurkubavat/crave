@@ -692,6 +692,27 @@ BOOST_AUTO_TEST_CASE(bool_integer_operands) {
   }
 }
 
+// As in C++, a boolean is promoted to an int, also if both operands are booleans.
+BOOST_AUTO_TEST_CASE(bool_integer_promotion_width) {
+  Variable<bool> f;
+  Variable<bool> g;
+  Variable<int> x;
+  Variable<int> y;
+  Variable<int> z;
+  Variable<int> w;
+  Generator gen(f == true && g == true);
+  gen(x == f - 2);
+  gen(y == f + g);
+  gen(z == -f);
+  gen(w == (f & g) + (f ^ g));
+
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(gen[x], -1);
+  BOOST_REQUIRE_EQUAL(gen[y], 2);
+  BOOST_REQUIRE_EQUAL(gen[z], -1);
+  BOOST_REQUIRE_EQUAL(gen[w], 1);
+}
+
 BOOST_AUTO_TEST_CASE(bitslice_t) {
   Variable<short> x;
 
