@@ -78,4 +78,14 @@ struct sc_dt_width<SCDT<N> > : boost::mpl::int_<N> {};
 template <typename T>
 struct bitsize_traits<T, typename boost::enable_if<is_sysc_dt<T> >::type> : sc_dt_width<T> {};
 
+template <int N>
+struct distribution_value_type<sc_dt::sc_int<N> > {
+  typedef int64_t type;
+};
+
+template <int N>
+struct distribution_value_type<sc_dt::sc_uint<N> > {
+  typedef uint64_t type;
+};
+
 }  // namespace crave
