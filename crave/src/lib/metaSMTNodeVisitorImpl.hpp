@@ -656,6 +656,7 @@ std::vector<std::vector<unsigned int> > metaSMTVisitorImpl<SolverType>::analyseC
 template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
   bool result = false;
+  unsigned failures = 0;
 
   crave::random_shuffle(assumptions_.begin(), assumptions_.end());
   crave::random_shuffle(suggestions_.begin(), suggestions_.end());
@@ -676,9 +677,14 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
 
     if (suggestions_.empty()) break;
 
-    unsigned select = crave::random_unsigned(suggestions_.size());
-    std::swap(suggestions_[select], suggestions_.back());
-    suggestions_.pop_back();
+    // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
+    // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
+    unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
+    for (unsigned i = 0; i < drop; i++) {
+      unsigned select = crave::random_unsigned(suggestions_.size());
+      std::swap(suggestions_[select], suggestions_.back());
+      suggestions_.pop_back();
+    }
   }
 
   assumptions_.clear();
