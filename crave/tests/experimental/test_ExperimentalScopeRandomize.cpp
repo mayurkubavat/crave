@@ -170,4 +170,37 @@ BOOST_AUTO_TEST_CASE(scope_randomize_references) {
   BOOST_REQUIRE_EQUAL(values[1], values[0] + 1);
 }
 
+// a variable passed twice is randomized once, and keeps its value on failure
+BOOST_AUTO_TEST_CASE(scope_randomize_same_variable) {
+  int x = 7;
+  BOOST_REQUIRE(!crave::randomize(x, x).with(reference(x) > 5, reference(x) < 3));
+  BOOST_REQUIRE_EQUAL(x, 7);
+  for (unsigned i = 0; i < 50; ++i) {
+    BOOST_REQUIRE(crave::randomize(x, x).with(reference(x) >= 10, reference(x) <= 12));
+    BOOST_REQUIRE(x >= 10 && x <= 12);
+  }
+}
+
+// the references to the variables, which may not live longer, are removed from the variable container
+BOOST_AUTO_TEST_CASE(scope_randomize_no_dangling_references) {
+  VariableContainer* vars = variable_container();
+  int z = 3;
+  int x = 0;
+  BOOST_REQUIRE(crave::randomize(x).with(reference(x) > reference(z)));
+  std::size_t const reads = vars->read_references.size();
+  std::size_t const writes = vars->write_references.size();
+  std::size_t const dists = vars->dist_references.size();
+  std::size_t const variables = vars->variables.size();
+  for (unsigned i = 0; i < 100; ++i) {
+    int y = 0;
+    BOOST_REQUIRE(crave::randomize(y).with(reference(y) > reference(z), reference(y) < 6));
+    BOOST_REQUIRE(y == 4 || y == 5);
+    BOOST_REQUIRE(!crave::randomize(y).with(reference(y) < reference(z), reference(y) > 7));
+  }
+  BOOST_REQUIRE_EQUAL(vars->read_references.size(), reads);
+  BOOST_REQUIRE_EQUAL(vars->write_references.size(), writes);
+  BOOST_REQUIRE_EQUAL(vars->dist_references.size(), dists);
+  BOOST_REQUIRE_EQUAL(vars->variables.size(), variables);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // ExperimentalScopeRandomize_t

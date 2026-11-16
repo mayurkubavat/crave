@@ -27,14 +27,17 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <type_traits>
 #include <vector>
 
 #include "../backend/Generator.hpp"
 #include "../frontend/Distribution.hpp"
 #include "../frontend/WriteReference.hpp"
+#include "../ir/VariableContainer.hpp"
 
 namespace crave {
 
@@ -69,6 +72,7 @@ struct scope_variable_base {
   virtual ~scope_variable_base() {}
   virtual void bind(Generator& gen) const = 0;
   virtual void restore() = 0;
+  virtual void const* address() const = 0;
 };
 
 template <typename T>
@@ -78,6 +82,8 @@ struct scope_variable : scope_variable_base {
   void bind(Generator& gen) const override { gen.bindReference(var_, ref_); }
 
   void restore() override { var_ = saved_; }
+
+  void const* address() const override { return &var_; }
 
   T& var_;
   T saved_;
@@ -109,11 +115,12 @@ class scope_randomization {
    */
   template <typename... Exprs>
   bool with(Exprs... exprs) {
-    Generator gen;
-    for (std::unique_ptr<detail::scope_variable_base> const& v : vars_) v->bind(gen);
-    add(gen, exprs...);
+    references_guard guard;
     bool solved = false;
     try {
+      Generator gen;
+      for (std::unique_ptr<detail::scope_variable_base> const& v : vars_) v->bind(gen);
+      add(gen, exprs...);
       solved = gen.next();
     } catch (...) {
       restore();
@@ -134,11 +141,51 @@ class scope_randomization {
    */
   template <typename T>
   void add(T& var) {
+    // a variable, which is passed twice, is randomized once
+    for (std::unique_ptr<detail::scope_variable_base> const& v : vars_)
+      if (v->address() == static_cast<void const*>(&var)) return;
     vars_.push_back(std::unique_ptr<detail::scope_variable_base>(new detail::scope_variable<T>(var)));
     var = detail::scope_random_value<T>::get();
   }
 
  private:
+  // removes the references, which the constraints of with() add to the variable container, when with() returns,
+  // as the variables they refer to may not live longer
+  class references_guard {
+   public:
+    references_guard()
+        : vars_(variable_container()),
+          reads_(vars_->read_references.size()),
+          writes_(vars_->write_references.size()),
+          dists_(vars_->dist_references.size()) {}
+
+    ~references_guard() {
+      std::set<int> ids;
+      for (std::size_t i = reads_; i < vars_->read_references.size(); ++i) ids.insert(vars_->read_references[i].first);
+      for (std::size_t i = writes_; i < vars_->write_references.size(); ++i) ids.insert(vars_->write_references[i].first);
+      for (std::size_t i = dists_; i < vars_->dist_references.size(); ++i) {
+        int const id = vars_->dist_references[i].first;
+        ids.insert(id);
+        vars_->dist_ref_to_var_map.erase(id);
+        vars_->implicit_dist_references.erase(id);
+        vars_->user_dist_references.erase(id);
+      }
+      for (int id : ids) vars_->variables.erase(id);
+      vars_->read_references.resize(std::min(reads_, vars_->read_references.size()));
+      vars_->write_references.resize(std::min(writes_, vars_->write_references.size()));
+      vars_->dist_references.resize(std::min(dists_, vars_->dist_references.size()));
+    }
+
+   private:
+    references_guard(references_guard const&) = delete;
+    references_guard& operator=(references_guard const&) = delete;
+
+    VariableContainer* vars_;
+    std::size_t reads_;
+    std::size_t writes_;
+    std::size_t dists_;
+  };
+
   scope_randomization(scope_randomization const&) = delete;
   scope_randomization& operator=(scope_randomization const&) = delete;
 
