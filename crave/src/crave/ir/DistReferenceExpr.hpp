@@ -33,7 +33,9 @@ namespace crave {
 
 template <typename Integer>
 struct DistReferenceExpr : ReferenceExpression {
-  DistReferenceExpr(distribution<Integer> dist, ReferenceExpression::result_type expr) : dist_(dist), expr_(expr) {}
+  typedef typename distribution_value_type<Integer>::type value_type;
+
+  DistReferenceExpr(distribution<value_type> dist, ReferenceExpression::result_type expr) : dist_(dist), expr_(expr) {}
 
   virtual ReferenceExpression::result_type expr() const {
     unsigned width = bitsize_traits<Integer>::value;
@@ -42,7 +44,7 @@ struct DistReferenceExpr : ReferenceExpression {
   }
 
  private:
-  distribution<Integer> dist_;
+  distribution<value_type> dist_;
   ReferenceExpression::result_type expr_;
 };
 }  // namespace crave

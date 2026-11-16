@@ -124,6 +124,39 @@ BOOST_AUTO_TEST_CASE(randv_sc_dt_t) {
   BOOST_REQUIRE_EQUAL(d, 14);  // deviation to sc_uint semantics (no overflow, thus d == 30)
 }
 
+BOOST_AUTO_TEST_CASE(inside_sc_uint_t) {
+  using namespace sc_dt;
+
+  std::set<sc_uint<8> > s{0, 64, 128, 192};
+  Variable<sc_uint<8> > v;
+  Generator gen(inside(v, s));
+
+  std::set<sc_uint<8> > seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    sc_uint<8> r = gen[v];
+    BOOST_REQUIRE(s.find(r) != s.end());
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
+BOOST_AUTO_TEST_CASE(inside_sc_int_t) {
+  using namespace sc_dt;
+
+  std::set<sc_int<8> > s{-128, -1, 5, 127};
+  randv<sc_int<8> > v;
+  Generator gen(inside(v(), s));
+
+  std::set<sc_int<8> > seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    BOOST_REQUIRE(s.find(v) != s.end());
+    seen.insert(v);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
 BOOST_AUTO_TEST_CASE(randv_sc_dt_op_support_t) {
   using namespace sc_dt;
 

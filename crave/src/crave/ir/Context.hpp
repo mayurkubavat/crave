@@ -298,11 +298,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
 
+    typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
-    distribution<Integer> dist;
+    distribution<DistInt> dist;
     for(CollectionEntry const & i : boost::proto::value(c)) {
       constants.insert(Constant(i, width, sign));
-      dist(weighted_value<Integer>(i, 1));
+      dist(weighted_value<DistInt>(i, 1));
     }
 
     unsigned id = new_var_id();
@@ -325,11 +326,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
 
+    typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
-    distribution<Integer> dist;
+    distribution<DistInt> dist;
     for(CollectionEntry const & i : boost::proto::value(c)) {
       constants.insert(Constant(i, width, sign));
-      dist(weighted_value<Integer>(i, 1));
+      dist(weighted_value<DistInt>(i, 1));
     }
 
     unsigned id = new_var_id();
