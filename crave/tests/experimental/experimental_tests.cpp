@@ -44,3 +44,4 @@ struct Context_Fixture {
 #include "test_ExperimentalEvaluations.cpp"
 #include "test_ExperimentalVector_Constraint.cpp"
 #include "test_ExperimentalRandc.cpp"
+#include "test_ExperimentalSolveBefore.cpp"
