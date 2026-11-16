@@ -29,6 +29,10 @@ if ( NOT CRAVE_TIMEOUT )
 endif()
 include_directories (../src)
 
+if(TARGET ${PROJECT_NAME}_sc_main_stub)
+  link_libraries ($<TARGET_OBJECTS:${PROJECT_NAME}_sc_main_stub>)
+endif()
+
 find_program(AWK awk)
 if (AWK)
   message(STATUS "Use awk to search for tests")
