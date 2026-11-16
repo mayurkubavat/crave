@@ -27,10 +27,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include <crave/ConstrainedRandom.hpp>
+#include <lib/BddSampler.hpp>
 
 #include <boost/format.hpp>
 
+#include <memory>
 #include <set>
+#include <vector>
 #include <iostream>
 
 // using namespace std;
@@ -175,6 +178,156 @@ BOOST_AUTO_TEST_CASE(dist_of_boolean75) {
   }
 
   BOOST_REQUIRE_GT(counter, 0);
+}
+
+// The default distribution of a crv_variable must not keep the solver from
+// spreading the values over the solutions of the constraints.
+
+struct s_constrained_variable_spread : public crv_sequence_item {
+  s_constrained_variable_spread(crv_object_name) {}
+  crv_variable<unsigned> v;
+  crv_constraint con = {v() <= 10};
+};
+
+BOOST_AUTO_TEST_CASE(constrained_variable_spread) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  s_constrained_variable_spread item("item");
+  std::set<unsigned> values;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_LE(item.v, 10);
+    values.insert(item.v);
+  }
+  BOOST_REQUIRE_GE(values.size(), 9);
+}
+
+BOOST_AUTO_TEST_CASE(constrained_variable_spread_randomize_with) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  s_constrained_variable_spread item("item");
+  std::set<unsigned> values;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize_with(item.v() > 5));
+    BOOST_REQUIRE(5 < item.v && item.v <= 10);
+    values.insert(item.v);
+  }
+  BOOST_REQUIRE_EQUAL(values.size(), 5);
+}
+
+struct s_constrained_variable_spread_64_bits : public crv_sequence_item {
+  s_constrained_variable_spread_64_bits(crv_object_name) {}
+  crv_variable<uint64_t> v;
+  crv_constraint con = {v() >= 100};
+};
+
+BOOST_AUTO_TEST_CASE(constrained_variable_spread_64_bits) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  s_constrained_variable_spread_64_bits item("item");
+  std::set<uint32_t> low_words;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_GE(item.v, 100);
+    low_words.insert(static_cast<uint32_t>(item.v));
+  }
+  BOOST_REQUIRE_GE(low_words.size(), 190);
+}
+
+// Constraints which are too complex for a BDD leave the default distribution in effect.
+
+struct s_complex_constraint_spread : public crv_sequence_item {
+  s_complex_constraint_spread(crv_object_name) {}
+  crv_variable<unsigned> v;
+  crv_constraint con = {v() * v() != 49};
+};
+
+BOOST_AUTO_TEST_CASE(complex_constraint_spread) {
+  s_complex_constraint_spread item("item");
+  std::set<unsigned> values;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(item.v * item.v, 49);
+    values.insert(item.v);
+  }
+  BOOST_REQUIRE_GE(values.size(), 190);
+}
+
+struct s_complex_constraint_by_constant : public crv_sequence_item {
+  s_complex_constraint_by_constant(crv_object_name) {}
+  crv_variable<uint64_t> v;
+  crv_constraint con = {v() * 12345 == 0x12340000};
+};
+
+// building a BDD for this constraint would take half a minute
+BOOST_AUTO_TEST_CASE(complex_constraint_by_constant) {
+  s_complex_constraint_by_constant item("item");
+  for (int i = 0; i < 20; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.v * 12345, 0x12340000);
+  }
+}
+
+// Items with the same constraints share their BDD samplers.
+
+struct s_many_items : public crv_sequence_item {
+  s_many_items(crv_object_name) {}
+  crv_variable<unsigned> addr, len, delay;
+  crv_constraint con = {addr() <= 0xffff, 1 <= len() && len() <= 64, delay() <= 10};
+};
+
+BOOST_AUTO_TEST_CASE(many_items_share_samplers) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  std::vector<std::unique_ptr<s_many_items> > items;
+  items.emplace_back(new s_many_items("item"));
+  BOOST_REQUIRE(items.back()->randomize());
+  std::size_t count = BddSampler::count();
+  for (int i = 0; i < 100; i++) {
+    items.emplace_back(new s_many_items("item"));
+    BOOST_REQUIRE(items.back()->randomize());
+    BOOST_REQUIRE_LE(items.back()->delay, 10);
+  }
+  BOOST_REQUIRE_EQUAL(BddSampler::count(), count);
+}
+
+// A distribution of the user still takes precedence.
+
+struct s_constrained_variable_user_dist : public crv_sequence_item {
+  s_constrained_variable_user_dist(crv_object_name) {}
+  crv_variable<unsigned> v;
+  crv_constraint con = {v() <= 10};
+  crv_constraint con_dist = {
+      dist(v(), make_distribution(weighted_range<unsigned>(0, 4, 90), weighted_range<unsigned>(5, 10, 10)))};
+};
+
+BOOST_AUTO_TEST_CASE(constrained_variable_user_dist) {
+  s_constrained_variable_user_dist item("item");
+  int low = 0;
+  int total = 1000;
+  for (int i = 0; i < total; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_LE(item.v, 10);
+    if (item.v <= 4) low++;
+  }
+  // 90% are expected, sampling the solutions uniformly would give 45%
+  BOOST_REQUIRE_GT(low, total * 8 / 10);
+}
+
+BOOST_AUTO_TEST_CASE(constrained_variable_user_dist_randomize_with) {
+  s_constrained_variable_spread item("item");
+  std::map<unsigned, int> values;
+  int total = 1000;
+  for (int i = 0; i < total; i++) {
+    BOOST_REQUIRE(item.randomize_with(dist(item.v(), make_distribution(range<unsigned>(6, 10)))));
+    BOOST_REQUIRE(6 <= item.v && item.v <= 10);
+    ++values[item.v];
+  }
+  // 20% are expected for each value
+  for (unsigned v = 6; v <= 10; v++) {
+    BOOST_REQUIRE_GT(values[v], total / 10);
+    BOOST_REQUIRE_LT(values[v], total * 3 / 10);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

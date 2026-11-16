@@ -71,12 +71,12 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
 
   template <typename L>
    void create_distribution (const L &tvar, typename std::enable_if<is_signed<L>::value, void>::type* = nullptr) {
-    	  c_var_uniform = {dist(this->var, make_distribution(weighted_range<int64_t>(get_sc_dt_min_numeric_limit(tvar), get_sc_dt_max_numeric_limit(tvar),1)))};
+    	  c_var_uniform = {dist(this->var, implicit_distribution(make_distribution(weighted_range<int64_t>(get_sc_dt_min_numeric_limit(tvar), get_sc_dt_max_numeric_limit(tvar),1))))};
     }
 
   template <typename L>
    void create_distribution (const L &tvar, typename std::enable_if<is_unsigned<L>::value, void>::type* = nullptr) {
-    	  c_var_uniform = {dist(this->var, make_distribution(weighted_range<uint64_t>(get_sc_dt_min_numeric_limit(tvar), get_sc_dt_max_numeric_limit(tvar),1)))};
+    	  c_var_uniform = {dist(this->var, implicit_distribution(make_distribution(weighted_range<uint64_t>(get_sc_dt_min_numeric_limit(tvar), get_sc_dt_max_numeric_limit(tvar),1))))};
     }
 
 

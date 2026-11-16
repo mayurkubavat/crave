@@ -59,9 +59,12 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   analyseConstraints();
 
   std::set<int> vars_with_dist;
+  std::set<int> vars_with_user_dist;
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
     assert(var_ctn_.dist_ref_to_var_map.find(pair.first) != var_ctn_.dist_ref_to_var_map.end());
-    vars_with_dist.insert(var_ctn_.dist_ref_to_var_map.at(pair.first));
+    int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
+    vars_with_dist.insert(var_id);
+    if (var_ctn_.implicit_dist_references.count(pair.first) == 0) vars_with_user_dist.insert(var_id);
   }
 
   if (FactoryMetaSMT::isDefined(CUDD)) {
@@ -70,7 +73,9 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
       int id = pair.first;
       if (svc_map.find(id) == svc_map.end()) continue;
-      if (vars_with_dist.find(id) != vars_with_dist.end()) {
+      // The default distribution of a variable ranges over all values of its type and does not
+      // take the constraints into account, so sampling their solutions is the better choice.
+      if (vars_with_user_dist.find(id) != vars_with_user_dist.end()) {
         LOG(INFO) << "  Skip var #" << id << " due to existing distribution constraints";
         continue;
       }
@@ -86,6 +91,14 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
       vars_with_dist.insert(id);
       LOG(INFO) << "  BDD sampler for var #" << id << " found";
     }
+  }
+
+  // A distribution of the user or a BDD sampler replaces the default distribution of a variable.
+  // Without them, e.g. if the constraints are too complex for a BDD, it stays in effect.
+  for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (var_ctn_.implicit_dist_references.count(pair.first) == 0) continue;
+    int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
+    if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id)) replaced_dist_refs_.insert(pair.first);
   }
 
   if (2 * vars_with_dist.size() > var_ctn_.write_references.size()) return;  // not necessary to randomize more
@@ -136,6 +149,7 @@ bool VariableDefaultSolver::solve() {
   }
 
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (replaced_dist_refs_.count(pair.first)) continue;
     solver_->makeSuggestion(*pair.second->expr());
   }
 
