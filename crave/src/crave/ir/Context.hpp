@@ -300,7 +300,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
     distribution<DistInt> dist;
-    for(CollectionEntry const & i : boost::proto::value(c)) {
+    for(CollectionEntry const & entry : boost::proto::value(c)) {
+      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
       constants.insert(Constant(i, width, sign));
       dist(weighted_value<DistInt>(i, 1));
     }
@@ -328,7 +329,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
     distribution<DistInt> dist;
-    for(CollectionEntry const & i : boost::proto::value(c)) {
+    for(CollectionEntry const & entry : boost::proto::value(c)) {
+      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
       constants.insert(Constant(i, width, sign));
       dist(weighted_value<DistInt>(i, 1));
     }
