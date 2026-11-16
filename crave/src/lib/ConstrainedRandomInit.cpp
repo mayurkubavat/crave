@@ -58,6 +58,7 @@ void init(std::string const& cfg_file) {
 
   set_global_seed(cSettings.get_specified_seed());
   set_solver_backend(cSettings.get_backend());
+  set_sv_signedness(cSettings.get_sv_signedness());
   set_config_file_name(cfg_file);
 
   // load logger settings

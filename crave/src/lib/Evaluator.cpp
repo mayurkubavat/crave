@@ -25,6 +25,8 @@
 //****************************************************************************************
 
 #include "../crave/utils/Evaluator.hpp"
+#include "../crave/ir/visitor/FixWidthVisitor.hpp"
+#include "../crave/ConstrainedRandom.hpp"
 
 namespace crave {
 
@@ -35,6 +37,16 @@ bool get_result(EvalVisitor const& v) {
 
 void Evaluator::assign(unsigned id, Constant c) { assignments_[id] = c; }
 
-bool Evaluator::evaluate(expression const& expr) { return visitor_.evaluate(*boost::proto::value(expr)); }
+bool Evaluator::evaluate(expression const& expr) {
+  if (!sv_signedness()) {
+    visitor_.set_exact(false);
+    return visitor_.evaluate(*boost::proto::value(expr));
+  }
+  // With the signedness rules of SystemVerilog, the expression is evaluated as the solver does.
+  FixWidthVisitor fwv;
+  NodePtr n(fwv.fixWidthExpr(*boost::proto::value(expr)));
+  visitor_.set_exact(true);
+  return visitor_.evaluate(*n);
+}
 
 }

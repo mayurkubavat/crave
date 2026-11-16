@@ -68,6 +68,36 @@ void set_solver_backend(std::string const&);
 
 /*!
  * \ingroup setting
+ * \brief Selects the signedness rules of SystemVerilog for the operands of constraints and expressions.
+ *
+ * <p>By default, the result of an operation is signed if one of its operands is signed, a signed operand is
+ * sign-extended to the width of the other operand, a comparison of a signed and an unsigned operand
+ * compares their values, and a constant that is not negative is unsigned. For a <code>signed char</code> c
+ * of -1, <code>c > 5u</code> does not hold and <code>c == 0xFFFFFFFFu</code> holds.</p>
+ * <p>With the rules of SystemVerilog (IEEE 1800-2017 11.8.1 and 11.8.2), an expression is unsigned if one of
+ * its operands is unsigned, and its operands are converted to that type before the operation. An operand is
+ * sign-extended only if the type of the expression is signed, otherwise it is zero-extended. A constant has
+ * the signedness of its type, a boolean, like the result of a comparison, is an unsigned bit, a bit slice is
+ * unsigned, the type of a shift is the type of its left operand, and the shift amount and the condition of
+ * crave::if_then_else are self-determined. For c of -1, which is converted to 255 then,
+ * <code>c > 5u</code> holds and <code>c == 0xFFFFFFFFu</code> does not hold. The widths are not changed: an
+ * operation has the width of its widest operand, and a constant the width that its value needs.</p>
+ * <p>The setting applies to the constraints and expressions defined after it is changed, and to
+ * crave::Evaluator, which evaluates an expression as the solver does then. It can also be set by the option
+ * <code>sv_signedness</code> (true or false) of the config file, see crave::init(). The default is false.</p>
+ *
+ * \param on true for the rules of SystemVerilog, false for the default rules.
+ */
+void set_sv_signedness(bool on);
+
+/*!
+ * \ingroup setting
+ * \brief Gets whether the signedness rules of SystemVerilog are selected, see crave::set_sv_signedness().
+ */
+bool sv_signedness();
+
+/*!
+ * \ingroup setting
  * \brief Gets the name of the config file.
  * 
  * Returns the name of the current config file.
@@ -103,6 +133,7 @@ void init();
  * The config file is a XML file containing informations about the backend to be used and the seed for randomization.
  * 0 indicates a random seed.
  * </p><p> 
+ * The option sv_signedness (true or false) selects the signedness rules for the operands, see crave::set_sv_signedness().
  * Also the config file contains settings for the logger.
  * The path to the log file, its maximum size and a log severity level between 0..3 can be set.
  * The severity levels are INFO, WARNING, ERROR, and FATAL (0, 1, 2, and 3, respectively).
