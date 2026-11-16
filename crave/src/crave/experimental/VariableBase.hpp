@@ -27,7 +27,11 @@
 
 #pragma once
 
+#include <stdexcept>
+#include <string>
+
 #include "../frontend/Constraint.hpp"
+#include "../backend/Randc.hpp"
 #include "../ir/UserExpression.hpp"
 #include "Object.hpp"
 
@@ -71,6 +75,7 @@ struct crv_variable_base_ : public crv_object {
   void rand_mode(bool on) override {
     if (rand_mode_ == on) return;
     rand_mode_ = on;
+    if (randc_) set_randc(id(), rand_mode_);
     request_rebuild();
   }
 
@@ -79,6 +84,12 @@ struct crv_variable_base_ : public crv_object {
    * \return true if this variable is randomized, false otherwise.
    */
   bool rand_mode() const { return rand_mode_; }
+
+  /**
+   * \brief Get whether this variable is a cyclic random variable, see crv_variable_base<T>::randc(bool).
+   * \return true if this variable is cyclic, false otherwise.
+   */
+  bool randc() const { return randc_; }
 
   void recursive_build(Generator& gen) const override;
 
@@ -90,6 +101,7 @@ struct crv_variable_base_ : public crv_object {
   virtual expression state_expr() const = 0;
 
   bool rand_mode_ = true;
+  bool randc_ = false;
 };
 
 
@@ -163,12 +175,45 @@ class crv_variable_base : public crv_variable_base_ {
 
   Constant constant_expr() override { return to_constant_expr<T>()(actual_value()); }
 
+  /**
+   * \brief Makes this variable a cyclic random variable, as randc in SystemVerilog, or a random variable again.
+   *
+   * As in IEEE 1800-2017 18.4.2, a cyclic random variable takes all values, which satisfy its constraints, in a
+   * random order before a value is repeated. The cycle starts again when the constraints of the variable change,
+   * for instance by randomize_with() with other constraints than the previous randomization, by enabling or
+   * disabling a constraint, or by rand_mode(), and when none of the remaining values satisfies the
+   * constraints. As in SystemVerilog, the value of a randc variable is chosen before the other variables are
+   * solved, among the values, for which the constraints have a solution. A variable whose randomization is
+   * disabled with rand_mode(false) keeps its value, it is not cyclic until its randomization is enabled again.
+   *
+   * The variable must not have more than crave::randc_max_bitsize (16) bits, see Generator::randc() for details.
+   *
+   * \param on true for a cyclic random variable, false for a random variable.
+   */
+  void randc(bool on) {
+    if (on && bitsize_traits<T>::value > randc_max_bitsize)
+      throw std::runtime_error("A randc variable must not have more than " + std::to_string(randc_max_bitsize) +
+                               " bits.");
+    if (randc_ == on) return;
+    randc_ = on;
+    set_randc(id(), randc_ && rand_mode_);
+    request_rebuild();
+  }
+
+  using crv_variable_base_::randc;
+
+  ~crv_variable_base() {
+    if (randc_) set_randc(var.id(), false);
+  }
+
  protected:
   expression state_expr() const override { return make_expression(var == ref); }
 
   crv_variable_base() : var(&value), ref(value), value(), bound_var() {}
   crv_variable_base(const crv_variable_base& other)
-      : crv_variable_base_(other), var(&value), ref(value), value(other.value), bound_var(other.bound_var) {}
+      : crv_variable_base_(other), var(&value), ref(value), value(other.value), bound_var(other.bound_var) {
+    if (randc_) set_randc(var.id(), rand_mode_);
+  }
 
   /**
    * get the current value

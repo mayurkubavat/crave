@@ -57,6 +57,7 @@ SET(CRAVE_LIB_SRC
   lib/VariableGeneratorMT.cpp
   lib/ComplexityEstimationVisitor.cpp
   lib/RandomSeedManager.cpp
+  lib/Randc.cpp
 )
 
 if (CRAVE_ENABLE_EXPERIMENTAL)
