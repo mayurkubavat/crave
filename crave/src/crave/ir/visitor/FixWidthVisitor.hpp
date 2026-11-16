@@ -96,6 +96,9 @@ class FixWidthVisitor : NodeVisitor {
   void visitNumberResultUnaryExpr(const T& object);
   template <typename T>
   void visitBooleanResultBinExpr(const T& object);
+  template <typename T>
+  void visitLogicalBinExpr(const T& object);
+  result_type toBoolean(stack_entry const&);
 
  public:
   result_type fixWidth(Node const& expr) {

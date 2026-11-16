@@ -70,6 +70,26 @@ BOOST_AUTO_TEST_CASE(logical_not_t2) {
   }
 }
 
+struct logical_not_s3 : crv_sequence_item {
+  logical_not_s3(crv_object_name) {}
+
+  crv_variable<unsigned> a;
+  crv_variable<unsigned char> b;
+  crv_constraint con1{!(a() == 0)};
+  crv_constraint con2{!(a() & (a() - 1)), !b()};
+};
+
+BOOST_AUTO_TEST_CASE(logical_not_t3) {
+  logical_not_s3 item("item");
+
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(item.a, 0u);
+    BOOST_REQUIRE_EQUAL(item.a & (item.a - 1), 0u);
+    BOOST_REQUIRE_EQUAL(item.b, 0u);
+  }
+}
+
 struct logical_and_s1 : crv_sequence_item {
   crv_variable<bool> a;
   crv_variable<bool> b;
@@ -122,6 +142,28 @@ BOOST_AUTO_TEST_CASE(logical_or_t1) {
 
   BOOST_REQUIRE(item.randomize());
   BOOST_REQUIRE_EQUAL(item.c, true);
+}
+
+struct logical_int_operands_s1 : crv_sequence_item {
+  logical_int_operands_s1(crv_object_name) {}
+
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  crv_variable<int> c;
+  crv_variable<int> d;
+  crv_constraint con{a() && b() < 4, !(c() || d())};
+};
+
+BOOST_AUTO_TEST_CASE(logical_int_operands_t1) {
+  logical_int_operands_s1 item("item");
+
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(item.a, 0u);
+    BOOST_REQUIRE_LT(item.b, 4u);
+    BOOST_REQUIRE_EQUAL(item.c, 0);
+    BOOST_REQUIRE_EQUAL(item.d, 0);
+  }
 }
 
 struct logical_equal_s1 : crv_sequence_item {

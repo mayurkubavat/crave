@@ -31,6 +31,22 @@
 
 namespace crave {
 
+namespace {
+bool isBoolean(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->isBool();
+  if (dynamic_cast<NotOpr const*>(&n) || dynamic_cast<LogicalAndOpr const*>(&n) ||
+      dynamic_cast<LogicalOrOpr const*>(&n) || dynamic_cast<EqualOpr const*>(&n) ||
+      dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
+      dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
+      dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
+      dynamic_cast<ForEach const*>(&n) || dynamic_cast<Unique const*>(&n))
+    return true;
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return isBoolean(*ite->b());
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return isBoolean(*va->lhs());
+  return false;
+}
+}  // namespace
+
 void FixWidthVisitor::pop(stack_entry& fst) {
   assert(exprStack_.size() >= 1);
   fst = exprStack_.top();
@@ -120,6 +136,19 @@ void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
 }
 
+// As in C++, an integer operand of a logical operator stands for its comparison with zero.
+FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
+  if (isBoolean(*e.first)) return e.first;
+  return new NotEqualOpr(e.first, new Constant(0, e.second, false));
+}
+
+template <typename T>
+void FixWidthVisitor::visitLogicalBinExpr(const T& object) {
+  stack_entry lhs, rhs;
+  evalBinExpr(object, lhs, rhs, false);
+  exprStack_.push(std::make_pair(new T(toBoolean(lhs), toBoolean(rhs)), 1));
+}
+
 void FixWidthVisitor::visitPlaceholder(const Placeholder& pl) {
   exprStack_.push(std::make_pair(new Placeholder(pl), placeholder_bitsize()));
 }
@@ -136,7 +165,12 @@ void FixWidthVisitor::visitVectorExpr(const VectorExpr& v) {
   exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
 }
 
-void FixWidthVisitor::visitNotOpr(const NotOpr& n) { visitNumberResultUnaryExpr(n); }
+void FixWidthVisitor::visitNotOpr(const NotOpr& n) {
+  visitUnaryExpr(n);
+  stack_entry e;
+  pop(e);
+  exprStack_.push(std::make_pair(new NotOpr(toBoolean(e)), 1));
+}
 
 void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitNumberResultUnaryExpr(n); }
 
@@ -164,9 +198,9 @@ void FixWidthVisitor::visitAndOpr(const AndOpr& a) { visitNumberResultBinExpr(a)
 
 void FixWidthVisitor::visitOrOpr(const OrOpr& o) { visitNumberResultBinExpr(o); }
 
-void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitBooleanResultBinExpr(la); }
+void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitLogicalBinExpr(la); }
 
-void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitBooleanResultBinExpr(lo); }
+void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitLogicalBinExpr(lo); }
 
 void FixWidthVisitor::visitXorOpr(const XorOpr& x) { visitNumberResultBinExpr(x); }
 
