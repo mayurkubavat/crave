@@ -64,12 +64,10 @@ function (add_all_tests prog cfile)
   
 endfunction(add_all_tests)
 
-if(NOT TARGET Boost::unit_test_framework)
-  message(FATAL_ERROR "Boost::unit_test_framework target missing. Ensure crave_find_or_fetch_boost() ran before configuring tests.")
-endif()
-
 add_library (${PROJECT_NAME}_boost_test ${STATIC_OR_SHARED} boost_test.cpp)
-link_libraries (${PROJECT_NAME}_boost_test ${PROJECT_NAME} Threads::Threads Boost::unit_test_framework)
+# boost_test.cpp compiles the header-only variant of Boost.Test, so the
+# prebuilt unit_test_framework library must not be linked in addition.
+link_libraries (${PROJECT_NAME}_boost_test ${PROJECT_NAME} Threads::Threads)
 target_include_directories(${PROJECT_NAME}_boost_test PRIVATE ${Boost_INCLUDE_DIRS})
 
 add_executable(solver_independent_tests core/solver_independent_tests.cpp)
