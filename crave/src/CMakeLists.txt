@@ -58,6 +58,7 @@ SET(CRAVE_LIB_SRC
   lib/ComplexityEstimationVisitor.cpp
   lib/RandomSeedManager.cpp
   lib/Randc.cpp
+  lib/SolveOrder.cpp
 )
 
 if (CRAVE_ENABLE_EXPERIMENTAL)

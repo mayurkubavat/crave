@@ -44,7 +44,11 @@ struct VariableDefaultSolver : VariableSolver {
   static bool bypass_constraint_analysis;
   static unsigned complexity_limit_for_bdd;
 
-  VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp);
+  /**
+   * \param solve_levels the variables, which are solved before others, by level, see SolveOrder::levels()
+   */
+  VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
+                        std::vector<std::vector<int> > const& solve_levels = std::vector<std::vector<int> >());
 
   virtual bool solve();
 
@@ -57,11 +61,17 @@ struct VariableDefaultSolver : VariableSolver {
   bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc);
   bool solveRandc(int id, RandcState& state, std::vector<NodePtr>& assumptions, RandcMap const& randc);
   std::string const& signature();
+  bool solveOrdered(std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  bool solveLevel(std::size_t index, std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  bool feasible(std::vector<NodePtr> const& assumptions);
 
   std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
   std::set<int> replaced_dist_refs_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
   std::string signature_;
   std::vector<NodePtr> randc_softs_;
+  std::vector<std::vector<int> > solve_levels_;  // the levels of the solve-before ordering in this partition
+  std::set<int> ordered_vars_;                   // the variables in solve_levels_
+  std::vector<std::vector<Constant> > first_level_values_;  // the values of the first level, which have a solution
 };
 }  // namespace crave

@@ -32,7 +32,7 @@ namespace crave {
 VariableGeneratorMT::VariableGeneratorMT(VariableContainer const& vcon) : VariableGenerator(vcon) {}
 
 void VariableGeneratorMT::createNewSolver(ConstraintPartition& partition, unsigned int index) {
-  solvers_[index] = std::make_shared<VariableDefaultSolver>(var_ctn_, partition);
+  solvers_[index] = std::make_shared<VariableDefaultSolver>(var_ctn_, partition, solve_levels_);
 }
 
 void joinAll(std::vector<std::thread*> threads) {
