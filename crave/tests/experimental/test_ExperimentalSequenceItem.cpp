@@ -392,6 +392,23 @@ BOOST_AUTO_TEST_CASE(pre_post_randomize_with) {
   BOOST_REQUIRE(callback_log == expected);
 }
 
+// As in SystemVerilog, the hooks of an object whose randomization is disabled are not called.
+BOOST_AUTO_TEST_CASE(pre_post_randomize_rand_mode) {
+  callback_outer item("item");
+
+  item.inner.rand_mode(false);
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  std::vector<std::string> expected{"outer.pre", "outer.post"};
+  BOOST_REQUIRE(callback_log == expected);
+
+  item.inner.rand_mode(true);
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  expected = {"outer.pre", "inner.pre", "outer.post", "inner.post " + std::to_string(item.inner.y)};
+  BOOST_REQUIRE(callback_log == expected);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

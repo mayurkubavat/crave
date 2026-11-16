@@ -122,7 +122,8 @@ class crv_object {
    *
    * As pre_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
    * objects in its hierarchy, a parent before its children. Override it to set up state that the
-   * constraints use. The default implementation does nothing.
+   * constraints use. Objects whose randomization is disabled with rand_mode(false) and their
+   * children are skipped. The default implementation does nothing.
    */
   virtual void pre_randomize() {}
 
@@ -131,6 +132,7 @@ class crv_object {
    *
    * As post_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
    * objects in its hierarchy, a parent before its children, but only if a solution has been found.
+   * Objects whose randomization is disabled with rand_mode(false) and their children are skipped.
    * The default implementation does nothing.
    */
   virtual void post_randomize() {}
@@ -157,6 +159,7 @@ class crv_object {
    * \param on true to enable, false to disable the randomization.
    */
   virtual void rand_mode(bool on) {
+    object_rand_mode_ = on;
     for (auto obj : children_) obj->rand_mode(on);
   }
 
@@ -212,6 +215,7 @@ class crv_object {
   std::list<crv_object*> children_;                          /** < children nodes*/
   std::string fullname_;                                     /** < fullname*/
   std::unordered_map<std::string, unsigned> local_name_map_; /** < names of children in a map*/
+  bool object_rand_mode_ = true;                             /** < set by rand_mode(bool) of this object*/
 
  private:
   /**
