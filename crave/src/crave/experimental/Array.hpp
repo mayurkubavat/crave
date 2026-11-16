@@ -82,12 +82,68 @@ class crv_array : public crv_object {
   }
 
   /**
+   * \brief Gets the product of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. As the product() reduction method of
+   * SystemVerilog, it has the type of the elements.
+   *
+   * \return product expression of the elements in the array
+   */
+  expression product() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return make_expression(lhs * rhs); });
+  }
+
+  /**
+   * \brief Gets the bitwise AND of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the and() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise AND expression of the elements in the array
+   */
+  expression and_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return make_expression(lhs & rhs); });
+  }
+
+  /**
+   * \brief Gets the bitwise OR of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the or() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise OR expression of the elements in the array
+   */
+  expression or_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return make_expression(lhs | rhs); });
+  }
+
+  /**
+   * \brief Gets the bitwise XOR of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the xor() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise XOR expression of the elements in the array
+   */
+  expression xor_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return make_expression(lhs ^ rhs); });
+  }
+
+  /**
    * \brief Access operator [] for array element.
    * \return The value of type T
    */
   crv_variable<T>& operator[](unsigned pos) { return *arr_[pos]; }
 
  private:
+  template <typename Op>
+  expression reduce(Op op) {
+    static_assert(N > 0, "reduction of an empty array");
+    expression result = make_expression((*arr_[0])());
+    for (unsigned i = 1; i < N; i++) result = op(result, (*arr_[i])());
+    return result;
+  }
+
   std::vector<crv_variable<T>*> arr_; /** < elements of array */
 };
 
