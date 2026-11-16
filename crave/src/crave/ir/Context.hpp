@@ -38,9 +38,12 @@
 #include <boost/proto/context/null.hpp>
 #include <boost/range/value_type.hpp>
 
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
+#include <typeindex>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -76,6 +79,17 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   result_type new_var(unsigned id, unsigned width, bool sign) {
     return (variables_[id] = new VariableExpr(id, width, sign));
+  }
+
+  /**
+   * \internal
+   * Makes the read references to the object at the given address, i.e. crave::reference(object), refer to the
+   * variable, which var creates when it is first needed, instead of the value of the object.
+   * See crave::randomize().
+   */
+  template <typename T>
+  void bindReference(T const& object, std::function<result_type()> const& var) {
+    bound_references_[std::make_pair(static_cast<void const*>(&object), std::type_index(typeid(T)))] = var;
   }
 
   template <typename value_type>
@@ -256,6 +270,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   template <typename Integer>
   result_type operator()(boost::proto::tag::terminal, read_ref_tag<Integer> const& ref) {
+    if (!bound_references_.empty()) {
+      BoundReferences::const_iterator bound = bound_references_.find(
+          std::make_pair(static_cast<void const*>(&ref.ref), std::type_index(typeid(Integer))));
+      if (bound != bound_references_.end()) return bound->second();
+    }
+
     std::map<int, result_type>::const_iterator ite = variables_.find(ref.id);
 
     if (ite != variables_.end()) {
@@ -467,6 +487,9 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   std::map<int, int>& dist_ref_to_var_map;
   std::set<int>& implicit_dist_references_;
   std::set<int>& user_dist_references_;
+
+  typedef std::map<std::pair<void const*, std::type_index>, std::function<result_type()> > BoundReferences;
+  BoundReferences bound_references_;
 };
 // Context
 

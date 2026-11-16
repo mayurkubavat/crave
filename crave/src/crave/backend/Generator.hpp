@@ -180,6 +180,19 @@ struct Generator {
   void addVecId(int id) { to_be_generated_vec_ids_.insert(id); }
 
   VariableContainer* getVarCtn ();
+
+  /**
+   * \internal
+   * Makes crave::reference(object) in the constraints, which are added to this generator afterwards, refer to the
+   * random variable var instead of the value of the object, see crave::randomize().
+   */
+  template <typename T>
+  void bindReference(T const& object, WriteReference<T> const& var) {
+    Context* ctx = &ctx_;
+    WriteReference<T> ref(var);
+    ctx_.bindReference(object, [ctx, ref]() { return boost::proto::eval(ref, *ctx); });
+  }
+
  private:
   void resetConstraints();
 

@@ -118,6 +118,39 @@ BOOST_AUTO_TEST_CASE(sc_bigint_64_t) {
   check_64_bit_signed<sc_bigint<64> >();
 }
 
+// IEEE 1800-2017 18.12: std::randomize() of variables of SystemC data types
+BOOST_AUTO_TEST_CASE(scope_randomize_systemc) {
+  set_global_seed(35);
+  sc_uint<4> u = 0;
+  sc_int<6> i = 0;
+  sc_bv<3> v = 0;
+  std::set<int> us, is, vs;
+  for (unsigned n = 0; n < 1000; ++n) {
+    BOOST_REQUIRE(crave::randomize(u, i, v));
+    us.insert(u.to_int());
+    is.insert(i.to_int());
+    vs.insert(v.to_int());
+  }
+  BOOST_REQUIRE_EQUAL(us.size(), 16u);
+  BOOST_REQUIRE_EQUAL(is.size(), 64u);
+  BOOST_REQUIRE_EQUAL(vs.size(), 8u);
+
+  us.clear();
+  for (unsigned n = 0; n < 200; ++n) {
+    BOOST_REQUIRE(crave::randomize(u, i).with(reference(u) > 10, reference(i) < -20, reference(i) > -32));
+    BOOST_REQUIRE(u.to_uint() > 10);
+    BOOST_REQUIRE(i.to_int() < -20 && i.to_int() > -32);
+    us.insert(u.to_int());
+  }
+  BOOST_REQUIRE_EQUAL(us.size(), 5u);
+
+  u = 3;
+  i = -1;
+  BOOST_REQUIRE(!crave::randomize(u, i).with(reference(u) > 10, reference(u) < 5));
+  BOOST_REQUIRE_EQUAL(u.to_uint(), 3u);
+  BOOST_REQUIRE_EQUAL(i.to_int(), -1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Ex_SystemC_t
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
