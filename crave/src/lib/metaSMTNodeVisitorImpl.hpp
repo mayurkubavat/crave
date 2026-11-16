@@ -492,10 +492,17 @@ void metaSMTVisitorImpl<SolverType>::visitDevideOpr(DevideOpr const &o) {
     result = evaluate(solver_, qf_bv::bvsdiv(lhs, rhs));
   } else if (!(lhs_signed || rhs_signed)) {
     result = evaluate(solver_, qf_bv::bvudiv(lhs, rhs));
-  } else if (lhs_signed) {
-    result = evaluate(solver_, qf_bv::bvsdiv(qf_bv::sign_extend(1, lhs), qf_bv::zero_extend(1, rhs)));
   } else {
-    result = evaluate(solver_, qf_bv::bvsdiv(qf_bv::zero_extend(1, lhs), qf_bv::sign_extend(1, rhs)));
+    // The quotient of a signed and an unsigned operand is the one of their values, as a comparison of them
+    // compares their values. It is computed from the magnitude of the signed operand, so that it has the
+    // width of the operands. Extending both operands by a bit gave a quotient of one bit more instead.
+    result_type const &s = lhs_signed ? lhs : rhs;
+    result_type zero = evaluate(solver_, qf_bv::bvxor(s, s));
+    result_type negative = evaluate(solver_, qf_bv::bvslt(s, zero));
+    result_type magnitude = evaluate(solver_, qf_bv::bvneg(s));
+    result_type quotient = lhs_signed ? evaluate(solver_, qf_bv::bvudiv(magnitude, rhs))
+                                      : evaluate(solver_, qf_bv::bvudiv(lhs, magnitude));
+    result = evaluate(solver_, preds::Ite(negative, qf_bv::bvneg(quotient), qf_bv::bvudiv(lhs, rhs)));
   }
   exprStack_.push(std::make_pair(result, lhs_signed || rhs_signed));
 }
