@@ -34,19 +34,23 @@
 namespace crave {
 
 /**
- * \brief The number of values tried at random for the variables, which are solved before others.
- *
- * Up to this number of random values is tried for the variables of a level of a solve-before ordering, see
- * Generator::solve_before(). If none of them has a solution, the solver lists the values, which have one.
+ * \brief The number of values tried at random for the variables of a level of a solve-before ordering, before the
+ * least and the greatest of their values, which have a solution, are found.
  */
-unsigned const solve_before_max_tries = 16;
+unsigned const solve_before_first_tries = 4;
+
+/**
+ * \brief The number of values tried at random between the least and the greatest value, which have a solution, of
+ * the variables of a level of a solve-before ordering, see Generator::solve_before().
+ */
+unsigned const solve_before_max_tries = 64;
 
 /**
  * \brief The maximal number of values, which the solver lists for the variables of a level of a solve-before
- * ordering.
+ * ordering, if the values tried at random have no solution.
  *
- * If fewer values have a solution, one of them is chosen with equal probability. Otherwise, the values are taken
- * from a solution of the constraints.
+ * If fewer values have a solution, one of them is chosen with equal probability. Otherwise, the generation throws
+ * std::runtime_error, since a value cannot be chosen with equal probability at a bounded cost.
  */
 unsigned const solve_before_max_listed = 256;
 

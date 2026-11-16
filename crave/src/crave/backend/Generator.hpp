@@ -156,9 +156,12 @@ struct Generator {
    * combinations of their values, for which the constraints have a solution. A variable with a distribution by
    * dist() takes the values of its distribution, for which the constraints have a solution.
    *
-   * The values are chosen at random first, see crave::solve_before_max_tries. If none of them has a solution, the
-   * solver lists the values, which have one. Their probability is exactly equal if there are fewer than
-   * crave::solve_before_max_listed of them, otherwise the values are taken from a solution of the constraints.
+   * The values are chosen at random, between the least and the greatest value, which have a solution, and found
+   * by bisection, see crave::solve_before_max_tries. If none of them has a solution, the solver lists the values,
+   * which have one. If there are crave::solve_before_max_listed or more of them, so sparse that the values tried
+   * at random miss them, the generation throws std::runtime_error instead of choosing a value with unequal
+   * probability. The bounds and the listed values of the first level are kept for the next generation, unless they
+   * depend on references, randc variables or distributions.
    *
    * The generation throws std::runtime_error if the ordering is cyclic or contains a cyclic random variable
    * (randc). The ordering is not used by the coverage driven generation of nextCov() for cover constraints.

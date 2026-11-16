@@ -30,6 +30,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace crave;
@@ -116,22 +117,59 @@ BOOST_AUTO_TEST_CASE(solve_before_sparse_values) {
   BOOST_REQUIRE_LT(chi_square(counts, 66, total), 107.0);
 }
 
-// with too many values to list, the values are taken from a solution, the solutions stay the same
+// many values in a range, the values are chosen at random between the least and the greatest of them
+BOOST_AUTO_TEST_CASE(solve_before_dense_range) {
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+    set_global_seed(14);
+    Variable<unsigned> x;
+    Variable<unsigned> y;
+    Generator gen(x < y);
+    gen(y < 301u);
+    gen.solve_before(x, y);
+
+    unsigned const total = 2000;
+    std::map<int, unsigned> counts;
+    for (unsigned i = 0; i < total; ++i) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE(gen[x] < gen[y] && gen[y] < 301u);
+      ++counts[gen[x] / 30];
+    }
+    // x is uniform over 0 to 299, 9 degrees of freedom, 27.88 is the critical value for p = 0.001
+    BOOST_REQUIRE_EQUAL(counts.size(), 10u);
+    BOOST_REQUIRE_LT(chi_square(counts, 10, total), 27.88);
+  }
+}
+
+// with signed variables, the bounds are found in the order of the signed values
+BOOST_AUTO_TEST_CASE(solve_before_signed_range) {
+  set_global_seed(22);
+  Variable<int> x;
+  Variable<int> y;
+  Generator gen(x > -1000 && x < y && y < 1000);
+  gen.solve_before(x, y);
+
+  unsigned const total = 2000;
+  std::map<int, unsigned> counts;
+  for (unsigned i = 0; i < total; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE(gen[x] > -1000 && gen[x] < gen[y] && gen[y] < 1000);
+    ++counts[(gen[x] + 999) / 200];
+  }
+  // x is uniform over -999 to 998, 9 degrees of freedom, 27.88 is the critical value for p = 0.001
+  BOOST_REQUIRE_EQUAL(counts.size(), 10u);
+  BOOST_REQUIRE_LT(chi_square(counts, 10, total), 27.88);
+}
+
+// too many values, which are too sparse to be found at random, cannot be chosen with equal probability
 BOOST_AUTO_TEST_CASE(solve_before_many_sparse_values) {
   set_global_seed(14);
   Variable<unsigned> x;
   Variable<unsigned> y;
   Generator gen(x % 4096u == 0u && y == x + 1u);
   gen.solve_before(x, y);
-
-  std::set<unsigned> values;
-  for (unsigned i = 0; i < 8; ++i) {
-    BOOST_REQUIRE(gen.next());
-    BOOST_REQUIRE_EQUAL(gen[x] % 4096u, 0u);
-    BOOST_REQUIRE_EQUAL(gen[y], gen[x] + 1u);
-    values.insert(gen[x]);
-  }
-  BOOST_REQUIRE_GT(values.size(), 1u);
+  BOOST_REQUIRE_THROW(gen.next(), std::runtime_error);
 }
 
 // the ordering does not change the set of solutions
