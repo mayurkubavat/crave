@@ -90,6 +90,16 @@ void crv_object::remove_child(crv_object* child) {
   if (--local_name_map_[child->orig_name_] == 0) local_name_map_.erase(child->name_);
 }
 
+void crv_object::recursive_pre_randomize() {
+  pre_randomize();
+  for (auto obj : children_) obj->recursive_pre_randomize();
+}
+
+void crv_object::recursive_post_randomize() {
+  post_randomize();
+  for (auto obj : children_) obj->recursive_post_randomize();
+}
+
 crv_object* crv_object::root() {
   static crv_object root(0);
   return &root;
