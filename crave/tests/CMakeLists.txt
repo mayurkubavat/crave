@@ -76,6 +76,12 @@ if (CRAVE_ENABLE_EXPERIMENTAL)
   add_all_tests(experimental_tests experimental/experimental_tests.cpp)
 endif (CRAVE_ENABLE_EXPERIMENTAL)
 
+if (CRAVE_ENABLE_EXPERIMENTAL AND TARGET SystemC::systemc)
+  add_executable(experimental_SystemC experimental/test_ExperimentalSystemC.cpp)
+  add_all_tests(experimental_SystemC experimental/test_ExperimentalSystemC.cpp)
+  target_link_libraries(experimental_SystemC SystemC::systemc ${PROJECT_NAME})
+endif ()
+
 if (metaSMT_USE_Boolector)
   add_executable(use_Boolector core/use_Boolector.cpp)
   add_all_tests(use_Boolector core/use_Boolector.cpp)
