@@ -55,6 +55,37 @@ struct crv_variable_base_ : public crv_object {
   virtual unsigned id() = 0;
 
   std::string obj_kind() const override final { return "crv_variable"; }
+
+  /**
+   * \brief Enables or disables the randomization of this variable.
+   *
+   * As rand_mode() of a random variable in SystemVerilog, a variable whose randomization is
+   * disabled is not randomized: it keeps its value and constraints treat it as a state variable.
+   *
+   * \param on true to enable, false to disable the randomization.
+   */
+  void rand_mode(bool on) override {
+    if (rand_mode_ == on) return;
+    rand_mode_ = on;
+    request_rebuild();
+  }
+
+  /**
+   * \brief Get whether the randomization of this variable is enabled.
+   * \return true if this variable is randomized, false otherwise.
+   */
+  bool rand_mode() const { return rand_mode_; }
+
+  void recursive_build(Generator& gen) const override;
+
+ protected:
+  /**
+   * get an expression, which bounds the symbolic value to the current value.
+   * @return state expression
+   */
+  virtual expression state_expr() const = 0;
+
+  bool rand_mode_ = true;
 };
 
 
@@ -129,6 +160,8 @@ class crv_variable_base : public crv_variable_base_ {
   Constant constant_expr() override { return to_constant_expr<T>()(actual_value()); }
 
  protected:
+  expression state_expr() const override { return make_expression(var == ref); }
+
   crv_variable_base() : var(&value), ref(value), value(), bound_var() {}
   crv_variable_base(const crv_variable_base& other)
       : crv_variable_base_(other), var(&value), ref(value), value(other.value), bound_var(other.bound_var) {}
