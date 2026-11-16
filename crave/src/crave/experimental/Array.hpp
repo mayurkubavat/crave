@@ -28,6 +28,7 @@
 #pragma once
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Object.hpp"
@@ -82,12 +83,97 @@ class crv_array : public crv_object {
   }
 
   /**
+   * \brief Gets the product of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. As the product() reduction method of
+   * SystemVerilog, it has the type of the elements.
+   *
+   * \return product expression of the elements in the array
+   */
+  expression product() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return multiply(lhs, rhs, is_bool()); });
+  }
+
+  /**
+   * \brief Gets the bitwise AND of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the and() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise AND expression of the elements in the array
+   */
+  expression and_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return bit_and(lhs, rhs, is_bool()); });
+  }
+
+  /**
+   * \brief Gets the bitwise OR of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the or() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise OR expression of the elements in the array
+   */
+  expression or_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return bit_or(lhs, rhs, is_bool()); });
+  }
+
+  /**
+   * \brief Gets the bitwise XOR of the array elements as a CRAVE expression.
+   *
+   * The expression can be used in a constraint. It corresponds to the xor() reduction
+   * method of SystemVerilog and has the type of the elements.
+   *
+   * \return bitwise XOR expression of the elements in the array
+   */
+  expression xor_() {
+    return reduce([](expression const& lhs, WriteReference<T> const& rhs) { return bit_xor(lhs, rhs, is_bool()); });
+  }
+
+  /**
    * \brief Access operator [] for array element.
    * \return The value of type T
    */
   crv_variable<T>& operator[](unsigned pos) { return *arr_[pos]; }
 
  private:
+  // The solver backends do not accept bitwise and arithmetic operators on booleans, so the
+  // reductions of a bool array use the logical operators, which give the same results.
+  typedef typename std::is_same<T, bool>::type is_bool;
+
+  static expression multiply(expression const& lhs, WriteReference<T> const& rhs, std::false_type) {
+    return make_expression(lhs * rhs);
+  }
+  static expression multiply(expression const& lhs, WriteReference<T> const& rhs, std::true_type) {
+    return make_expression(lhs && rhs);
+  }
+  static expression bit_and(expression const& lhs, WriteReference<T> const& rhs, std::false_type) {
+    return make_expression(lhs & rhs);
+  }
+  static expression bit_and(expression const& lhs, WriteReference<T> const& rhs, std::true_type) {
+    return make_expression(lhs && rhs);
+  }
+  static expression bit_or(expression const& lhs, WriteReference<T> const& rhs, std::false_type) {
+    return make_expression(lhs | rhs);
+  }
+  static expression bit_or(expression const& lhs, WriteReference<T> const& rhs, std::true_type) {
+    return make_expression(lhs || rhs);
+  }
+  static expression bit_xor(expression const& lhs, WriteReference<T> const& rhs, std::false_type) {
+    return make_expression(lhs ^ rhs);
+  }
+  static expression bit_xor(expression const& lhs, WriteReference<T> const& rhs, std::true_type) {
+    return make_expression(lhs != rhs);
+  }
+
+  template <typename Op>
+  expression reduce(Op op) {
+    static_assert(N > 0, "reduction of an empty array");
+    expression result = make_expression((*arr_[0])());
+    for (unsigned i = 1; i < N; i++) result = op(result, (*arr_[i])());
+    return result;
+  }
+
   std::vector<crv_variable<T>*> arr_; /** < elements of array */
 };
 
