@@ -166,6 +166,54 @@ BOOST_AUTO_TEST_CASE(logical_int_operands_t1) {
   }
 }
 
+struct if_then_int_s1 : crv_sequence_item {
+  if_then_int_s1(crv_object_name) {}
+
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  crv_variable<unsigned> c;
+  crv_variable<unsigned> e;
+  crv_constraint con1{a() < 4, if_then(a(), b() == 1), if_then_else(b() - 1u, c() == 7, c() == 0)};
+  crv_constraint con2{e() < 10, if_then(e() & 1u, e() > 5)};
+};
+
+BOOST_AUTO_TEST_CASE(if_then_int_t1) {
+  if_then_int_s1 item("item");
+
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    if (item.a != 0) BOOST_REQUIRE_EQUAL(item.b, 1u);
+    BOOST_REQUIRE_EQUAL(item.c, item.b != 1 ? 7u : 0u);
+    BOOST_REQUIRE_LT(item.e, 10u);
+    if (item.e & 1) BOOST_REQUIRE_GT(item.e, 5u);
+  }
+}
+
+struct if_then_else_int_s1 : crv_sequence_item {
+  if_then_else_int_s1(crv_object_name) {}
+
+  crv_variable<int> d;
+  crv_variable<unsigned> w;
+  crv_variable<unsigned> x;
+  crv_variable<unsigned char> y;
+  crv_variable<unsigned> z;
+  crv_constraint con1{if_then_else(d() < 0, d(), -d()) < -3, d() > -10, d() < 10};
+  crv_constraint con2{!if_then_else(w() == 0, w(), w() - 5u)};
+  crv_constraint con3{if_then_else(x(), y(), z()) == 300u};
+};
+
+BOOST_AUTO_TEST_CASE(if_then_else_int_t1) {
+  if_then_else_int_s1 item("item");
+
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE(item.d > 3 || item.d < -3);
+    BOOST_REQUIRE(item.w == 0 || item.w == 5);
+    BOOST_REQUIRE_EQUAL(item.x, 0u);
+    BOOST_REQUIRE_EQUAL(item.z, 300u);
+  }
+}
+
 struct logical_equal_s1 : crv_sequence_item {
   crv_variable<unsigned> a;
   crv_variable<unsigned> b;

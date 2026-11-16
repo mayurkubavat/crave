@@ -248,7 +248,23 @@ void FixWidthVisitor::visitIfThenElse(const IfThenElse& ite) {
   stack_entry a, b, c;
   evalTernExpr(ite, a, b, c);
 
-  exprStack_.push(std::make_pair(new IfThenElse(a.first, b.first, c.first), a.second));
+  // As in C++, an integer condition stands for its comparison with zero.
+  result_type cond = toBoolean(a);
+  bool const boolB = isBoolean(*b.first);
+  if (boolB != isBoolean(*c.first))
+    throw std::runtime_error("if_then_else: both branches must be constraints or both must be integer expressions");
+  if (boolB) {
+    exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), 1));
+    return;
+  }
+  if (b.second < c.second) {
+    b.first = result_type(new ExtendExpression(b.first.get(), c.second - b.second));
+    b.second = c.second;
+  } else if (b.second > c.second) {
+    c.first = result_type(new ExtendExpression(c.first.get(), b.second - c.second));
+    c.second = b.second;
+  }
+  exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), b.second));
 }
 
 void FixWidthVisitor::visitBitslice(const Bitslice& b) {

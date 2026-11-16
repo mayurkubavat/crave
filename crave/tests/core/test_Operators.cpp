@@ -631,6 +631,30 @@ BOOST_AUTO_TEST_CASE(if_then_t1) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(if_then_else_int_t1) {
+  Variable<unsigned> a;
+  Variable<unsigned> b;
+  Variable<int> c;
+  Generator gen(a < 4);
+  gen(if_then(a, b == 1));
+  gen(if_then_else(a == 0, b, b + 1u) == 0u);
+  gen(if_then_else(c < 0, c, -c) < -3 && c > -10 && c < 10);
+
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 0u);
+    BOOST_REQUIRE_EQUAL(gen[b], 0u);
+    BOOST_REQUIRE(gen[c] > 3 || gen[c] < -3);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(if_then_else_mixed_branches) {
+  Variable<unsigned> a;
+  Variable<unsigned> b;
+  Generator gen;
+  BOOST_REQUIRE_THROW(gen(if_then_else(a == 0, b, b == 1)), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(bitslice_t) {
   Variable<short> x;
 

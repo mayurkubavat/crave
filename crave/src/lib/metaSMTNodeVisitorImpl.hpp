@@ -541,7 +541,7 @@ void metaSMTVisitorImpl<SolverType>::visitIfThenElse(IfThenElse const &ite) {
   stack_entry fst, snd, trd;
   evalTernExpr(ite, fst, snd, trd);
   result_type result = evaluate(solver_, preds::Ite(preds::equal(fst.first, preds::True), snd.first, trd.first));
-  exprStack_.push(std::make_pair(result, false));
+  exprStack_.push(std::make_pair(result, snd.second || trd.second));
 }
 
 template <typename SolverType>
