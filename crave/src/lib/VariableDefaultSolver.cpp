@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <memory>
 
+#include "BddSampler.hpp"
+
 namespace crave {
 
 extern std::function<unsigned(unsigned)> random_unsigned;
@@ -63,8 +65,8 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     vars_with_dist.insert(var_ctn_.dist_ref_to_var_map.at(pair.first));
   }
 
-  if (FactorySolver<CUDD>::isDefined()) {
-    LOG(INFO) << "Create BDD solvers for constraints involving single variable";
+  if (FactoryMetaSMT::isDefined(CUDD)) {
+    LOG(INFO) << "Get BDD samplers for constraints involving single variable";
     std::map<int, ConstraintList> const& svc_map = constr_pttn_.singleVariableConstraintMap();
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
       int id = pair.first;
@@ -73,13 +75,17 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
         LOG(INFO) << "  Skip var #" << id << " due to existing distribution constraints";
         continue;
       }
-      SolverPtr bdd_solver(FactoryMetaSMT::getNewInstance(CUDD));
-      bdd_solvers_[id] = bdd_solver;
-      for(ConstraintPtr c : svc_map.at(id)) {
-        if (c->complexity() > 0 && c->complexity() < complexity_limit_for_bdd) bdd_solver->makeAssertion(*c->expr());
+      std::vector<NodePtr> exprs;
+      for(ConstraintPtr c : svc_map.at(id)) exprs.push_back(c->expr());
+      std::shared_ptr<BddSampler> sampler = BddSampler::get(exprs);
+      if (!sampler) {
+        // the constraints are too complex for a BDD, the variable is randomized like the ones without
+        LOG(INFO) << "  No BDD sampler for var #" << id;
+        continue;
       }
+      bdd_samplers_[id] = sampler;
       vars_with_dist.insert(id);
-      LOG(INFO) << "  BDD solver for var #" << id << " created";
+      LOG(INFO) << "  BDD sampler for var #" << id << " found";
     }
   }
 
@@ -117,11 +123,9 @@ bool VariableDefaultSolver::solve() {
   }
   for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
     int id = pair.first;
-    if (bdd_solvers_.find(id) == bdd_solvers_.end()) continue;
-    SolverPtr bdd_solver = bdd_solvers_[id];
-    CHECK(bdd_solver->solve());  // otherwise, contradiction must have been found!
+    if (bdd_samplers_.find(id) == bdd_samplers_.end()) continue;
     std::string str;
-    bdd_solver->read(*var_ctn_.variables[id], str);
+    CHECK(bdd_samplers_[id]->sample(&str));  // otherwise, contradiction must have been found!
     NodePtr value(new Constant(pair.second->to_constant(str)));
     NodePtr var = var_ctn_.variables[id];
     NodePtr eq(new EqualOpr(var, value));

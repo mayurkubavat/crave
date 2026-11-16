@@ -46,7 +46,9 @@ namespace metaSMT {
 
       public:
 
-        CUDD_Context () 
+        // cache_slots is the initial size of the computed table of the manager
+        explicit CUDD_Context (unsigned cache_slots = CUDD_CACHE_SLOTS)
+          : _manager(0, 0, CUDD_UNIQUE_SLOTS, cache_slots)
         {
           _manager.setHandler(&CUDD_Context::_cudd_error);
           _manager.AutodynEnable(CUDD_REORDER_SIFT);
