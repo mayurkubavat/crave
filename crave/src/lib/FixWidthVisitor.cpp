@@ -384,7 +384,42 @@ void FixWidthVisitor::visitMinusOpr(const MinusOpr& m) { visitNumberResultBinExp
 
 void FixWidthVisitor::visitMultipliesOpr(const MultipliesOpr& m) { visitNumberResultBinExpr(m); }
 
-void FixWidthVisitor::visitDevideOpr(const DevideOpr& d) { visitNumberResultBinExpr(d); }
+namespace {
+// whether the solver treats an expression as signed: an operation is signed if one of its operands is
+bool solverSigned(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
+  if (dynamic_cast<Bitslice const*>(&n)) return false;
+  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) return solverSigned(*e->child());
+  if (NegOpr const* o = dynamic_cast<NegOpr const*>(&n)) return solverSigned(*o->child());
+  if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&n)) return solverSigned(*o->child());
+  if (ShiftLeftOpr const* o = dynamic_cast<ShiftLeftOpr const*>(&n)) return solverSigned(*o->lhs());
+  if (ShiftRightOpr const* o = dynamic_cast<ShiftRightOpr const*>(&n)) return solverSigned(*o->lhs());
+  if (dynamic_cast<PlusOpr const*>(&n) || dynamic_cast<MinusOpr const*>(&n) || dynamic_cast<MultipliesOpr const*>(&n) ||
+      dynamic_cast<DevideOpr const*>(&n) || dynamic_cast<ModuloOpr const*>(&n) || dynamic_cast<AndOpr const*>(&n) ||
+      dynamic_cast<OrOpr const*>(&n) || dynamic_cast<XorOpr const*>(&n)) {
+    BinaryExpression const& b = static_cast<BinaryExpression const&>(n);
+    return solverSigned(*b.lhs()) || solverSigned(*b.rhs());
+  }
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
+    return solverSigned(*ite->b()) || solverSigned(*ite->c());
+  return false;
+}
+}  // namespace
+
+// The quotient of a signed and an unsigned operand is the one of their values, as a comparison of them compares
+// their values. It may need one bit more than the operands, e.g. 129u / -1, so both operands are extended by a
+// bit, the signed one by its sign, and the quotient has one bit more than the operands.
+void FixWidthVisitor::visitDevideOpr(const DevideOpr& d) {
+  visitNumberResultBinExpr(d);
+  stack_entry e;
+  pop(e);
+  DevideOpr const& q = static_cast<DevideOpr const&>(*e.first);
+  if (solverSigned(*q.lhs()) != solverSigned(*q.rhs())) {
+    e.first = new DevideOpr(new ExtendExpression(q.lhs(), 1), new ExtendExpression(q.rhs(), 1));
+    e.second += 1;
+  }
+  exprStack_.push(e);
+}
 
 void FixWidthVisitor::visitModuloOpr(const ModuloOpr& m) { visitNumberResultBinExpr(m); }
 

@@ -491,10 +491,12 @@ void metaSMTVisitorImpl<SolverType>::visitDevideOpr(DevideOpr const &o) {
     result = evaluate(solver_, qf_bv::bvsdiv(lhs, rhs));
   } else if (!(lhs_signed || rhs_signed)) {
     result = evaluate(solver_, qf_bv::bvudiv(lhs, rhs));
-  } else if (lhs_signed) {
-    result = evaluate(solver_, qf_bv::bvsdiv(qf_bv::sign_extend(1, lhs), qf_bv::zero_extend(1, rhs)));
   } else {
-    result = evaluate(solver_, qf_bv::bvsdiv(qf_bv::zero_extend(1, lhs), qf_bv::sign_extend(1, rhs)));
+    // FixWidthVisitor has extended the operands of a signed and an unsigned operand by a bit, the signed one by
+    // its sign and the unsigned one by zero, so both values are the ones of the operands as signed values.
+    // A division by zero gives what the backend gives for a signed division by zero, as before the extension:
+    // with Z3, 1 for a negative dividend and -1 otherwise; with CUDD, -1 for a negative dividend and 1 otherwise.
+    result = evaluate(solver_, qf_bv::bvsdiv(lhs, rhs));
   }
   exprStack_.push(std::make_pair(result, lhs_signed || rhs_signed));
 }
