@@ -347,7 +347,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   template <typename Integer, typename DistInt>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
                          WriteReference<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
-    distribution<DistInt> const& dist = boost::proto::value(dist_expr);
+    typedef typename distribution_value_type<DistInt>::type DistValue;
+    distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
     bool sign = crave::is_signed<DistInt>::value;
 
@@ -357,7 +358,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     dist_references_.push_back(std::make_pair(id, ref_expr));
 
     result_type in_ranges;
-    for(weighted_range<DistInt> const & r : dist.ranges()) {
+    for(weighted_range<DistValue> const & r : dist.ranges()) {
       result_type left(new Constant(r.left_, width, sign));
       result_type right(new Constant(r.right_, width, sign));
       result_type left_cond(new LessEqualOpr(left, tmp_var));
@@ -375,7 +376,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
    template <typename Integer, typename DistInt>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
                          Variable<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
-    distribution<DistInt> const& dist = boost::proto::value(dist_expr);
+    typedef typename distribution_value_type<DistInt>::type DistValue;
+    distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
     bool sign = crave::is_signed<DistInt>::value;
 
@@ -385,7 +387,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     dist_references_.push_back(std::make_pair(id, ref_expr));
 
     result_type in_ranges;
-    for(weighted_range<DistInt> const & r : dist.ranges()) {
+    for(weighted_range<DistValue> const & r : dist.ranges()) {
       result_type left(new Constant(r.left_, width, sign));
       result_type right(new Constant(r.right_, width, sign));
       result_type left_cond(new LessEqualOpr(left, tmp_var));

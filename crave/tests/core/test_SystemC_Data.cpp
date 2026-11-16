@@ -225,6 +225,38 @@ BOOST_AUTO_TEST_CASE(randv_sc_dt_op_support_t) {
   BOOST_CHECK(c != 1);
 }
 
+BOOST_AUTO_TEST_CASE(dist_sc_int_t) {
+  using namespace sc_dt;
+
+  Variable<sc_int<8> > v;
+  Generator gen(dist(v, distribution<sc_int<8> >::create(range<sc_int<8> >(-4, -2))(weighted_value<sc_int<8> >(100, 3))));
+
+  std::set<int> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.next());
+    int r = gen[v].to_int();
+    BOOST_REQUIRE((-4 <= r && r <= -2) || r == 100);
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(dist_sc_uint_t) {
+  using namespace sc_dt;
+
+  randv<sc_uint<8> > v;
+  Generator gen(dist(v(), distribution<sc_uint<8> >::simple_range(250, 255)));
+
+  std::set<unsigned> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.next());
+    unsigned r = static_cast<sc_uint<8> >(v).to_uint();
+    BOOST_REQUIRE(250 <= r && r <= 255);
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), 6);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // SystemC_Data
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

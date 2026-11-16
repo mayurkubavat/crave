@@ -81,11 +81,13 @@ struct bitsize_traits<T, typename boost::enable_if<is_sysc_dt<T> >::type> : sc_d
 template <int N>
 struct distribution_value_type<sc_dt::sc_int<N> > {
   typedef int64_t type;
+  static type value(sc_dt::sc_int<N> const& v) { return v.to_int64(); }
 };
 
 template <int N>
 struct distribution_value_type<sc_dt::sc_uint<N> > {
   typedef uint64_t type;
+  static type value(sc_dt::sc_uint<N> const& v) { return v.to_uint64(); }
 };
 
 }  // namespace crave
