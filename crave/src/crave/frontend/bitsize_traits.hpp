@@ -148,6 +148,7 @@ struct to_constant_expr {};
 template <typename T, typename Enable = void>
 struct distribution_value_type {
   typedef T type;
+  static type value(T const& v) { return v; }
 };
 
 }  // namespace crave

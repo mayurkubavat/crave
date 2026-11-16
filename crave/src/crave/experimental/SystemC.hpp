@@ -29,6 +29,8 @@
 
 #include "Variable.hpp"
 
+#include <limits>
+
 #include "../frontend/Distribution.hpp"
 #include "../frontend/bitsize_traits_sysc.hpp"
 
@@ -82,12 +84,12 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
 
   template <typename L >
   int64_t get_sc_dt_min_numeric_limit (const L &var, typename std::enable_if<is_signed<L>::value, void>::type* = nullptr) {
-	  return (int64_t)(-(pow(2,var.length()-1)));
+	  return -get_sc_dt_max_numeric_limit(var) - 1;
   }
 
   template <typename L>
     int64_t get_sc_dt_max_numeric_limit (const L &var, typename std::enable_if<is_signed<L>::value, void>::type* = nullptr) {
-  	  return (int64_t)(pow(2,var.length()-1) - 1);
+  	  return var.length() >= 64 ? std::numeric_limits<int64_t>::max() : (int64_t(1) << (var.length() - 1)) - 1;
   	}
 
   template <typename L >
@@ -97,7 +99,7 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
 
   template <typename L >
    uint64_t get_sc_dt_max_numeric_limit (const L &var, typename std::enable_if<is_unsigned<L>::value, void>::type* = nullptr) {
-	  return (uint64_t)(pow(2,var.length()) - 1);
+	  return var.length() >= 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t(1) << var.length()) - 1;
   }
 
   unsigned getVarID() override {
