@@ -214,6 +214,31 @@ BOOST_AUTO_TEST_CASE(if_then_else_int_t1) {
   }
 }
 
+struct if_then_else_mixed_s1 : crv_sequence_item {
+  if_then_else_mixed_s1(crv_object_name) {}
+
+  crv_variable<bool> f;
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> x;
+  crv_variable<unsigned> y;
+  crv_constraint con1{a() < 2u, x() < 4u, if_then_else(a() == 0u, f(), x()) == 1u};
+  crv_constraint con2{if_then_else(a() == 0u, x(), f()), y() == f() + x()};
+};
+
+BOOST_AUTO_TEST_CASE(if_then_else_mixed_t1) {
+  if_then_else_mixed_s1 item("item");
+
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE(item.f);
+    if (item.a == 0)
+      BOOST_REQUIRE_NE(item.x, 0u);
+    else
+      BOOST_REQUIRE_EQUAL(item.x, 1u);
+    BOOST_REQUIRE_EQUAL(item.y, item.x + 1);
+  }
+}
+
 struct logical_equal_s1 : crv_sequence_item {
   crv_variable<unsigned> a;
   crv_variable<unsigned> b;

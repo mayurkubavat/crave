@@ -76,6 +76,11 @@ void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst,
   visitBinaryExpr(bin);
   pop2(snd, fst);
   if (!fixWidth) return;
+  // As in C++, a boolean operand of an operation with an integer operand is promoted to an integer.
+  if (isBoolean(*fst.first) != isBoolean(*snd.first)) {
+    promoteToInteger(fst);
+    promoteToInteger(snd);
+  }
   if (fst.second < snd.second) {
     unsigned int diff = snd.second - fst.second;
     fst.first = result_type(new ExtendExpression(fst.first.get(), diff));
@@ -140,6 +145,13 @@ void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
 FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
   if (isBoolean(*e.first)) return e.first;
   return new NotEqualOpr(e.first, new Constant(0, e.second, false));
+}
+
+// As in C++, a boolean promotes to the integer 1 for true and 0 for false.
+void FixWidthVisitor::promoteToInteger(stack_entry& e) {
+  if (!isBoolean(*e.first)) return;
+  e.first = new IfThenElse(e.first, new Constant(1, 1, false), new Constant(0, 1, false));
+  e.second = 1;
 }
 
 template <typename T>
@@ -250,10 +262,12 @@ void FixWidthVisitor::visitIfThenElse(const IfThenElse& ite) {
 
   // As in C++, an integer condition stands for its comparison with zero.
   result_type cond = toBoolean(a);
-  bool const boolB = isBoolean(*b.first);
-  if (boolB != isBoolean(*c.first))
-    throw std::runtime_error("if_then_else: both branches must be constraints or both must be integer expressions");
-  if (boolB) {
+  // If one branch is a boolean and the other an integer, the boolean is promoted to an integer.
+  if (isBoolean(*b.first) != isBoolean(*c.first)) {
+    promoteToInteger(b);
+    promoteToInteger(c);
+  }
+  if (isBoolean(*b.first)) {
     exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), 1));
     return;
   }

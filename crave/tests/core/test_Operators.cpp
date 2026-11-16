@@ -648,11 +648,48 @@ BOOST_AUTO_TEST_CASE(if_then_else_int_t1) {
   }
 }
 
+// As in C++, a boolean branch is promoted to an integer if the other branch is an integer.
 BOOST_AUTO_TEST_CASE(if_then_else_mixed_branches) {
-  Variable<unsigned> a;
-  Variable<unsigned> b;
-  Generator gen;
-  BOOST_REQUIRE_THROW(gen(if_then_else(a == 0, b, b == 1)), std::runtime_error);
+  for (unsigned av = 0; av < 2; ++av) {
+    Variable<bool> f;
+    Variable<unsigned> a;
+    Variable<unsigned> b;
+    Variable<unsigned> x;
+    Generator gen(a == av && x < 4);
+    gen(if_then_else(a == 0, f, x) == 1u);
+    gen(if_then_else(a == 0, b, b == 7));
+
+    for (int i = 0; i < 10; ++i) {
+      BOOST_REQUIRE(gen.next());
+      if (av == 0) {
+        BOOST_REQUIRE(gen[f]);
+        BOOST_REQUIRE_NE(gen[b], 0u);
+      } else {
+        BOOST_REQUIRE_EQUAL(gen[x], 1u);
+        BOOST_REQUIRE_EQUAL(gen[b], 7u);
+      }
+    }
+  }
+}
+
+// As in C++, a boolean operand of an operation with an integer operand is promoted to an integer.
+BOOST_AUTO_TEST_CASE(bool_integer_operands) {
+  Variable<bool> f;
+  Variable<unsigned> x;
+  Variable<unsigned> y;
+  Variable<unsigned> z;
+  Generator gen(x < 4 && z < 3);
+  gen(f == x);
+  gen(y == f + 1u);
+  gen(z);
+
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_LT(gen[x], 2u);
+    BOOST_REQUIRE_EQUAL(gen[f], gen[x] == 1);
+    BOOST_REQUIRE_EQUAL(gen[y], gen[f] ? 2u : 1u);
+    BOOST_REQUIRE_NE(gen[z], 0u);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(bitslice_t) {
