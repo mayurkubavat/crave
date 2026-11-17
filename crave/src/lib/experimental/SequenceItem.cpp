@@ -67,6 +67,7 @@ namespace crave
 
   bool crv_sequence_item::randomize() {
     assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
+    recursive_pre_randomize();
     crosscheck_constraints() ;
 
     if (!built_) {
@@ -74,7 +75,9 @@ namespace crave
       recursive_build(*gen_);
       built_ = true;
     }
-    return gen_->nextCov();
+    if (!gen_->nextCov()) return false;
+    recursive_post_randomize();
+    return true;
   }
   
   void crv_sequence_item::goal(crv_covergroup& group) {
@@ -90,11 +93,14 @@ namespace crave
 
   bool crv_sequence_item::randomize_with_expr_list(const expression_list & list) {
     assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
+    recursive_pre_randomize();
     // TODO Generator caching
     rand_with_gen_ = std::make_shared<Generator>();
     recursive_build(*rand_with_gen_);
     for (auto e : list) (*rand_with_gen_)(e);
-    return rand_with_gen_->next();
+    if (!rand_with_gen_->next()) return false;
+    recursive_post_randomize();
+    return true;
   }
 
 }

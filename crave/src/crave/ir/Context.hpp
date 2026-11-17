@@ -68,7 +68,9 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
         read_references_(vars->read_references),
         write_references_(vars->write_references),
         dist_references_(vars->dist_references),
-        dist_ref_to_var_map(vars->dist_ref_to_var_map) {}
+        dist_ref_to_var_map(vars->dist_ref_to_var_map),
+        implicit_dist_references_(vars->implicit_dist_references),
+        user_dist_references_(vars->user_dist_references) {}
 
   result_type new_var(unsigned id, unsigned width, bool sign) {
     return (variables_[id] = new VariableExpr(id, width, sign));
@@ -297,11 +299,13 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
 
+    typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
-    distribution<Integer> dist;
-    for(CollectionEntry const & i : boost::proto::value(c)) {
+    distribution<DistInt> dist;
+    for(CollectionEntry const & entry : boost::proto::value(c)) {
+      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
       constants.insert(Constant(i, width, sign));
-      dist(weighted_value<Integer>(i, 1));
+      dist(weighted_value<DistInt>(i, 1));
     }
 
     unsigned id = new_var_id();
@@ -324,11 +328,13 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
 
+    typedef typename distribution_value_type<Integer>::type DistInt;
     std::set<Constant> constants;
-    distribution<Integer> dist;
-    for(CollectionEntry const & i : boost::proto::value(c)) {
+    distribution<DistInt> dist;
+    for(CollectionEntry const & entry : boost::proto::value(c)) {
+      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
       constants.insert(Constant(i, width, sign));
-      dist(weighted_value<Integer>(i, 1));
+      dist(weighted_value<DistInt>(i, 1));
     }
 
     unsigned id = new_var_id();
@@ -345,7 +351,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   template <typename Integer, typename DistInt>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
                          WriteReference<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
-    distribution<DistInt> const& dist = boost::proto::value(dist_expr);
+    typedef typename distribution_value_type<DistInt>::type DistValue;
+    distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
     bool sign = crave::is_signed<DistInt>::value;
 
@@ -353,9 +360,13 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     result_type tmp_var = new_var(id, width, sign);
     std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
     dist_references_.push_back(std::make_pair(id, ref_expr));
+    if (dist.isImplicit())
+      implicit_dist_references_.insert(id);
+    else
+      user_dist_references_.insert(id);
 
     result_type in_ranges;
-    for(weighted_range<DistInt> const & r : dist.ranges()) {
+    for(weighted_range<DistValue> const & r : dist.ranges()) {
       result_type left(new Constant(r.left_, width, sign));
       result_type right(new Constant(r.right_, width, sign));
       result_type left_cond(new LessEqualOpr(left, tmp_var));
@@ -373,7 +384,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
    template <typename Integer, typename DistInt>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
                          Variable<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
-    distribution<DistInt> const& dist = boost::proto::value(dist_expr);
+    typedef typename distribution_value_type<DistInt>::type DistValue;
+    distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
     bool sign = crave::is_signed<DistInt>::value;
 
@@ -381,9 +393,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     result_type tmp_var = new_var(id, width, sign);
     std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
     dist_references_.push_back(std::make_pair(id, ref_expr));
+    user_dist_references_.insert(id);
 
     result_type in_ranges;
-    for(weighted_range<DistInt> const & r : dist.ranges()) {
+    for(weighted_range<DistValue> const & r : dist.ranges()) {
       result_type left(new Constant(r.left_, width, sign));
       result_type right(new Constant(r.right_, width, sign));
       result_type left_cond(new LessEqualOpr(left, tmp_var));
@@ -444,6 +457,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   std::vector<WriteRefPair>& write_references_;
   std::vector<ReadRefPair>& dist_references_;
   std::map<int, int>& dist_ref_to_var_map;
+  std::set<int>& implicit_dist_references_;
+  std::set<int>& user_dist_references_;
 };
 // Context
 

@@ -53,9 +53,13 @@ Generator& Generator::operator()() {
 void Generator::merge(const Generator& other) { constr_pttn_.mergeConstraints(other.constr_mng_); }
 
 void Generator::reset() {
+  resetConstraints();
+  to_be_generated_vec_ids_.clear();
+}
+
+void Generator::resetConstraints() {
   constr_mng_.resetChanged();
   constr_pttn_.reset();
-  to_be_generated_vec_ids_.clear();
   resetCoverage();
 }
 
@@ -71,7 +75,8 @@ void Generator::rebuild(bool selfInclude) {
 
 bool Generator::next() {
   if (constr_mng_.isChanged()) {
-    reset();
+    // keep the vectors without constraints, which have been added with addVecId()
+    resetConstraints();
     rebuild(true);
   }
   return var_gen_->solve() && vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_);
@@ -79,7 +84,8 @@ bool Generator::next() {
 
 bool Generator::nextCov() {
   if (constr_mng_.isChanged()) {
-    reset();
+    // keep the vectors without constraints, which have been added with addVecId()
+    resetConstraints();
     rebuild(true);
   }
   if (!covered_) {

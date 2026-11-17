@@ -1,0 +1,33 @@
+--- src/util/lp/lp_core_solver_base.h
++++ src/util/lp/lp_core_solver_base.h
+@@ -590,7 +590,7 @@ public:
+         std:: cout << "m_d = " << m_d[j] << std::endl;*/
+     }
+ 
+-    bool column_is_free(unsigned j) { return this->m_column_type[j] == free; }
++    bool column_is_free(unsigned j) { return this->m_column_types[j] == column_type::free_column; }
+ 
+     bool column_has_upper_bound(unsigned j) {
+         switch(m_column_types[j]) {
+--- src/util/lp/static_matrix.h
++++ src/util/lp/static_matrix.h
+@@ -79,7 +79,7 @@ public:
+         ref(static_matrix & m, unsigned row, unsigned col):m_matrix(m), m_row(row), m_col(col) {}
+         ref & operator=(T const & v) { m_matrix.set( m_row, m_col, v); return *this; }
+ 
+-        ref & operator=(ref const & v) { m_matrix.set(m_row, m_col, v.m_matrix.get(v.m_row, v.m_col)); return *this; }
++        ref & operator=(ref const & v) { m_matrix.set(m_row, m_col, v.m_matrix.get_elem(v.m_row, v.m_col)); return *this; }
+ 
+         operator T () const { return m_matrix.get_elem(m_row, m_col); }
+     };
+--- src/util/lp/static_matrix.hpp
++++ src/util/lp/static_matrix.hpp
+@@ -97,7 +97,7 @@ static_matrix<T, X>::static_matrix(static_matrix const &A, unsigned * /* basis *
+     init_row_columns(m, m);
+     while (m--) {
+         for (auto & col : A.m_columns[m]){
+-            set(col.m_i, m, A.get_value_of_column_cell(col));
++            set(col.m_i, m, A.get_val(col));
+         }
+     }
+ }

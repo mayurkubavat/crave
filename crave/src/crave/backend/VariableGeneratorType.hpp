@@ -61,6 +61,13 @@ struct VariableGenerator {
   std::vector<std::string> getInactiveSofts() const;
 
  protected:
+  // makes the solvers again, if a variable has been made cyclic or not since they have been made
+  void refreshRandc();
+  // gives the values back to the cycles of the randc variables, which the first count solvers have taken
+  void undoRandc(std::size_t count);
+  std::vector<ConstraintPartition>* partitions_ = nullptr;
+  unsigned randc_epoch_ = 0;
+
   const VariableContainer& var_ctn_;
   std::vector<VarSolverPtr> solvers_;
 };

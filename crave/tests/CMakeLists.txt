@@ -29,6 +29,10 @@ if ( NOT CRAVE_TIMEOUT )
 endif()
 include_directories (../src)
 
+if(TARGET ${PROJECT_NAME}_sc_main_stub)
+  link_libraries ($<TARGET_OBJECTS:${PROJECT_NAME}_sc_main_stub>)
+endif()
+
 find_program(AWK awk)
 if (AWK)
   message(STATUS "Use awk to search for tests")
@@ -60,12 +64,10 @@ function (add_all_tests prog cfile)
   
 endfunction(add_all_tests)
 
-if(NOT TARGET Boost::unit_test_framework)
-  message(FATAL_ERROR "Boost::unit_test_framework target missing. Ensure crave_find_or_fetch_boost() ran before configuring tests.")
-endif()
-
 add_library (${PROJECT_NAME}_boost_test ${STATIC_OR_SHARED} boost_test.cpp)
-link_libraries (${PROJECT_NAME}_boost_test ${PROJECT_NAME} Threads::Threads Boost::unit_test_framework)
+# boost_test.cpp compiles the header-only variant of Boost.Test, so the
+# prebuilt unit_test_framework library must not be linked in addition.
+link_libraries (${PROJECT_NAME}_boost_test ${PROJECT_NAME} Threads::Threads)
 target_include_directories(${PROJECT_NAME}_boost_test PRIVATE ${Boost_INCLUDE_DIRS})
 
 add_executable(solver_independent_tests core/solver_independent_tests.cpp)
@@ -75,6 +77,12 @@ if (CRAVE_ENABLE_EXPERIMENTAL)
   add_executable(experimental_tests experimental/experimental_tests.cpp)
   add_all_tests(experimental_tests experimental/experimental_tests.cpp)
 endif (CRAVE_ENABLE_EXPERIMENTAL)
+
+if (CRAVE_ENABLE_EXPERIMENTAL AND TARGET SystemC::systemc)
+  add_executable(experimental_SystemC experimental/test_ExperimentalSystemC.cpp)
+  add_all_tests(experimental_SystemC experimental/test_ExperimentalSystemC.cpp)
+  target_link_libraries(experimental_SystemC SystemC::systemc ${PROJECT_NAME})
+endif ()
 
 if (metaSMT_USE_Boolector)
   add_executable(use_Boolector core/use_Boolector.cpp)
@@ -111,8 +119,17 @@ endif (metaSMT_USE_Z3)
 #  add_all_tests(use_Cudd use_Cudd.cpp)
 #endif (metaSMT_USE_CUDD)
 
-if(SystemCLanguage_FOUND)
+if(TARGET SystemC::systemc)
   add_executable (SystemC_Data core/test_SystemC_Data.cpp)
   add_all_tests( SystemC_Data core/test_SystemC_Data.cpp)
   target_link_libraries ( SystemC_Data SystemC::systemc Boost::filesystem ${PROJECT_NAME})
-endif(SystemCLanguage_FOUND)
+endif()
+
+if(WITH_SYSTEMC)
+  # the values generated in a SystemC process must not depend on the other processes
+  add_executable (sysc_process_stability sysc/process_stability.cpp)
+  add_test (NAME sysc_process_stability
+            COMMAND ${CMAKE_COMMAND} -DPROGRAM=$<TARGET_FILE:sysc_process_stability>
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/sysc/process_stability.cmake)
+  set_tests_properties (sysc_process_stability PROPERTIES TIMEOUT ${CRAVE_TIMEOUT})
+endif()

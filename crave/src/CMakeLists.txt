@@ -36,6 +36,7 @@ SET(CRAVE_LIB_SRC
   lib/ToDotNodeVisitor.cpp
   lib/CraveSettings.cpp
   lib/Generator.cpp
+  lib/BddSampler.cpp
   lib/SettingType.cpp
   lib/VariableCoverageGenerator.cpp
   lib/ConstraintPartition.cpp
@@ -56,6 +57,7 @@ SET(CRAVE_LIB_SRC
   lib/VariableGeneratorMT.cpp
   lib/ComplexityEstimationVisitor.cpp
   lib/RandomSeedManager.cpp
+  lib/Randc.cpp
 )
 
 if (CRAVE_ENABLE_EXPERIMENTAL)

@@ -28,6 +28,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <utility>
 #include <memory>
 #include <vector>
@@ -47,6 +48,8 @@ struct VariableContainer {
   std::vector<WriteRefPair> write_references;
   std::vector<ReadRefPair> dist_references;
   std::map<int, int> dist_ref_to_var_map;
+  std::set<int> implicit_dist_references;  // ids of the default distributions of variables
+  std::set<int> user_dist_references;      // ids of the distributions given by dist()
 };
 
 VariableContainer* variable_container();

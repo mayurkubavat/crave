@@ -318,6 +318,97 @@ BOOST_AUTO_TEST_CASE(item_with_vector) {
   }
 }
 
+static std::vector<std::string> callback_log;
+
+struct callback_inner : public crv_sequence_item {
+  callback_inner(crv_object_name) {}
+
+  crv_variable<unsigned> y;
+  crv_constraint con{y() < 10u};
+
+  void pre_randomize() override { callback_log.push_back("inner.pre"); }
+  void post_randomize() override { callback_log.push_back("inner.post " + std::to_string(y)); }
+};
+
+struct callback_outer : public crv_sequence_item {
+  callback_outer(crv_object_name) : inner("inner") {}
+
+  crv_variable<unsigned> x;
+  callback_inner inner;
+  crv_constraint con{x() == reference(limit), x() < 50u};
+  unsigned limit = 0;
+  unsigned next_limit = 7;
+  unsigned x_in_post = 0;
+
+  // pre_randomize() sets up state used by the constraints, post_randomize() sees the new values
+  void pre_randomize() override {
+    callback_log.push_back("outer.pre");
+    limit = next_limit;
+  }
+  void post_randomize() override {
+    callback_log.push_back("outer.post");
+    x_in_post = x;
+  }
+};
+
+BOOST_AUTO_TEST_CASE(pre_post_randomize) {
+  callback_outer item("item");
+
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.x, 7u);
+  BOOST_REQUIRE_EQUAL(item.x_in_post, 7u);
+  std::vector<std::string> expected{"outer.pre", "inner.pre", "outer.post", "inner.post " + std::to_string(item.inner.y)};
+  BOOST_REQUIRE(callback_log == expected);
+
+  // the hooks of the nested object are also called when it is randomized on its own
+  callback_log.clear();
+  BOOST_REQUIRE(item.inner.randomize());
+  expected = {"inner.pre", "inner.post " + std::to_string(item.inner.y)};
+  BOOST_REQUIRE(callback_log == expected);
+
+  // post_randomize() is not called if randomize() fails
+  callback_log.clear();
+  item.next_limit = 100;
+  BOOST_REQUIRE(!item.randomize());
+  expected = {"outer.pre", "inner.pre"};
+  BOOST_REQUIRE(callback_log == expected);
+}
+
+BOOST_AUTO_TEST_CASE(pre_post_randomize_with) {
+  callback_outer item("item");
+
+  callback_log.clear();
+  item.next_limit = 9;
+  BOOST_REQUIRE(item.randomize_with(item.inner.y() == 3u));
+  BOOST_REQUIRE_EQUAL(item.x, 9u);
+  BOOST_REQUIRE_EQUAL(item.x_in_post, 9u);
+  std::vector<std::string> expected{"outer.pre", "inner.pre", "outer.post", "inner.post 3"};
+  BOOST_REQUIRE(callback_log == expected);
+
+  callback_log.clear();
+  BOOST_REQUIRE(!item.randomize_with(item.x() != 9u));
+  expected = {"outer.pre", "inner.pre"};
+  BOOST_REQUIRE(callback_log == expected);
+}
+
+// As in SystemVerilog, the hooks of an object whose randomization is disabled are not called.
+BOOST_AUTO_TEST_CASE(pre_post_randomize_rand_mode) {
+  callback_outer item("item");
+
+  item.inner.rand_mode(false);
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  std::vector<std::string> expected{"outer.pre", "outer.post"};
+  BOOST_REQUIRE(callback_log == expected);
+
+  item.inner.rand_mode(true);
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  expected = {"outer.pre", "inner.pre", "outer.post", "inner.post " + std::to_string(item.inner.y)};
+  BOOST_REQUIRE(callback_log == expected);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
