@@ -193,6 +193,8 @@ namespace {
 bool solverSigned(Node const& n) {
   if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
   if (dynamic_cast<Bitslice const*>(&n)) return false;
+  // an element of a vector has the type of the vector
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return solverSigned(*va->lhs());
   if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) return solverSigned(*e->child());
   if (NegOpr const* o = dynamic_cast<NegOpr const*>(&n)) return solverSigned(*o->child());
   if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&n)) return solverSigned(*o->child());
