@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <type_traits>
+
 #include "bitsize_traits.hpp"
 
 namespace crave {
@@ -101,8 +104,16 @@ struct range : weighted_range<T> {
    * \param l Left value of the range (inclusive)
    * \param r Right value of the range (inclusive)
    */
-  range(T l, T r)
-      : weighted_range<T>(l, r, distribution_value_type<T>::value(r) + 1 - distribution_value_type<T>::value(l)) {}
+  range(T l, T r) : weighted_range<T>(l, r, weight(l, r)) {}
+
+ private:
+  // the number of values, computed in the unsigned type of the arithmetic of the values to avoid an overflow
+  static uint64_t weight(T l, T r) {
+    typedef decltype(distribution_value_type<T>::value(r) + 1) value_type;
+    typedef typename std::make_unsigned<value_type>::type unsigned_type;
+    return static_cast<unsigned_type>(static_cast<unsigned_type>(distribution_value_type<T>::value(r)) -
+                                      static_cast<unsigned_type>(distribution_value_type<T>::value(l)) + 1u);
+  }
 };
 
 /**

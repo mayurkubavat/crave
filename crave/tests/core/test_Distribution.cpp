@@ -43,6 +43,17 @@ using boost::format;
 
 BOOST_FIXTURE_TEST_SUITE(Distribution_t, Context_Fixture)
 
+// the weight of a range is the number of its values, also if it does not fit into the type of the values
+BOOST_AUTO_TEST_CASE(range_weight_t) {
+  BOOST_REQUIRE_EQUAL(range<int>(-5, 5).weight_, 11u);
+  BOOST_REQUIRE_EQUAL(range<int>(-2147483647 - 1, 2147483646).weight_, 4294967295ull);
+  BOOST_REQUIRE_EQUAL(range<int>(-1, 2147483647).weight_, 2147483649ull);
+  BOOST_REQUIRE_EQUAL(range<unsigned char>(0, 255).weight_, 256u);
+  BOOST_REQUIRE_EQUAL(range<short>(-32768, 32767).weight_, 65536u);
+  BOOST_REQUIRE_EQUAL(range<long long>(-9223372036854775807LL - 1, -1).weight_, 9223372036854775808ull);
+  BOOST_REQUIRE_EQUAL(range<unsigned>(1, 4294967295u).weight_, 4294967295ull);
+}
+
 BOOST_AUTO_TEST_CASE(variable_dist_t1) {
   Variable<int> v;
   Generator gen;
