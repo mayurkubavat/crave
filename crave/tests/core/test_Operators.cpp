@@ -752,6 +752,28 @@ BOOST_AUTO_TEST_CASE(bool_integer_promotion_width) {
   BOOST_REQUIRE_EQUAL(gen[w], 1);
 }
 
+// As in C++, the boolean operands of a relational operator are promoted to integers.
+BOOST_AUTO_TEST_CASE(bool_relational_operands) {
+  Variable<bool> f;
+  Variable<bool> g;
+  Variable<unsigned> a;
+  Variable<unsigned> b;
+  Generator gen((a > 3u) < (b > 3u));
+  gen(f <= g)(f != g);
+  gen((a > 3u) >= f);
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_LE(gen[a], 3u);
+    BOOST_REQUIRE_GT(gen[b], 3u);
+    BOOST_REQUIRE(!gen[f]);
+    BOOST_REQUIRE(gen[g]);
+  }
+  Generator gen2(f > g || g >= f);
+  BOOST_REQUIRE(gen2.next());
+  Generator gen3(f > g && f <= g);
+  BOOST_REQUIRE(!gen3.next());
+}
+
 BOOST_AUTO_TEST_CASE(bitslice_t) {
   Variable<short> x;
 

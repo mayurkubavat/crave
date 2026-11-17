@@ -102,6 +102,8 @@ class FixWidthVisitor : NodeVisitor {
   template <typename T>
   void visitBooleanResultBinExpr(const T& object);
   template <typename T>
+  void visitRelationalBinExpr(const T& object);
+  template <typename T>
   void visitLogicalBinExpr(const T& object);
   result_type toBoolean(stack_entry const&);
   void promoteToInteger(stack_entry&);

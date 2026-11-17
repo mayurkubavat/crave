@@ -291,6 +291,16 @@ void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
 }
 
+// As in C++, the boolean operands of a relational operator are promoted to integers, e.g. false < true holds.
+template <typename T>
+void FixWidthVisitor::visitRelationalBinExpr(const T& object) {
+  stack_entry lhs, rhs;
+  evalBinExpr(object, lhs, rhs);
+  promoteToInteger(lhs);
+  promoteToInteger(rhs);
+  exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
+}
+
 // As in C++, an integer operand of a logical operator stands for its comparison with zero.
 FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
   if (isBoolean(*e.first)) return e.first;
@@ -373,13 +383,13 @@ void FixWidthVisitor::visitEqualOpr(const EqualOpr& eq) { visitBooleanResultBinE
 
 void FixWidthVisitor::visitNotEqualOpr(const NotEqualOpr& neq) { visitBooleanResultBinExpr(neq); }
 
-void FixWidthVisitor::visitLessOpr(const LessOpr& l) { visitBooleanResultBinExpr(l); }
+void FixWidthVisitor::visitLessOpr(const LessOpr& l) { visitRelationalBinExpr(l); }
 
-void FixWidthVisitor::visitLessEqualOpr(const LessEqualOpr& le) { visitBooleanResultBinExpr(le); }
+void FixWidthVisitor::visitLessEqualOpr(const LessEqualOpr& le) { visitRelationalBinExpr(le); }
 
-void FixWidthVisitor::visitGreaterOpr(const GreaterOpr& g) { visitBooleanResultBinExpr(g); }
+void FixWidthVisitor::visitGreaterOpr(const GreaterOpr& g) { visitRelationalBinExpr(g); }
 
-void FixWidthVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) { visitBooleanResultBinExpr(ge); }
+void FixWidthVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) { visitRelationalBinExpr(ge); }
 
 void FixWidthVisitor::visitPlusOpr(const PlusOpr& p) { visitNumberResultBinExpr(p); }
 
