@@ -157,4 +157,62 @@ typedef crv_constraint_<ConstraintType::hard> crv_constraint;
  */
 typedef crv_constraint_<ConstraintType::soft> crv_soft_constraint;
 
+struct crv_variable_base_;
+
+/*!
+ * \ingroup newAPI
+ * \brief Solves a variable before another one, as solve ... before ... in a constraint block of SystemVerilog.
+ *
+ * <p>As in IEEE 1800-2017 18.5.10, the ordering changes the probability distribution of the solutions, but not the
+ * set of solutions. The value of the variable before is chosen first, with equal probability among the values, for
+ * which the constraints have a solution, and the value of the variable after is solved for it. For instance, with
+ * the constraint <code>if_then(s(), d() == 0)</code> on a crv_variable<bool> s and a crv_variable<unsigned> d, s is
+ * true with probability 1/2 when s is solved before d, and with probability of about 2^-32 otherwise.</p>
+ * <p>The ordering is a member of a crv_sequence_item like a crv_constraint, it can be activated and deactivated as a
+ * constraint. Several orderings are combined, they must not be cyclic and must not contain a cyclic random variable
+ * (randc), otherwise randomize() throws std::runtime_error. If both variables are the same, randomize() throws
+ * std::invalid_argument. See Generator::solve_before() for details.</p>
+ *
+ * \code
+ * struct item : crv_sequence_item {
+ *   crv_variable<bool> s;
+ *   crv_variable<unsigned> d;
+ *   crv_constraint c{if_then(s(), d() == 0)};
+ *   crv_solve_before order{s, d};
+ * };
+ * \endcode
+ */
+class crv_solve_before : public crv_constraint_base {
+ public:
+  /**
+   * \brief Constructor using a name for this ordering.
+   * \param name Name of the ordering
+   * \param before The variable, which is solved first
+   * \param after The variable, which is solved afterwards
+   */
+  crv_solve_before(crv_object_name name, crv_variable_base_& before, crv_variable_base_& after)
+      : before_(&before), after_(&after) {
+    (void)name;
+  }
+
+  /**
+   * \brief Constructor with the default name solve_before.
+   * \param before The variable, which is solved first
+   * \param after The variable, which is solved afterwards
+   */
+  crv_solve_before(crv_variable_base_& before, crv_variable_base_& after)
+      : crv_solve_before(crv_object_name("solve_before"), before, after) {}
+
+  bool soft() const override { return false; }
+
+  expression_list const& expr_list() const override { return list_; }
+
+  void recursive_build(Generator& gen) const override;
+
+ private:
+  crv_variable_base_* before_;
+  crv_variable_base_* after_;
+  expression_list list_;  // an ordering has no expressions
+};
+
 }  // end namespace crave

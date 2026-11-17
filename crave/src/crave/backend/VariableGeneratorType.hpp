@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "VariableSolver.hpp"
+#include "SolveOrder.hpp"
 
 namespace crave {
 
@@ -47,6 +48,12 @@ struct VariableGenerator {
   virtual void reset(std::vector<ConstraintPartition>& partitions);
 
   virtual bool solve();
+
+  /**
+   * Sets the solve-before ordering of the variables for the solvers created by reset().
+   * Throws std::runtime_error if the ordering is cyclic.
+   */
+  void setSolveOrder(SolveOrder const& order) { solve_levels_ = order.levels(); }
 
   template <typename T>
   bool read(const Variable<T>& var, T* value) const {
@@ -70,5 +77,6 @@ struct VariableGenerator {
 
   const VariableContainer& var_ctn_;
   std::vector<VarSolverPtr> solvers_;
+  std::vector<std::vector<int> > solve_levels_;
 };
 }  // namespace crave

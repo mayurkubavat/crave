@@ -44,7 +44,11 @@ struct VariableDefaultSolver : VariableSolver {
   static bool bypass_constraint_analysis;
   static unsigned complexity_limit_for_bdd;
 
-  VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp);
+  /**
+   * \param solve_levels the variables, which are solved before others, by level, see SolveOrder::levels()
+   */
+  VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
+                        std::vector<std::vector<int> > const& solve_levels = std::vector<std::vector<int> >());
 
   virtual bool solve();
 
@@ -61,6 +65,12 @@ struct VariableDefaultSolver : VariableSolver {
   void listWindows(NodePtr const& var, RandcState const& state, std::vector<NodePtr>& assumptions,
                    RandcMap const& randc, std::vector<uint64_t>& listed);
   std::string const& signature();
+  bool solveOrdered(std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  bool solveLevel(std::size_t index, std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  bool solveUnordered(std::vector<int> const& level);
+  bool feasible(std::vector<NodePtr> const& assumptions);
+  uint64_t readKey(Node const& var);
+  std::pair<uint64_t, uint64_t> keyBounds(NodePtr const& var, uint64_t key, std::vector<NodePtr>& assumptions);
 
   std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
   std::set<int> replaced_dist_refs_;
@@ -75,5 +85,11 @@ struct VariableDefaultSolver : VariableSolver {
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
   std::string signature_;
   std::vector<NodePtr> randc_softs_;
+  std::vector<std::vector<int> > solve_levels_;  // the levels of the solve-before ordering in this partition
+  std::set<int> ordered_vars_;                   // the variables in solve_levels_
+  std::vector<std::vector<Constant> > first_level_values_;  // the values of the first level, which have a solution
+  std::vector<std::pair<uint64_t, uint64_t> > first_level_bounds_;  // the bounds of their keys
+  bool first_level_unordered_ = false;  // whether the first level has too many sparse values to be ordered
+  std::set<int> unordered_vars_;        // the ordered variables, which are solved without the ordering this time
 };
 }  // namespace crave

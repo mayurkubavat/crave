@@ -41,7 +41,12 @@ bool Generator::disableConstraint(std::string const& name) { return constr_mng_.
 
 bool Generator::isConstraintEnabled(std::string const& name) { return constr_mng_.isConstraintEnabled(name); }
 
-bool Generator::isChanged() { return constr_mng_.isChanged(); }
+bool Generator::isChanged() { return constr_mng_.isChanged() || order_changed_; }
+
+void Generator::addSolveOrder(int before, int after) {
+  solve_order_.add(before, after);
+  order_changed_ = true;
+}
 
 Generator& Generator::operator()() {
   if (!next()) {
@@ -50,7 +55,10 @@ Generator& Generator::operator()() {
   return *this;
 }
 
-void Generator::merge(const Generator& other) { constr_pttn_.mergeConstraints(other.constr_mng_); }
+void Generator::merge(const Generator& other) {
+  constr_pttn_.mergeConstraints(other.constr_mng_);
+  merged_order_.merge(other.solve_order_);
+}
 
 void Generator::reset() {
   resetConstraints();
@@ -59,7 +67,9 @@ void Generator::reset() {
 
 void Generator::resetConstraints() {
   constr_mng_.resetChanged();
+  order_changed_ = false;
   constr_pttn_.reset();
+  merged_order_.clear();
   resetCoverage();
 }
 
@@ -68,13 +78,19 @@ void Generator::rebuild(bool selfInclude) {
   constr_pttn_.partition();
   // currently, every hard/soft/cover constraint is considered for
   // partitioning, this is suboptimal.
+  try {
+    var_gen_->setSolveOrder(merged_order_);
+  } catch (...) {
+    order_changed_ = true;  // the ordering is checked again by the next generation
+    throw;
+  }
   var_gen_->reset(constr_pttn_.getPartitions());
   vec_gen_.reset(constr_pttn_.getVectorConstraints());
   var_cov_gen_.reset(constr_pttn_.getPartitions());
 }
 
 bool Generator::next() {
-  if (constr_mng_.isChanged()) {
+  if (isChanged()) {
     // keep the vectors without constraints, which have been added with addVecId()
     resetConstraints();
     rebuild(true);
@@ -83,7 +99,7 @@ bool Generator::next() {
 }
 
 bool Generator::nextCov() {
-  if (constr_mng_.isChanged()) {
+  if (isChanged()) {
     // keep the vectors without constraints, which have been added with addVecId()
     resetConstraints();
     rebuild(true);

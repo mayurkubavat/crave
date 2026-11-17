@@ -35,10 +35,15 @@
 #include <sstream>
 #include <stdexcept>
 #include <typeinfo>
+#include <random>
 
 #include "BddSampler.hpp"
+#include "../crave/backend/SolveOrder.hpp"
+#include "../crave/RandomSeedManager.hpp"
 
 namespace crave {
+
+extern RandomSeedManager rng;
 
 namespace {
 // writes the structure of an expression, which identifies the constraints of a cycle of a randc variable
@@ -94,6 +99,50 @@ void removeValue(std::vector<uint64_t>& values, uint64_t value) {
   values.pop_back();
 }
 
+// sign extends the value of a variable to 64 bits, as Constant expects for a signed variable
+uint64_t signExtend(VariableExpr const& var, uint64_t value) {
+  unsigned const width = var.bitsize();
+  if (var.sign() && !var.isBool() && width < 64 && ((value >> (width - 1)) & 1)) value |= ~uint64_t(0) << width;
+  return value;
+}
+
+// a constant of the value of a variable, which the solver has read as a string of bits
+Constant readValue(VariableExpr const& var, std::string const& str) {
+  if (var.isBool()) return Constant(str == "true" || str == "1");
+  uint64_t value = 0;
+  for (char c : str) value = (value << 1) | (c == '1' ? 1 : 0);
+  return Constant(signExtend(var, value), var.bitsize(), var.sign());
+}
+
+// the most significant bit of a signed variable, which is inverted to order its values as unsigned keys
+uint64_t keySign(VariableExpr const& var) {
+  return var.sign() && !var.isBool() ? uint64_t(1) << (var.bitsize() - 1) : 0;
+}
+
+// the key of a value of a variable, an unsigned number, which keeps the order of the values
+uint64_t valueKey(VariableExpr const& var, Constant const& c) {
+  if (var.isBool()) return c.value() ? 1 : 0;
+  unsigned const width = var.bitsize();
+  uint64_t const mask = width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1;
+  return (c.value() & mask) ^ keySign(var);
+}
+
+// the value of a variable with the given key
+Constant keyValue(VariableExpr const& var, uint64_t key) {
+  if (var.isBool()) return Constant(key != 0);
+  return Constant(signExtend(var, key ^ keySign(var)), var.bitsize(), var.sign());
+}
+
+// a constant of a value of a variable, all values of the variable have the same probability
+Constant randomValue(VariableExpr const& var) {
+  if (var.isBool()) return Constant(random_unsigned(2) != 0);
+  unsigned const width = var.bitsize();
+  uint64_t value = 0;
+  for (unsigned bits = 0; bits < width; bits += 32) value = (value << 32) | (*rng.get())();
+  if (width < 64) value &= (uint64_t(1) << width) - 1;
+  return Constant(signExtend(var, value), width, var.sign());
+}
+
 void startCycle(RandcState& state, unsigned width) {
   state.used.clear();
   state.listed.clear();
@@ -108,9 +157,20 @@ bool VariableDefaultSolver::bypass_constraint_analysis = false;
 
 unsigned VariableDefaultSolver::complexity_limit_for_bdd = 400;
 
-VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp)
+VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
+                                             std::vector<std::vector<int> > const& solve_levels)
     : VariableSolver(vcon, cp) {
   LOG(INFO) << "Create solver for partition " << constr_pttn_;
+
+  // the ordering of the variables, which are not in this partition, does not change the distribution
+  for (std::vector<int> const& level : solve_levels) {
+    std::vector<int> ids;
+    for (int id : level)
+      if (var_ctn_.variables.count(id)) ids.push_back(id);
+    if (ids.empty()) continue;
+    solve_levels_.push_back(ids);
+    ordered_vars_.insert(ids.begin(), ids.end());
+  }
 
   bool has_randc = false;
   for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables)
@@ -178,7 +238,9 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   if (2 * vars_with_dist.size() > var_ctn_.write_references.size()) return;  // not necessary to randomize more
 
   for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
-    if (vars_with_dist.find(pair.first) == vars_with_dist.end()) random_write_refs_.push_back(pair);
+    // the values of the variables, which are solved before others, are chosen by solveLevel()
+    if (vars_with_dist.find(pair.first) == vars_with_dist.end() && !ordered_vars_.count(pair.first))
+      random_write_refs_.push_back(pair);
   }
 }
 
@@ -221,9 +283,13 @@ bool VariableDefaultSolver::solve() {
       throw std::runtime_error("A randc variable must not have a distribution.");
   }
 
+  // IEEE 1800-2017 18.5.10: randc variables are not allowed in a solve-before ordering.
+  for (int id : ordered_vars_)
+    if (randc.count(id)) throw std::runtime_error("A randc variable must not be solved before other variables.");
+
   // As in SystemVerilog, the values of the randc variables are chosen before the other variables are solved.
   std::vector<NodePtr> assumptions;
-  bool solved = randc.empty() ? solveWith(assumptions, randc) : true;
+  bool solved = randc.empty() && solve_levels_.empty() ? solveWith(assumptions, randc) : true;
   for (RandcMap::value_type const& pair : randc) {
     if (!solved) break;
     solved = solveRandc(pair.first, *pair.second, assumptions, randc);
@@ -239,6 +305,8 @@ bool VariableDefaultSolver::solve() {
     }
     if (!model) solved = solveWith(assumptions, randc);
   }
+
+  if (solved && !solve_levels_.empty()) solved = solveOrdered(assumptions, randc);
 
   if (solved) {
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
@@ -256,6 +324,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
     int id = pair.first;
     if (bdd_samplers_.find(id) == bdd_samplers_.end() || randc.count(id)) continue;
+    if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
     std::string str;
     CHECK(bdd_samplers_[id]->sample(&str));  // otherwise, contradiction must have been found!
     NodePtr value(new Constant(pair.second->to_constant(str)));
@@ -270,7 +339,8 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
 
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
     if (replaced_dist_refs_.count(pair.first)) continue;
-    if (randc.count(var_ctn_.dist_ref_to_var_map.at(pair.first))) continue;
+    int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
+    if (randc.count(var_id) || (ordered_vars_.count(var_id) && !unordered_vars_.count(var_id))) continue;
     solver_->makeSuggestion(*pair.second->expr());
   }
 
@@ -434,6 +504,190 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
   // a new cycle, which has been started, is given back as well
   if (undo.saved) randc_undo_.push_back(undo);
   return false;
+}
+
+// IEEE 1800-2017 18.5.10: the variables, which are ordered before others, are chosen level by level, with equal
+// probability among the values, for which the constraints have a solution. Then the other variables are solved.
+// On success, the values are added to the assumptions, and the solver holds a solution of the partition.
+bool VariableDefaultSolver::solveOrdered(std::vector<NodePtr>& assumptions, RandcMap const& randc) {
+  unordered_vars_.clear();
+  for (std::size_t i = 0; i < solve_levels_.size(); ++i)
+    if (!solveLevel(i, assumptions, randc)) return false;
+  return solveWith(assumptions, randc);
+}
+
+bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& assumptions, RandcMap const& randc) {
+  std::vector<int> const& level = solve_levels_[index];
+  std::vector<NodePtr> vars;
+  for (int id : level) {
+    NodePtr var = var_ctn_.variables[id];
+    VariableExpr const* v = dynamic_cast<VariableExpr const*>(var.get());
+    if (!v) throw std::runtime_error("A variable solved before other variables must be a variable.");
+    if (v->bitsize() > 64)
+      throw std::runtime_error("A variable solved before other variables must not have more than 64 bits.");
+    vars.push_back(var);
+  }
+  // a variable with a distribution by dist() takes the values of its distribution
+  std::vector<std::shared_ptr<ReferenceExpression> > dists(level.size());
+  for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!var_ctn_.user_dist_references.count(pair.first)) continue;
+    int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
+    std::vector<int>::const_iterator ite = std::find(level.begin(), level.end(), var_id);
+    if (ite != level.end()) dists[ite - level.begin()] = pair.second;
+  }
+
+  bool has_dist = false;
+  for (std::shared_ptr<ReferenceExpression> const& d : dists) has_dist = has_dist || d;
+
+  // The values of the first level, which have a solution, stay the same unless the solution depends on the
+  // values of references or of randc variables.
+  bool const constant_values = index == 0 && !has_dist && var_ctn_.read_references.empty() && randc.empty();
+
+  std::size_t const n = assumptions.size();
+  // Each of the following ways proposes values with equal probability among a set of values, which includes all
+  // values with a solution. The values, which are accepted because they have a solution, have equal probability.
+  std::vector<std::vector<Constant> > listed;
+  if (constant_values && !first_level_values_.empty()) {
+    listed = first_level_values_;
+  } else if (constant_values && first_level_unordered_) {
+    return solveUnordered(level);
+  } else {
+    // 1. A few values at random, from the BDD of the constraints on a single variable if there is one.
+    for (unsigned tries = 0; tries < solve_before_first_tries; ++tries) {
+      for (std::size_t i = 0; i < vars.size(); ++i) {
+        VariableExpr const& v = static_cast<VariableExpr const&>(*vars[i]);
+        if (dists[i]) {
+          assumptions.push_back(dists[i]->expr());
+          continue;
+        }
+        std::map<int, std::shared_ptr<BddSampler> >::iterator sampler = bdd_samplers_.find(level[i]);
+        std::string str;
+        if (sampler != bdd_samplers_.end() && sampler->second->sample(&str))
+          assumptions.push_back(new EqualOpr(vars[i], new Constant(readValue(v, str))));
+        else
+          assumptions.push_back(new EqualOpr(vars[i], new Constant(randomValue(v))));
+      }
+      if (feasible(assumptions)) return true;
+      assumptions.resize(n);
+    }
+
+    // 2. Values at random between the least and the greatest value of each variable, which have a solution.
+    std::vector<std::pair<uint64_t, uint64_t> > bounds;
+    if (constant_values && !first_level_bounds_.empty()) {
+      bounds = first_level_bounds_;
+    } else {
+      if (!feasible(assumptions)) return false;
+      std::vector<uint64_t> model;
+      for (NodePtr const& var : vars) model.push_back(readKey(*var));
+      for (std::size_t i = 0; i < vars.size(); ++i) bounds.push_back(keyBounds(vars[i], model[i], assumptions));
+      if (constant_values) first_level_bounds_ = bounds;
+    }
+    for (unsigned tries = 0; tries < solve_before_max_tries; ++tries) {
+      for (std::size_t i = 0; i < vars.size(); ++i) {
+        VariableExpr const& v = static_cast<VariableExpr const&>(*vars[i]);
+        uint64_t const key = std::uniform_int_distribution<uint64_t>(bounds[i].first, bounds[i].second)(*rng.get());
+        assumptions.push_back(new EqualOpr(vars[i], new Constant(keyValue(v, key))));
+      }
+      if (feasible(assumptions)) return true;
+      assumptions.resize(n);
+    }
+
+    // 3. The values, which have a solution, if there are few of them.
+    NodePtr excluded;
+    std::set<Constant> excluded_values;  // the listed values of a single variable
+    while (listed.size() < solve_before_max_listed) {
+      if (vars.size() == 1 && !excluded_values.empty())
+        assumptions.push_back(new NotOpr(new Inside(vars[0], excluded_values)));
+      else if (excluded)
+        assumptions.push_back(new NotOpr(excluded));
+      bool const found = feasible(assumptions);
+      assumptions.resize(n);
+      if (!found) break;
+      std::vector<Constant> values;
+      NodePtr match;
+      for (NodePtr const& var : vars) {
+        std::string str;
+        solver_->read(*var, str);
+        values.push_back(readValue(static_cast<VariableExpr const&>(*var), str));
+        NodePtr eq(new EqualOpr(var, new Constant(values.back())));
+        match = match ? NodePtr(new LogicalAndOpr(match, eq)) : eq;
+      }
+      if (vars.size() == 1)
+        excluded_values.insert(values[0]);
+      else
+        excluded = excluded ? NodePtr(new LogicalOrOpr(excluded, match)) : match;
+      listed.push_back(values);
+    }
+    if (listed.empty()) return false;
+    if (listed.size() >= solve_before_max_listed) {
+      if (constant_values) first_level_unordered_ = true;
+      return solveUnordered(level);
+    }
+    if (constant_values) first_level_values_ = listed;
+  }
+
+  // one of the listed values is chosen with equal probability
+  std::vector<Constant> const& values = listed[random_unsigned(listed.size())];
+  for (std::size_t i = 0; i < vars.size(); ++i) assumptions.push_back(new EqualOpr(vars[i], new Constant(values[i])));
+  return true;
+}
+
+// The values of the variables of a level cannot be chosen with equal probability at a bounded cost: more than
+// crave::solve_before_max_listed values have a solution, and they are too sparse to be found at random. The
+// variables are solved together with the variables, which are not ordered, as without the ordering.
+bool VariableDefaultSolver::solveUnordered(std::vector<int> const& level) {
+  LOG(INFO) << "Too many sparse values to order, the variables of a level are solved without the ordering";
+  unordered_vars_.insert(level.begin(), level.end());
+  return true;
+}
+
+// The values of a variable are ordered by keys, unsigned numbers, which keep the order of signed values.
+uint64_t VariableDefaultSolver::readKey(Node const& var) {
+  VariableExpr const& v = static_cast<VariableExpr const&>(var);
+  std::string str;
+  solver_->read(var, str);
+  return valueKey(v, readValue(v, str));
+}
+
+// the least and the greatest key of a variable, for which the constraints have a solution, found by bisection
+std::pair<uint64_t, uint64_t> VariableDefaultSolver::keyBounds(NodePtr const& var, uint64_t key,
+                                                               std::vector<NodePtr>& assumptions) {
+  VariableExpr const& v = static_cast<VariableExpr const&>(*var);
+  unsigned const width = v.isBool() ? 1 : v.bitsize();
+  uint64_t const max_key = width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1;
+  if (v.isBool()) return std::make_pair(uint64_t(0), max_key);
+  uint64_t lo = 0, hi = key;
+  while (lo < hi) {
+    uint64_t const mid = lo + (hi - lo) / 2;
+    assumptions.push_back(new LessEqualOpr(var, new Constant(keyValue(v, mid))));
+    bool const found = feasible(assumptions);
+    assumptions.pop_back();
+    if (found)
+      hi = std::min(mid, readKey(*var));
+    else
+      lo = mid + 1;
+  }
+  uint64_t const least = lo;
+  lo = key;
+  hi = max_key;
+  while (lo < hi) {
+    uint64_t const mid = lo + (hi - lo) / 2 + 1;
+    assumptions.push_back(new GreaterEqualOpr(var, new Constant(keyValue(v, mid))));
+    bool const found = feasible(assumptions);
+    assumptions.pop_back();
+    if (found)
+      lo = std::max(mid, readKey(*var));
+    else
+      hi = mid - 1;
+  }
+  return std::make_pair(least, lo);
+}
+
+// whether the constraints have a solution under the assumptions, without suggestions of random values
+bool VariableDefaultSolver::feasible(std::vector<NodePtr> const& assumptions) {
+  for (VariableContainer::ReadRefPair& pair : var_ctn_.read_references) solver_->makeAssumption(*pair.second->expr());
+  for (NodePtr const& assumption : assumptions) solver_->makeAssumption(*assumption);
+  return solver_->solve();
 }
 
 std::string const& VariableDefaultSolver::signature() {

@@ -41,3 +41,4 @@ struct Context_Fixture {
 #include "test_Vector_Constraint.cpp"
 #include "test_Distribution.cpp"
 #include "test_Randc.cpp"
+#include "test_SolveBefore.cpp"

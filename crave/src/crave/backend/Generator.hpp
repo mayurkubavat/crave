@@ -33,6 +33,7 @@
 #include "VariableGenerator.hpp"
 #include "../backend/VectorGenerator.hpp"
 #include "Randc.hpp"
+#include "SolveOrder.hpp"
 
 #include <stdexcept>
 
@@ -53,7 +54,8 @@ struct Generator {
       var_gen_(new VariableGenerator(*var_ctn_)),
       var_cov_gen_(*var_ctn_),
       vec_gen_(),
-      covered_(false) {}
+      covered_(false),
+      order_changed_(false) {}
 
   template <typename Expr>
   explicit Generator(Expr expr)
@@ -63,7 +65,8 @@ struct Generator {
       var_gen_(new VariableGenerator(*var_ctn_)),
       var_cov_gen_(*var_ctn_),
       vec_gen_(),
-      covered_(false) {
+      covered_(false),
+      order_changed_(false) {
     (*this)(expr);
   }
 
@@ -141,6 +144,49 @@ struct Generator {
     if (on) (*this)(var == var);
     return *this;
   }
+
+  /**
+   * \brief Solves a variable before another one, as solve ... before ... in SystemVerilog.
+   *
+   * As in IEEE 1800-2017 18.5.10, the ordering changes the probability distribution of the solutions, but not the
+   * set of solutions. The value of the variable before is chosen first, with equal probability among the values,
+   * for which the constraints have a solution, and the value of the variable after is solved for it. For instance,
+   * with the constraint <code>if_then(s, d == 0)</code> on a bool s and an unsigned d, s is true with probability
+   * 1/2 when s is solved before d, and with probability of about 2^-32 otherwise.
+   *
+   * The orderings of several calls are combined, they must not be cyclic. The variables, which are not ordered
+   * before others, are solved together after them. Variables in the same level of the ordering, e.g. a and b for
+   * <code>solve_before(a, c).solve_before(b, c)</code>, are chosen together, with equal probability among the
+   * combinations of their values, for which the constraints have a solution. A variable with a distribution by
+   * dist() takes the values of its distribution, for which the constraints have a solution.
+   *
+   * The values are chosen at random, between the least and the greatest value, which have a solution, and found
+   * by bisection, see crave::solve_before_max_tries. If none of them has a solution, the solver lists the values,
+   * which have one. If there are crave::solve_before_max_listed or more of them, so sparse that the values tried
+   * at random miss them, a value cannot be chosen with equal probability at a bounded cost: the variables of the
+   * level are then solved together with the variables, which are not ordered, as without the ordering. The bounds
+   * and the listed values of the first level, and whether it has too many values, are kept for the next
+   * generation, unless they depend on references, randc variables or distributions.
+   *
+   * solve_before() throws std::invalid_argument if before and after are the same variable. The generation throws
+   * std::runtime_error if the ordering is cyclic or contains a cyclic random variable (randc). The ordering is not
+   * used by the coverage driven generation of nextCov() for cover constraints.
+   *
+   * \param before the variable, which is solved first, a Variable or a WriteReference.
+   * \param after the variable, which is solved afterwards.
+   * \return this generator
+   */
+  template <typename Before, typename After>
+  Generator& solve_before(Before const& before, After const& after) {
+    addSolveOrder(before.id(), after.id());
+    return *this;
+  }
+
+  /**
+   * \internal
+   * Solves the variable with the id before before the variable with the id after, see solve_before().
+   */
+  void addSolveOrder(int before, int after);
 
   bool enableConstraint(std::string const& name);
 
@@ -239,6 +285,11 @@ struct Generator {
 
   // coverage
   bool covered_;
+
+  // the solve-before ordering of this generator, and the one of the merged generators
+  SolveOrder solve_order_;
+  SolveOrder merged_order_;
+  bool order_changed_;
 };
 
 }  // namespace crave

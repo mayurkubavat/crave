@@ -36,7 +36,7 @@ void VariableGenerator::reset(std::vector<ConstraintPartition>& partitions) {
   solvers_.clear();
 
   for(ConstraintPartition & partition : partitions) {
-    VarSolverPtr vs(new VariableDefaultSolver(var_ctn_, partition));
+    VarSolverPtr vs(new VariableDefaultSolver(var_ctn_, partition, solve_levels_));
     solvers_.push_back(vs);
   }
 }

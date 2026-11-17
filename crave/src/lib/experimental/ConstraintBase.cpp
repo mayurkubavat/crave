@@ -25,6 +25,8 @@
 //****************************************************************************************
 
 #include "../../crave/experimental/ConstraintBase.hpp"
+#include "../../crave/experimental/Constraint.hpp"
+#include "../../crave/experimental/VariableBase.hpp"
 #include "../../crave/backend/Generator.hpp"
 
 namespace crave {
@@ -56,5 +58,9 @@ namespace crave {
     } else {
       for (auto e : expr_list()) gen.soft(fullname() + "#" + std::to_string(cnt++), e);
     }
+  }
+
+  void crv_solve_before::recursive_build(Generator &gen) const {
+    if (active()) gen.addSolveOrder(before_->id(), after_->id());
   }
 }
