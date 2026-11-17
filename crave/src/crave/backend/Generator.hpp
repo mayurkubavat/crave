@@ -164,8 +164,9 @@ struct Generator {
    * and the listed values of the first level, and whether it has too many values, are kept for the next
    * generation, unless they depend on references, randc variables or distributions.
    *
-   * The generation throws std::runtime_error if the ordering is cyclic or contains a cyclic random variable
-   * (randc). The ordering is not used by the coverage driven generation of nextCov() for cover constraints.
+   * solve_before() throws std::invalid_argument if before and after are the same variable. The generation throws
+   * std::runtime_error if the ordering is cyclic or contains a cyclic random variable (randc). The ordering is not
+   * used by the coverage driven generation of nextCov() for cover constraints.
    *
    * \param before the variable, which is solved first, a Variable or a WriteReference.
    * \param after the variable, which is solved afterwards.

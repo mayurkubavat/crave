@@ -170,7 +170,8 @@ struct crv_variable_base_;
  * true with probability 1/2 when s is solved before d, and with probability of about 2^-32 otherwise.</p>
  * <p>The ordering is a member of a crv_sequence_item like a crv_constraint, it can be activated and deactivated as a
  * constraint. Several orderings are combined, they must not be cyclic and must not contain a cyclic random variable
- * (randc), otherwise randomize() throws std::runtime_error. See Generator::solve_before() for details.</p>
+ * (randc), otherwise randomize() throws std::runtime_error. If both variables are the same, randomize() throws
+ * std::invalid_argument. See Generator::solve_before() for details.</p>
  *
  * \code
  * struct item : crv_sequence_item {
