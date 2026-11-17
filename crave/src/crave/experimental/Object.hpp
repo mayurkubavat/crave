@@ -123,7 +123,8 @@ class crv_object {
    * As pre_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
    * objects in its hierarchy, a parent before its children. Override it to set up state that the
    * constraints use. Objects whose randomization is disabled with rand_mode(false) and their
-   * children are skipped. The default implementation does nothing.
+   * children are skipped, until a variable of them is enabled again. The default implementation
+   * does nothing.
    */
   virtual void pre_randomize() {}
 
@@ -132,8 +133,8 @@ class crv_object {
    *
    * As post_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
    * objects in its hierarchy, a parent before its children, but only if a solution has been found.
-   * Objects whose randomization is disabled with rand_mode(false) and their children are skipped.
-   * The default implementation does nothing.
+   * Objects whose randomization is disabled with rand_mode(false) and their children are skipped,
+   * until a variable of them is enabled again. The default implementation does nothing.
    */
   virtual void post_randomize() {}
 

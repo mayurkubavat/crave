@@ -69,6 +69,9 @@ struct crv_variable_base_ : public crv_object {
    * \param on true to enable, false to disable the randomization.
    */
   void rand_mode(bool on) override {
+    // the hooks of the objects, which this variable belongs to, are called again when it is randomized
+    if (on)
+      for (crv_object* obj = parent_; obj; obj = obj->parent_) obj->object_rand_mode_ = true;
     if (rand_mode_ == on) return;
     rand_mode_ = on;
     request_rebuild();
