@@ -327,6 +327,39 @@ BOOST_AUTO_TEST_CASE(dist_sc_bigint_t) {
   BOOST_REQUIRE_EQUAL(seen.size(), 4);
 }
 
+BOOST_AUTO_TEST_CASE(randv_sc_bigint_t) {
+  using namespace sc_dt;
+
+  randv<sc_bigint<40> > a;
+  randv<sc_biguint<12> > b;
+  Generator gen;
+  gen(a() > -(1LL << 38))(a() < -(1LL << 36));
+  gen(b() > 4000u);
+
+  for (unsigned n = 0; n < 20; ++n) {
+    BOOST_REQUIRE(gen.next());
+    long long const av = static_cast<sc_bigint<40> >(a).to_int64();
+    unsigned long long const bv = static_cast<sc_biguint<12> >(b).to_uint64();
+    BOOST_REQUIRE(av > -(1LL << 38) && av < -(1LL << 36));
+    BOOST_REQUIRE(bv > 4000u && bv < 4096u);
+    BOOST_REQUIRE(a < 0);
+    BOOST_REQUIRE(0 > a);
+    BOOST_REQUIRE_EQUAL(a + 1, av + 1);
+    BOOST_REQUIRE_EQUAL(1 - a, 1 - av);
+    BOOST_REQUIRE_EQUAL(b * 2, static_cast<long long>(bv * 2));
+    BOOST_REQUIRE_EQUAL(b % 7, static_cast<long long>(bv % 7));
+    BOOST_REQUIRE_EQUAL(~b & 0xfff, static_cast<long long>(~bv & 0xfff));
+    BOOST_REQUIRE(b != 0);
+  }
+
+  a = -3;
+  b = a;
+  BOOST_REQUIRE_EQUAL(a, -3);
+  BOOST_REQUIRE_EQUAL(b, 4093);
+  ++b;
+  BOOST_REQUIRE_EQUAL(b, 4094);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // SystemC_Data
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
