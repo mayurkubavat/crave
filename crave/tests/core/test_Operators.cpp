@@ -461,6 +461,22 @@ BOOST_AUTO_TEST_CASE(divide_mixed_signedness) {
   BOOST_REQUIRE_EQUAL(gen[lq], -4);
 }
 
+// The elements of a vector are divided as scalars of their type.
+BOOST_AUTO_TEST_CASE(divide_mixed_signedness_vector) {
+  placeholder i;
+  __rand_vec<int> v;
+  Generator gen;
+  // the quotient of an int and an unsigned constant greater than any int is 0, as for long long operands
+  gen(v().size() == 4u)(foreach (v(), v()[i] / 3000000000u != 0));
+  BOOST_REQUIRE(!gen.next());
+
+  __rand_vec<unsigned char> w;
+  Generator gen2;
+  gen2(w().size() == 4u)(foreach (w(), w()[i] / (signed char)-1 == -129));
+  BOOST_REQUIRE(gen2.next());
+  for (unsigned k = 0; k < w.size(); ++k) BOOST_REQUIRE_EQUAL(w[k], 129);
+}
+
 BOOST_AUTO_TEST_CASE(element_inside_set) {
   std::set<unsigned> s;
   s.insert(1);
