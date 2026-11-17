@@ -71,6 +71,14 @@ void set_global_seed(unsigned int s) {
 
 void set_solver_backend(std::string const& type) { FactoryMetaSMT::setSolverType(type); }
 
+namespace {
+bool sv_signedness_rules = false;
+}
+
+void set_sv_signedness(bool on) { sv_signedness_rules = on; }
+
+bool sv_signedness() { return sv_signedness_rules; }
+
 std::ostream& rand_obj::print_dot_graph(std::ostream& os, bool root = true) {
   if (root) os << "digraph AST {" << std::endl;
   for (unsigned i = 0; i < objChildren_.size(); i++) {

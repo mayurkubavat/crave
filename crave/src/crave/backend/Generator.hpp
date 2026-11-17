@@ -184,6 +184,37 @@ struct Generator {
   void addVecId(int id) { to_be_generated_vec_ids_.insert(id); }
 
   VariableContainer* getVarCtn ();
+
+  /**
+   * \internal
+   * Makes crave::reference(object) in the constraints, which are added to this generator afterwards, refer to the
+   * random variable var instead of the value of the object, see crave::randomize().
+   */
+  template <typename T>
+  void bindReference(T const& object, WriteReference<T> const& var) {
+    Context* ctx = &ctx_;
+    WriteReference<T> ref(var);
+    ctx_.bindReference(object, [ctx, ref]() { return boost::proto::eval(ref, *ctx); });
+  }
+
+  /**
+   * \internal
+   * Makes the variables with values, e.g. the members of a crv_sequence_item, which the constraints added since
+   * bindReference() refer to, state variables, which keep their current values, unless their ids are in
+   * random_ids. See crave::randomize().
+   */
+  void keepValues(std::set<int> const& random_ids) {
+    for (int id : ctx_.referenced_variables()) {
+      if (random_ids.count(id)) continue;
+      for (VariableContainer::WriteRefPair const& pair : var_ctn_->write_references) {
+        if (pair.first != id) continue;
+        NodePtr state(new EqualOpr(var_ctn_->variables[id], new Constant(pair.second->value_as_constant())));
+        constr_mng_.makeConstraint(state, &ctx_);
+        break;
+      }
+    }
+  }
+
  private:
   void resetConstraints();
 

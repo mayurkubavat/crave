@@ -30,6 +30,8 @@
 #include <crave/ir/UserConstraint.hpp>
 #include <crave/ir/UserExpression.hpp>
 
+#include <cstdio>
+#include <fstream>
 #include <set>
 #include <iostream>
 
@@ -612,6 +614,50 @@ BOOST_AUTO_TEST_CASE(equal_t3) {
 
   BOOST_REQUIRE(eval.evaluate(a + b == c));
   BOOST_REQUIRE(eval.result<bool>());
+}
+
+// The option sv_signedness of the config file selects the signedness rules of SystemVerilog.
+BOOST_AUTO_TEST_CASE(sv_signedness_config) {
+  bool const old_setting = sv_signedness();
+  std::string const old_file = get_config_file_name();
+  char const* file = "sv_signedness_test.cfg";
+  Variable<signed char> s;
+  Evaluator eval;
+  eval.assign(s, -1);
+
+  {
+    std::ofstream cfg(file);
+    cfg << "<crave><sv_signedness>1</sv_signedness></crave>" << std::endl;
+  }
+  init(file);
+  BOOST_REQUIRE(sv_signedness());
+  BOOST_REQUIRE(eval.evaluate(s == 255u));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  {
+    std::ofstream cfg(file);
+    cfg << "<crave><sv_signedness>0</sv_signedness></crave>" << std::endl;
+  }
+  init(file);
+  BOOST_REQUIRE(!sv_signedness());
+  BOOST_REQUIRE(eval.evaluate(s == 255u));
+  BOOST_REQUIRE(!eval.result<bool>());
+
+  // without the option, the setting is kept and saved
+  set_sv_signedness(true);
+  {
+    std::ofstream cfg(file);
+    cfg << "<crave></crave>" << std::endl;
+  }
+  init(file);
+  BOOST_REQUIRE(sv_signedness());
+  set_sv_signedness(false);
+  init(file);
+  BOOST_REQUIRE(sv_signedness());
+
+  set_sv_signedness(old_setting);
+  set_config_file_name(old_file);
+  std::remove(file);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Evaluations

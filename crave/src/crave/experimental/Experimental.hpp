@@ -32,6 +32,7 @@
 #include "Coverage.hpp"
 #include "Expression.hpp"
 #include "Object.hpp"
+#include "Randomize.hpp"
 #include "SequenceItem.hpp"
 #include "Variable.hpp"
 #include "Vector.hpp"

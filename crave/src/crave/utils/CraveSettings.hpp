@@ -45,6 +45,7 @@ class CraveSetting : public Setting {
   std::string const& get_backend() const;
   unsigned int get_specified_seed() const;
   void set_used_seed(unsigned int);
+  bool get_sv_signedness() const;
 
  private:
   std::string module_name_;
@@ -53,10 +54,12 @@ class CraveSetting : public Setting {
   std::string backend_;
   unsigned int specified_seed_;
   unsigned int used_seed_;
+  bool sv_signedness_;
 
  private:
   std::string const BACKEND;
   std::string const SEED;
   std::string const LASTSEED;
+  std::string const SV_SIGNEDNESS;
 };
 }  // namespace crave

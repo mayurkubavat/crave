@@ -38,9 +38,12 @@
 #include <boost/proto/context/null.hpp>
 #include <boost/range/value_type.hpp>
 
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
+#include <typeindex>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -52,6 +55,8 @@
 #include "ReferenceExpression.hpp"
 
 namespace crave {
+
+bool sv_signedness();
 
 struct Context : boost::proto::callable_context<Context, boost::proto::null_context> {
  public:
@@ -76,6 +81,23 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     return (variables_[id] = new VariableExpr(id, width, sign));
   }
 
+  /**
+   * \internal
+   * Makes the read references to the object at the given address, i.e. crave::reference(object), refer to the
+   * variable, which var creates when it is first needed, instead of the value of the object.
+   * See crave::randomize().
+   */
+  template <typename T>
+  void bindReference(T const& object, std::function<result_type()> const& var) {
+    bound_references_[std::make_pair(static_cast<void const*>(&object), std::type_index(typeid(T)))] = var;
+  }
+
+  /**
+   * \internal
+   * Gets the ids of the variables, which the expressions evaluated since bindReference() refer to.
+   */
+  std::set<int> const& referenced_variables() const { return referenced_variables_; }
+
   template <typename value_type>
   result_type new_var(var_tag<value_type> const& tag) {
     unsigned width = bitsize_traits<value_type>::value;
@@ -85,6 +107,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   template <typename value_type>
   result_type operator()(boost::proto::tag::terminal, var_tag<value_type> const& tag) {
+    if (!bound_references_.empty()) referenced_variables_.insert(tag.id);
     std::map<int, result_type>::iterator ite(variables_.find(tag.id));
     return ite != variables_.end() ? ite->second : new_var(tag);
   }
@@ -110,6 +133,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   template <typename value_type>
   result_type operator()(boost::proto::tag::terminal, write_ref_tag<value_type> const& ref) {
+    if (!bound_references_.empty()) referenced_variables_.insert(ref.id);
     std::map<int, result_type>::const_iterator ite = variables_.find(ref.id);
 
     if (ite != variables_.end()) {
@@ -254,6 +278,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   template <typename Integer>
   result_type operator()(boost::proto::tag::terminal, read_ref_tag<Integer> const& ref) {
+    if (!bound_references_.empty()) {
+      BoundReferences::const_iterator bound = bound_references_.find(
+          std::make_pair(static_cast<void const*>(&ref.ref), std::type_index(typeid(Integer))));
+      if (bound != bound_references_.end()) return bound->second();
+    }
+
     std::map<int, result_type>::const_iterator ite = variables_.find(ref.id);
 
     if (ite != variables_.end()) {
@@ -273,6 +303,12 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
     if (i >= 0) {
+      // With the signedness rules of SystemVerilog, a constant keeps its signedness, in one bit more.
+      if (sign && sv_signedness()) {
+        for (unsigned int j = 1; j + 1 < width; ++j)
+          if ((i >> j) == 0) return new Constant(i, j + 1, true);
+        return new Constant(i, width, sign);
+      }
       for (unsigned int j = 1; j < width; ++j)
         if ((i >> j) == 0) return new Constant(i, j, false);
     }
@@ -459,6 +495,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   std::map<int, int>& dist_ref_to_var_map;
   std::set<int>& implicit_dist_references_;
   std::set<int>& user_dist_references_;
+
+  typedef std::map<std::pair<void const*, std::type_index>, std::function<result_type()> > BoundReferences;
+  BoundReferences bound_references_;
+  std::set<int> referenced_variables_;
 };
 // Context
 
