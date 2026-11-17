@@ -28,6 +28,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <ctime>
 #include <set>
 #include <vector>
 
@@ -99,6 +100,23 @@ BOOST_AUTO_TEST_CASE(randc_sparse_16_bit) {
   std::set<int> expected;
   for (int i = 7; i < 65536; i += 1000) expected.insert(i);
   for (int cycle = 0; cycle < 2; ++cycle) require_permutation(generate(gen, x, expected.size()), expected);
+}
+
+// The cost of a value stays bounded during a cycle of many values: listing the values does not get slower with
+// the number of used values. 12000 values of the cycle take a few seconds, but minutes when it does.
+BOOST_AUTO_TEST_CASE(randc_dense_16_bit_cost) {
+  Variable<unsigned short> x;
+  Generator gen(x % 3u == 0u);
+  gen.randc(x);
+
+  std::set<int> seen;
+  std::clock_t const start = std::clock();
+  for (int i = 0; i < 12000; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[x] % 3u, 0u);
+    BOOST_REQUIRE(seen.insert(gen[x]).second);
+  }
+  BOOST_REQUIRE_LT(double(std::clock() - start) / CLOCKS_PER_SEC, 20.0);
 }
 
 // the randc variable is chosen first, the other variables are solved for its value

@@ -56,6 +56,8 @@ struct VariableDefaultSolver : VariableSolver {
   void analyseSofts();
   bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc);
   bool solveRandc(int id, RandcState& state, std::vector<NodePtr>& assumptions, RandcMap const& randc);
+  void listWindows(NodePtr const& var, RandcState const& state, std::vector<NodePtr>& assumptions,
+                   RandcMap const& randc, std::vector<uint64_t>& listed);
   std::string const& signature();
 
   std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;

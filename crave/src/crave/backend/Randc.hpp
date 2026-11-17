@@ -62,6 +62,16 @@ unsigned const randc_max_tries = 8;
 unsigned const randc_max_listed = 256;
 
 /**
+ * \brief The number of lower bits of the values of a window, among which the solver lists the values of a randc
+ * variable, see crave::randc_max_listed.
+ *
+ * Once more than crave::randc_max_listed values of a cycle have been used, the solver lists the values of a
+ * variable of more bits window by window, among the values with the same upper bits, so that the cost of listing
+ * them does not grow with the number of used values.
+ */
+unsigned const randc_window_bits = 10;
+
+/**
  * \internal
  * The state of a cyclic random variable.
  */

@@ -289,6 +289,38 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   return solver_->solve();
 }
 
+// lists unused values of a randc variable, which satisfy the constraints, window by window, see solveRandc()
+void VariableDefaultSolver::listWindows(NodePtr const& var, RandcState const& state, std::vector<NodePtr>& assumptions,
+                                        RandcMap const& randc, std::vector<uint64_t>& listed) {
+  unsigned const width = static_cast<VariableExpr const&>(*var).bitsize();
+  std::vector<uint64_t> used(state.used);
+  std::sort(used.begin(), used.end());
+  unsigned const windows = 1u << (width - randc_window_bits);
+  unsigned const first = random_unsigned(windows);
+  std::size_t const n = assumptions.size();
+  for (unsigned w = 0; w < windows && listed.size() < randc_max_listed; ++w) {
+    uint64_t const prefix = (first + w) % windows;
+    std::vector<uint64_t> excluded(std::lower_bound(used.begin(), used.end(), prefix << randc_window_bits),
+                                   std::lower_bound(used.begin(), used.end(), (prefix + 1) << randc_window_bits));
+    NodePtr in_window(new EqualOpr(new Bitslice(var, width - 1, randc_window_bits),
+                                   new Constant(prefix, width - randc_window_bits, false)));
+    while (listed.size() < randc_max_listed) {
+      assumptions.push_back(in_window);
+      if (!excluded.empty()) assumptions.push_back(new NotOpr(randcInside(var, excluded)));
+      bool const found = solveWith(assumptions, randc);
+      assumptions.resize(n);
+      if (!found) break;
+      std::string str;
+      solver_->read(*var, str);
+      uint64_t value = 0;
+      for (char c : str) value = (value << 1) | (c == '1' ? 1 : 0);
+      if (std::find(excluded.begin(), excluded.end(), value) != excluded.end()) break;  // cannot happen
+      excluded.push_back(value);
+      listed.push_back(value);
+    }
+  }
+}
+
 // IEEE 1800-2017 18.4.2: a randc variable takes the values, which satisfy the constraints, in a random order
 // before a value is repeated. The cycle starts again when all of them have been generated, or when the
 // constraints of the variable change. On success, the value is added to the assumptions, and the solver holds
@@ -338,10 +370,17 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
     if (!state.complete && tryValues(state.unused, randc_max_tries)) return true;
     if (tryValues(state.listed, randc_max_listed)) return true;
 
-    // The solver lists unused values, which satisfy the constraints.
+    // The solver lists unused values, which satisfy the constraints. Each search excludes the used values and
+    // the values found before. As its cost grows with the number of excluded values, the values of a variable
+    // of more than randc_window_bits bits are searched window by window, among the values with the same upper
+    // bits, from a window chosen at random, once more than randc_max_listed values of the cycle have been used.
     std::vector<uint64_t> listed;
-    std::set<uint64_t> excluded(state.used.begin(), state.used.end());
-    while (listed.size() < randc_max_listed) {
+    unsigned const width = v->isBool() ? 1 : v->bitsize();
+    bool const windows = width > randc_window_bits && state.used.size() > randc_max_listed;
+    if (windows) listWindows(var, state, assumptions, randc, listed);
+    std::set<uint64_t> excluded;
+    if (!windows) excluded.insert(state.used.begin(), state.used.end());
+    while (!windows && listed.size() < randc_max_listed) {
       std::vector<uint64_t> values;
       bool const inside = state.unused.size() - listed.size() < excluded.size();
       if (inside) {
