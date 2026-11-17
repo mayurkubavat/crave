@@ -130,6 +130,19 @@ class crv_object {
   std::string fullname() const { return fullname_; }
 
   /**
+   * \brief Enables or disables the randomization of all variables in this object.
+   *
+   * As rand_mode() of an object in SystemVerilog, it sets the rand_mode of all random variables
+   * of this object and of the objects in its hierarchy, see crv_variable_base_::rand_mode(bool).
+   * The variables of a crv_vector are not affected.
+   *
+   * \param on true to enable, false to disable the randomization.
+   */
+  virtual void rand_mode(bool on) {
+    for (auto obj : children_) obj->rand_mode(on);
+  }
+
+  /**
    * outputs the object hierarchy (i.e. children and their children, etc.) to std::cout
    */
   void print_object_hierarchy(int level = 0) const;
