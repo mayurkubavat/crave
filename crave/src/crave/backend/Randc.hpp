@@ -97,4 +97,10 @@ void set_randc(int id, bool on);
  */
 std::shared_ptr<RandcState> randc_state(int id);
 
+/**
+ * \internal
+ * Gets a number, which changes whenever a variable is made a cyclic random variable or a random variable again.
+ */
+unsigned randc_epoch();
+
 }  // namespace crave

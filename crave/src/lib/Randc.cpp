@@ -27,6 +27,7 @@
 
 #include "../crave/backend/Randc.hpp"
 
+#include <atomic>
 #include <map>
 #include <mutex>
 
@@ -34,6 +35,7 @@ namespace crave {
 
 namespace {
 std::mutex randc_mutex;
+std::atomic<unsigned> epoch(0);
 
 std::map<int, std::shared_ptr<RandcState> >& randc_states() {
   static std::map<int, std::shared_ptr<RandcState> > states;
@@ -44,12 +46,17 @@ std::map<int, std::shared_ptr<RandcState> >& randc_states() {
 void set_randc(int id, bool on) {
   std::lock_guard<std::mutex> lock(randc_mutex);
   if (!on) {
-    randc_states().erase(id);
+    if (randc_states().erase(id)) ++epoch;
     return;
   }
   std::shared_ptr<RandcState>& state = randc_states()[id];
-  if (!state) state = std::make_shared<RandcState>();
+  if (!state) {
+    state = std::make_shared<RandcState>();
+    ++epoch;
+  }
 }
+
+unsigned randc_epoch() { return epoch; }
 
 std::shared_ptr<RandcState> randc_state(int id) {
   std::lock_guard<std::mutex> lock(randc_mutex);

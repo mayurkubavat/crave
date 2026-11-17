@@ -208,6 +208,7 @@ bool VariableDefaultSolver::solve() {
     return false;
   }
 
+  randc_undo_.clear();
   RandcMap randc;
   for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables) {
     std::shared_ptr<RandcState> state = randc_state(pair.first);
@@ -321,6 +322,22 @@ void VariableDefaultSolver::listWindows(NodePtr const& var, RandcState const& st
   }
 }
 
+// As SystemVerilog keeps the values of the variables when randomize() fails, the values of the randc variables
+// are not used up by a failed generation.
+void VariableDefaultSolver::undoRandc() {
+  for (std::vector<RandcUndo>::reverse_iterator ite = randc_undo_.rbegin(); ite != randc_undo_.rend(); ++ite) {
+    RandcState& state = *ite->state;
+    if (ite->saved) {
+      state = *ite->saved;
+      continue;
+    }
+    removeValue(state.used, ite->value);
+    state.unused.push_back(ite->value);
+    if (ite->listed) state.listed.push_back(ite->value);
+  }
+  randc_undo_.clear();
+}
+
 // IEEE 1800-2017 18.4.2: a randc variable takes the values, which satisfy the constraints, in a random order
 // before a value is repeated. The cycle starts again when all of them have been generated, or when the
 // constraints of the variable change. On success, the value is added to the assumptions, and the solver holds
@@ -334,7 +351,10 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
     throw std::runtime_error("A randc variable must not have more than " + std::to_string(randc_max_bitsize) +
                              " bits.");
 
+  // the state before this call, if a new cycle starts, to give the value back on failure
+  RandcUndo undo = {&state, std::shared_ptr<RandcState>(), 0, false};
   if (!state.started || state.signature != signature()) {
+    undo.saved = std::make_shared<RandcState>(state);
     startCycle(state, v->bitsize());
     state.signature = signature();
   }
@@ -348,6 +368,9 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       uint64_t const value = values[n];
       assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
       if (solveWith(assumptions, randc)) {
+        undo.value = value;
+        undo.listed = std::find(state.listed.begin(), state.listed.end(), value) != state.listed.end();
+        randc_undo_.push_back(undo);
         removeValue(state.unused, value);
         removeValue(state.listed, value);
         state.used.push_back(value);
@@ -361,8 +384,9 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
   for (unsigned round = 0; round < 2; ++round) {
     if (round == 1) {
       // either no value satisfies the constraints, or all of them have been generated in this cycle
-      if (state.used.empty()) return false;
+      if (state.used.empty()) break;
       LOG(INFO) << "Start a new cycle of randc variable #" << id;
+      if (!undo.saved) undo.saved = std::make_shared<RandcState>(state);
       startCycle(state, v->bitsize());
     }
 
@@ -407,6 +431,8 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
     state.listed.swap(listed);
     if (tryValues(state.listed, randc_max_listed)) return true;
   }
+  // a new cycle, which has been started, is given back as well
+  if (undo.saved) randc_undo_.push_back(undo);
   return false;
 }
 

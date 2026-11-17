@@ -42,6 +42,12 @@ struct VariableSolver {
   virtual ~VariableSolver(){}
   virtual bool solve() = 0;
 
+  /**
+   * gives the values of the cyclic random variables back to their cycles, which the last solve() has taken,
+   * when the generation fails afterwards
+   */
+  virtual void undoRandc() {}
+
   template <typename T>
   bool read(Variable<T> const& var, T* value) {
     if (var_ctn_.variables.find(var.id()) == var_ctn_.variables.end()) return false;

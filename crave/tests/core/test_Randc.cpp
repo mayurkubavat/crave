@@ -119,6 +119,47 @@ BOOST_AUTO_TEST_CASE(randc_dense_16_bit_cost) {
   BOOST_REQUIRE_LT(double(std::clock() - start) / CLOCKS_PER_SEC, 20.0);
 }
 
+// As SystemVerilog keeps the values of the variables when randomize() fails, a failed generation does not use up
+// a value of a cycle, also if another randc variable has no value.
+BOOST_AUTO_TEST_CASE(randc_failed_generation) {
+  Variable<unsigned char> x;
+  Variable<unsigned char> z;
+  unsigned char limit = 10;
+  Generator gen(x < 4u && z < reference(limit) && x != z + 100u);
+  gen.randc(x).randc(z);
+
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    std::vector<int> values;
+    for (int i = 0; i < 4; ++i) {
+      limit = 0;
+      BOOST_REQUIRE(!gen.next());
+      limit = 10;
+      BOOST_REQUIRE(gen.next());
+      values.push_back(gen[x]);
+    }
+    require_permutation(values, values_in(0, 3));
+  }
+  set_randc(x.id(), false);
+  set_randc(z.id(), false);
+}
+
+// A variable made cyclic by another generator is cyclic in a generator, which has been built before.
+BOOST_AUTO_TEST_CASE(randc_by_other_generator) {
+  Variable<unsigned char> x;
+  Generator gen(x < 8u);
+  gen.soft(x == 3u);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(gen[x], 3);
+
+  Generator other(x < 8u);
+  other.randc(x);
+  for (int cycle = 0; cycle < 2; ++cycle) require_permutation(generate(gen, x, 8), values_in(0, 7));
+
+  other.randc(x, false);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(gen[x], 3);
+}
+
 // the randc variable is chosen first, the other variables are solved for its value
 BOOST_AUTO_TEST_CASE(randc_with_random_variable) {
   Variable<unsigned char> x;
