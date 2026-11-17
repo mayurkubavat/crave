@@ -162,14 +162,35 @@ BOOST_AUTO_TEST_CASE(solve_before_signed_range) {
   BOOST_REQUIRE_LT(chi_square(counts, 10, total), 27.88);
 }
 
-// too many values, which are too sparse to be found at random, cannot be chosen with equal probability
+// Too many values, which are too sparse to be found at random, cannot be chosen with equal probability. As the
+// ordering does not change the set of solutions, they are solved without the ordering then, on every call.
 BOOST_AUTO_TEST_CASE(solve_before_many_sparse_values) {
   set_global_seed(14);
   Variable<unsigned> x;
   Variable<unsigned> y;
   Generator gen(x % 4096u == 0u && y == x + 1u);
   gen.solve_before(x, y);
-  BOOST_REQUIRE_THROW(gen.next(), std::runtime_error);
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[x] % 4096u, 0u);
+    BOOST_REQUIRE_EQUAL(gen[y], gen[x] + 1u);
+  }
+
+  // the variables of a level, which is not the first, and values, which depend on a reference
+  Variable<unsigned char> a;
+  Variable<unsigned char> b;
+  Variable<unsigned> k;
+  unsigned char offset = 0;
+  Generator gen2(a == b && (k & 0xffffffu) == 0x123456u + reference(offset));
+  gen2.solve_before(a, k).solve_before(b, k).solve_before(k, x);
+  gen2(x == k);
+  for (unsigned i = 0; i < 4; ++i) {
+    BOOST_REQUIRE(gen2.next());
+    BOOST_REQUIRE_EQUAL(gen2[a], gen2[b]);
+    BOOST_REQUIRE_EQUAL(gen2[k] & 0xffffffu, 0x123456u + offset);
+    BOOST_REQUIRE_EQUAL(gen2[x], gen2[k]);
+    offset = static_cast<unsigned char>(i);
+  }
 }
 
 // the ordering does not change the set of solutions

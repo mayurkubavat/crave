@@ -49,8 +49,8 @@ unsigned const solve_before_max_tries = 64;
  * \brief The maximal number of values, which the solver lists for the variables of a level of a solve-before
  * ordering, if the values tried at random have no solution.
  *
- * If fewer values have a solution, one of them is chosen with equal probability. Otherwise, the generation throws
- * std::runtime_error, since a value cannot be chosen with equal probability at a bounded cost.
+ * If fewer values have a solution, one of them is chosen with equal probability. Otherwise, since a value cannot be
+ * chosen with equal probability at a bounded cost, the variables of the level are solved without the ordering.
  */
 unsigned const solve_before_max_listed = 256;
 

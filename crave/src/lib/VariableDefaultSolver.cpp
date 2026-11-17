@@ -322,7 +322,8 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   // the random values of the randc variables are given by their cycles
   for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
     int id = pair.first;
-    if (bdd_samplers_.find(id) == bdd_samplers_.end() || randc.count(id) || ordered_vars_.count(id)) continue;
+    if (bdd_samplers_.find(id) == bdd_samplers_.end() || randc.count(id)) continue;
+    if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
     std::string str;
     CHECK(bdd_samplers_[id]->sample(&str));  // otherwise, contradiction must have been found!
     NodePtr value(new Constant(pair.second->to_constant(str)));
@@ -338,7 +339,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
     if (replaced_dist_refs_.count(pair.first)) continue;
     int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
-    if (randc.count(var_id) || ordered_vars_.count(var_id)) continue;
+    if (randc.count(var_id) || (ordered_vars_.count(var_id) && !unordered_vars_.count(var_id))) continue;
     solver_->makeSuggestion(*pair.second->expr());
   }
 
@@ -444,6 +445,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
 // probability among the values, for which the constraints have a solution. Then the other variables are solved.
 // On success, the values are added to the assumptions, and the solver holds a solution of the partition.
 bool VariableDefaultSolver::solveOrdered(std::vector<NodePtr>& assumptions, RandcMap const& randc) {
+  unordered_vars_.clear();
   for (std::size_t i = 0; i < solve_levels_.size(); ++i)
     if (!solveLevel(i, assumptions, randc)) return false;
   return solveWith(assumptions, randc);
@@ -482,6 +484,8 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
   std::vector<std::vector<Constant> > listed;
   if (constant_values && !first_level_values_.empty()) {
     listed = first_level_values_;
+  } else if (constant_values && first_level_unordered_) {
+    return solveUnordered(level);
   } else {
     // 1. A few values at random, from the BDD of the constraints on a single variable if there is one.
     for (unsigned tries = 0; tries < solve_before_first_tries; ++tries) {
@@ -550,17 +554,25 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
       listed.push_back(values);
     }
     if (listed.empty()) return false;
-    if (listed.size() >= solve_before_max_listed)
-      throw std::runtime_error(
-          "The values of a variable solved before other variables cannot be chosen with equal probability: more "
-          "than crave::solve_before_max_listed values have a solution, and they are too sparse between the least "
-          "and the greatest of them.");
+    if (listed.size() >= solve_before_max_listed) {
+      if (constant_values) first_level_unordered_ = true;
+      return solveUnordered(level);
+    }
     if (constant_values) first_level_values_ = listed;
   }
 
   // one of the listed values is chosen with equal probability
   std::vector<Constant> const& values = listed[random_unsigned(listed.size())];
   for (std::size_t i = 0; i < vars.size(); ++i) assumptions.push_back(new EqualOpr(vars[i], new Constant(values[i])));
+  return true;
+}
+
+// The values of the variables of a level cannot be chosen with equal probability at a bounded cost: more than
+// crave::solve_before_max_listed values have a solution, and they are too sparse to be found at random. The
+// variables are solved together with the variables, which are not ordered, as without the ordering.
+bool VariableDefaultSolver::solveUnordered(std::vector<int> const& level) {
+  LOG(INFO) << "Too many sparse values to order, the variables of a level are solved without the ordering";
+  unordered_vars_.insert(level.begin(), level.end());
   return true;
 }
 
