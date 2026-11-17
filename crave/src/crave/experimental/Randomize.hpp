@@ -73,6 +73,7 @@ struct scope_variable_base {
   virtual void bind(Generator& gen) const = 0;
   virtual void restore() = 0;
   virtual void const* address() const = 0;
+  virtual int id() const = 0;
 };
 
 template <typename T>
@@ -84,6 +85,8 @@ struct scope_variable : scope_variable_base {
   void restore() override { var_ = saved_; }
 
   void const* address() const override { return &var_; }
+
+  int id() const override { return ref_.id(); }
 
   T& var_;
   T saved_;
@@ -107,7 +110,8 @@ class scope_randomization {
    *
    * As std::randomize() with {...} in SystemVerilog, the variables of the scope randomization are random variables
    * in the constraints, where they are referred to with crave::reference(). Other variables referred to with
-   * crave::reference() keep their values. If the constraints have no solution, the variables are set back to the
+   * crave::reference(), and random variables with values, e.g. the members of a crv_sequence_item, keep their
+   * values. If the constraints have no solution, the variables are set back to the
    * values they had before crave::randomize() was called.
    *
    * \param exprs constraint expressions
@@ -119,8 +123,13 @@ class scope_randomization {
     bool solved = false;
     try {
       Generator gen;
-      for (std::unique_ptr<detail::scope_variable_base> const& v : vars_) v->bind(gen);
+      std::set<int> ids;
+      for (std::unique_ptr<detail::scope_variable_base> const& v : vars_) {
+        v->bind(gen);
+        ids.insert(v->id());
+      }
       add(gen, exprs...);
+      gen.keepValues(ids);
       solved = gen.next();
     } catch (...) {
       restore();
@@ -215,7 +224,8 @@ class scope_randomization {
  * <p>The function with() of the result randomizes the variables with constraints instead, as std::randomize() with
  * {...}. In the constraints, the variables are referred to with crave::reference(), which must appear directly in
  * the arguments of with(): a crave::expression made beforehand keeps the values of the variables. Other variables
- * referred to with crave::reference() are state variables. If the constraints have no solution, with() returns
+ * referred to with crave::reference(), and random variables with values, e.g. the members of a
+ * crv_sequence_item, are state variables, as in SystemVerilog. If the constraints have no solution, with() returns
  * false and leaves the variables unchanged.</p>
  *
  * \code

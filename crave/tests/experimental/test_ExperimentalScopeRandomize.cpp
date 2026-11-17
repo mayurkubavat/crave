@@ -139,6 +139,32 @@ BOOST_AUTO_TEST_CASE(scope_randomize_state_variables) {
   BOOST_REQUIRE_EQUAL(x, 11);
 }
 
+// IEEE 1800-2017 18.12: only the arguments are random, the members of an item in the constraints keep their values
+BOOST_AUTO_TEST_CASE(scope_randomize_item_members) {
+  struct pair_item : public crv_sequence_item {
+    crv_variable<unsigned> a;
+    crv_variable<unsigned> b;
+    crv_constraint c{a() < 10u, b() == a() + 1u};
+    pair_item(crv_object_name) {}
+  };
+  set_global_seed(35);
+  pair_item item("item");
+  for (unsigned i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    unsigned const a = item.a;
+    unsigned const b = item.b;
+    int x = 0;
+    BOOST_REQUIRE(crave::randomize(x).with(reference(x) > item.a(), reference(x) < 1000));
+    BOOST_REQUIRE(x > static_cast<int>(a) && x < 1000);
+    BOOST_REQUIRE_EQUAL(item.a, a);
+    BOOST_REQUIRE_EQUAL(item.b, b);
+    BOOST_REQUIRE(crave::randomize(x).with(reference(x) == item.a() + item.b()));
+    BOOST_REQUIRE_EQUAL(x, static_cast<int>(a + b));
+    BOOST_REQUIRE(!crave::randomize(x).with(reference(x) == 1, item.a() == a + 1u));
+    BOOST_REQUIRE_EQUAL(item.a, a);
+  }
+}
+
 // a variable, which is not constrained, takes random values
 BOOST_AUTO_TEST_CASE(scope_randomize_unconstrained_variable) {
   set_global_seed(34);
