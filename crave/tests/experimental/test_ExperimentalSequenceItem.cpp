@@ -409,6 +409,18 @@ BOOST_AUTO_TEST_CASE(pre_post_randomize_rand_mode) {
   BOOST_REQUIRE(callback_log == expected);
 }
 
+// The hooks of an object are called again, when its variables are enabled one by one.
+BOOST_AUTO_TEST_CASE(pre_post_randomize_rand_mode_variables) {
+  callback_outer item("item");
+
+  item.inner.rand_mode(false);
+  item.inner.y.rand_mode(true);
+  callback_log.clear();
+  BOOST_REQUIRE(item.randomize());
+  std::vector<std::string> expected{"outer.pre", "inner.pre", "outer.post", "inner.post " + std::to_string(item.inner.y)};
+  BOOST_REQUIRE(callback_log == expected);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
