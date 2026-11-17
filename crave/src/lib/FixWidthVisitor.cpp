@@ -106,6 +106,9 @@ NodeRef svCompare(Node const& n) {
 // unsigned context is unsigned then, an extension of an operand in it is a zero extension.
 NodeRef svInteger(NodeRef const& n, bool sign) {
   Node const& node = *n;
+  // A boolean operand, e.g. a comparison in an equality, is a 1-bit unsigned value, which keeps its own rules.
+  // Integers are promoted from booleans before, so it is compared with another boolean only.
+  if (isBoolean(node)) return svBoolean(n);
   if (Constant const* c = dynamic_cast<Constant const*>(&node)) {
     if (sign || !c->sign()) return n;
     uint64_t const mask = c->bitsize() >= 64 ? ~uint64_t(0) : (uint64_t(1) << c->bitsize()) - 1;

@@ -184,4 +184,38 @@ BOOST_AUTO_TEST_CASE(sv_signedness_evaluator_values) {
   }
 }
 
+// IEEE 1800-2017 11.8.1 applies to every comparison, also to one, which is an operand of an equality, and a
+// boolean compared with a comparison stays a boolean.
+BOOST_AUTO_TEST_CASE(sv_signedness_nested_comparisons) {
+  sv_signedness_guard guard(true);
+  Variable<bool> f;
+  Variable<unsigned> x;
+  Variable<short> s;
+  Variable<unsigned short> u;
+
+  Generator gen(f == (x > 3u));
+  gen((x > 3u) != !f);
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[f], gen[x] > 3u);
+  }
+
+  // -1 is converted to 65535, as u is unsigned
+  BOOST_REQUIRE(!satisfiable(s == -1 && u == 5u && (s < u)));
+  BOOST_REQUIRE(!satisfiable(s == -1 && u == 5u && ((s < u) != (u < u))));
+  BOOST_REQUIRE(!satisfiable(s == -1 && u == 5u && f && ((s < u) == f)));
+  BOOST_REQUIRE(satisfiable(s == -1 && u == 5u && ((s > u) == (u > 4u))));
+
+  Evaluator eval;
+  eval.assign(s, static_cast<short>(-1));
+  eval.assign(u, static_cast<unsigned short>(5));
+  eval.assign(f, true);
+  BOOST_REQUIRE(eval.evaluate((s < u) == f));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate((s < u) != (u < u)));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate((s > u) == (u > 4u)));
+  BOOST_REQUIRE(eval.result<bool>());
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // SvSignedness_t
