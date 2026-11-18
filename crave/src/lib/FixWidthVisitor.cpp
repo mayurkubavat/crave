@@ -74,6 +74,14 @@ bool svSigned(Node const& n) {
 
 typedef boost::intrusive_ptr<Node> NodeRef;
 
+// The test of an integer for zero, which stands for the integer where a boolean is expected, e.g. as an operand of
+// a logical operator. With the rules of SystemVerilog, the integer is self-determined there (IEEE 1800-2017
+// 11.6.1), so this test is not a comparison, whose operands are context-determined.
+class ZeroTest : public NotEqualOpr {
+ public:
+  ZeroTest(NodePtr lhs, NodePtr rhs) : NotEqualOpr(lhs, rhs) {}
+};
+
 NodeRef svInteger(NodeRef const& n, unsigned width, bool sign);
 NodeRef svBoolean(NodeRef const& n);
 
@@ -202,6 +210,10 @@ NodeRef svInteger(NodeRef const& n, unsigned width, bool sign) {
 
 NodeRef svBoolean(NodeRef const& n) {
   Node const& node = *n;
+  if (ZeroTest const* z = dynamic_cast<ZeroTest const*>(&node)) {
+    NodeRef const& e = z->lhs();
+    return new NotEqualOpr(svSelf(e), new Constant(0, svWidth(*e), svSigned(*e)));
+  }
   if (NotOpr const* o = dynamic_cast<NotOpr const*>(&node)) return new NotOpr(svBoolean(o->child()));
   if (LogicalAndOpr const* o = dynamic_cast<LogicalAndOpr const*>(&node))
     return new LogicalAndOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
@@ -350,6 +362,7 @@ void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
 // As in C++, an integer operand of a logical operator stands for its comparison with zero.
 FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
   if (isBoolean(*e.first)) return e.first;
+  if (sv_signedness_) return new ZeroTest(e.first, new Constant(0, e.second, false));
   return new NotEqualOpr(e.first, new Constant(0, e.second, false));
 }
 

@@ -30,8 +30,11 @@
 #include <crave/utils/Evaluator.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <random>
+#include <sstream>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -645,6 +648,215 @@ BOOST_AUTO_TEST_CASE(sv_expression_widths_16bit) {
   }
   // the sum wraps around at 16 bits
   BOOST_REQUIRE_EQUAL(holds, 0x8000u);
+}
+
+// IEEE 1800-2017 11.6.1: an integer, which stands for a boolean as an operand of a logical operator, as the
+// condition of if_then_else or as a constraint, is self-determined. Its comparison with zero is not a comparison,
+// whose operands are context-determined.
+BOOST_AUTO_TEST_CASE(sv_integer_as_boolean) {
+  sv_signedness_guard guard(true);
+  Variable<signed char> c;
+  Variable<unsigned char> a, b;
+  Variable<int> n, x;
+
+  // c & short(0x7F00) is a signed 16-bit value, c is sign-extended: 0x7F00
+  BOOST_REQUIRE(satisfiable(c == -1 && (c & static_cast<short>(0x7F00))));
+  BOOST_REQUIRE(satisfiable(c == -1 && if_then_else(c & static_cast<short>(0x7F00), 1, 0) == 1));
+  BOOST_REQUIRE(!satisfiable(c == -1 && !(c & static_cast<short>(0x7F00))));
+  // a << n has the 8 bits of a
+  BOOST_REQUIRE(satisfiable(a == 1 && n == 8 && !(a << n)));
+  BOOST_REQUIRE(!satisfiable(a == 1 && n == 8 && (a << n)));
+  // (a - b) / c is an unsigned 8-bit value: 1 / 2 is 0
+  BOOST_REQUIRE(satisfiable(a == 0 && b == 255 && c == 2 && !((a - b) / c)));
+  // a constraint, which is an integer
+  Generator gen(x == -3);
+  gen(x / 9);
+  BOOST_REQUIRE(!gen.next());
+  Generator gen2(x == -9);
+  gen2(x / 9);
+  BOOST_REQUIRE(gen2.next());
+
+  Evaluator eval;
+  eval.assign(c, static_cast<signed char>(-1));
+  eval.assign(a, static_cast<unsigned char>(1));
+  eval.assign(n, 8);
+  eval.assign(x, -3);
+  BOOST_REQUIRE(eval.evaluate(c & static_cast<short>(0x7F00)));
+  BOOST_REQUIRE(eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(!(a << n)));
+  BOOST_REQUIRE(eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(x / 9));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(if_then_else(x / 9, 1, 2) == 2));
+  BOOST_REQUIRE(eval.result<bool>());
+}
+
+namespace {
+namespace sv_cases {
+// Expressions with values of their operands and their values by the rules of SystemVerilog. Each case has the
+// kind (B for a boolean, also of an integer expression, I for the value of an integer expression), the values of
+// the operands v0 to v8 in hexadecimal and the expression in prefix notation. The values were computed by a model
+// of IEEE 1800-2017 11.6 and 11.8 and agree with a SystemVerilog simulator.
+struct Case {
+  char const* input;
+  char const* expected;
+  bool solve;
+};
+Case const cases[] = {
+#include "test_SvExpressionWidths_cases.inc"
+};
+
+struct Operands {
+  Variable<signed char> v0;
+  Variable<unsigned char> v1;
+  Variable<short> v2;
+  Variable<unsigned short> v3;
+  Variable<int> v4;
+  Variable<unsigned> v5;
+  Variable<long long> v6;
+  Variable<unsigned long long> v7;
+  Variable<bool> v8;
+};
+
+template <typename T>
+expression constant(uint64_t v) {
+  return value_to_expression(static_cast<T>(v));
+}
+
+template <typename V>
+expression slice(V const& v, int r, int l) {
+  return make_expression(bitslice(r, l, v));
+}
+
+struct Parser {
+  Operands& o;
+  std::istringstream& is;
+
+  expression var(int i) {
+    switch (i) {
+      case 0: return make_expression(o.v0);
+      case 1: return make_expression(o.v1);
+      case 2: return make_expression(o.v2);
+      case 3: return make_expression(o.v3);
+      case 4: return make_expression(o.v4);
+      case 5: return make_expression(o.v5);
+      case 6: return make_expression(o.v6);
+      case 7: return make_expression(o.v7);
+      default: return make_expression(o.v8);
+    }
+  }
+
+  expression parse() {
+    std::string t;
+    is >> t;
+    if (t[0] == 'v') return var(std::stoi(t.substr(1)));
+    if (t.compare(0, 2, "sl") == 0) {
+      int i, r, l;
+      sscanf(t.c_str(), "sl%d:%d:%d", &i, &r, &l);
+      switch (i) {
+        case 0: return slice(o.v0, r, l);
+        case 1: return slice(o.v1, r, l);
+        case 2: return slice(o.v2, r, l);
+        case 3: return slice(o.v3, r, l);
+        case 4: return slice(o.v4, r, l);
+        case 5: return slice(o.v5, r, l);
+        case 6: return slice(o.v6, r, l);
+        default: return slice(o.v7, r, l);
+      }
+    }
+    if (t[0] == 'k') {
+      unsigned w;
+      char s;
+      unsigned long long v;
+      sscanf(t.c_str(), "k%u%c:%llx", &w, &s, &v);
+      bool const sign = s == 's';
+      switch (w) {
+        case 8: return sign ? constant<signed char>(v) : constant<unsigned char>(v);
+        case 16: return sign ? constant<short>(v) : constant<unsigned short>(v);
+        case 32: return sign ? constant<int>(v) : constant<unsigned>(v);
+        default: return sign ? constant<long long>(v) : constant<unsigned long long>(v);
+      }
+    }
+    if (t == "neg") return make_expression(-parse());
+    if (t == "~") return make_expression(~parse());
+    if (t == "!") return make_expression(!parse());
+    if (t == "ite") {
+      expression const a = parse();
+      expression const b = parse();
+      expression const c = parse();
+      return make_expression(if_then_else(a, b, c));
+    }
+    expression const p = parse();
+    expression const q = parse();
+    if (t == "+") return make_expression(p + q);
+    if (t == "-") return make_expression(p - q);
+    if (t == "*") return make_expression(p * q);
+    if (t == "/") return make_expression(p / q);
+    if (t == "%") return make_expression(p % q);
+    if (t == "&") return make_expression(p & q);
+    if (t == "|") return make_expression(p | q);
+    if (t == "^") return make_expression(p ^ q);
+    if (t == "<<") return make_expression(p << q);
+    if (t == ">>") return make_expression(p >> q);
+    if (t == "<") return make_expression(p < q);
+    if (t == "<=") return make_expression(p <= q);
+    if (t == ">") return make_expression(p > q);
+    if (t == ">=") return make_expression(p >= q);
+    if (t == "==") return make_expression(p == q);
+    if (t == "!=") return make_expression(p != q);
+    if (t == "&&") return make_expression(p && q);
+    if (t == "||") return make_expression(p || q);
+    throw std::runtime_error("unknown operator " + t);
+  }
+};
+}  // namespace sv_cases
+}  // namespace
+
+// The evaluator and the solver agree with the values of SystemVerilog for random expressions over operands of 1 to
+// 64 bits, also for integers, which stand for booleans as operands of logical operators, conditions of
+// if_then_else and constraints.
+BOOST_AUTO_TEST_CASE(sv_expression_widths_reference_values) {
+  using namespace sv_cases;
+  sv_signedness_guard guard(true);
+  Operands o;
+  for (unsigned n = 0; n < sizeof(cases) / sizeof(cases[0]); ++n) {
+    std::istringstream is(cases[n].input);
+    std::string kind;
+    unsigned long long x[9];
+    is >> kind;
+    for (int i = 0; i < 9; ++i) is >> std::hex >> x[i];
+    Parser parser = {o, is};
+    expression const e = parser.parse();
+
+    Evaluator eval;
+    eval.assign(o.v0, static_cast<signed char>(x[0]));
+    eval.assign(o.v1, static_cast<unsigned char>(x[1]));
+    eval.assign(o.v2, static_cast<short>(x[2]));
+    eval.assign(o.v3, static_cast<unsigned short>(x[3]));
+    eval.assign(o.v4, static_cast<int>(x[4]));
+    eval.assign(o.v5, static_cast<unsigned>(x[5]));
+    eval.assign(o.v6, static_cast<long long>(x[6]));
+    eval.assign(o.v7, static_cast<unsigned long long>(x[7]));
+    eval.assign(o.v8, x[8] != 0);
+    BOOST_REQUIRE(eval.evaluate(e));
+    std::ostringstream value;
+    if (kind == "B")
+      value << eval.result<bool>();
+    else
+      value << std::hex << eval.result<unsigned long long>();
+    if (value.str() != cases[n].expected)
+      BOOST_FAIL("the evaluator gives " << value.str() << " for case " << n << ": " << cases[n].input);
+
+    if (!cases[n].solve) continue;
+    Generator gen;
+    gen(o.v0 == static_cast<signed char>(x[0]))(o.v1 == static_cast<unsigned char>(x[1]));
+    gen(o.v2 == static_cast<short>(x[2]))(o.v3 == static_cast<unsigned short>(x[3]));
+    gen(o.v4 == static_cast<int>(x[4]))(o.v5 == static_cast<unsigned>(x[5]));
+    gen(o.v6 == static_cast<long long>(x[6]))(o.v7 == static_cast<unsigned long long>(x[7]))(o.v8 == (x[8] != 0));
+    gen(e);
+    if (gen.next() != (std::string(cases[n].expected) == "1"))
+      BOOST_FAIL("the solver disagrees for case " << n << ": " << cases[n].input);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // SvSignedness_t
