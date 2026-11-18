@@ -340,6 +340,10 @@ void FixWidthVisitor::visitVectorExpr(const VectorExpr& v) {
   exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
 }
 
+void FixWidthVisitor::visitVectorReduction(const VectorReduction& r) {
+  exprStack_.push(std::make_pair(new VectorReduction(r), r.bitsize()));
+}
+
 void FixWidthVisitor::visitNotOpr(const NotOpr& n) {
   visitUnaryExpr(n);
   stack_entry e;

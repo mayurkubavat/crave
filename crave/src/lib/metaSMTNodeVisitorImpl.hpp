@@ -66,6 +66,7 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   virtual void visitVariableExpr(VariableExpr const &);
   virtual void visitConstant(Constant const &);
   virtual void visitVectorExpr(VectorExpr const &);
+  virtual void visitVectorReduction(VectorReduction const &);
   virtual void visitNotOpr(NotOpr const &);
   virtual void visitNegOpr(NegOpr const &);
   virtual void visitComplementOpr(ComplementOpr const &);
@@ -564,6 +565,10 @@ void metaSMTVisitorImpl<SolverType>::visitVectorAccess(VectorAccess const &) {
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::visitVectorExpr(VectorExpr const &) {
   throw std::runtime_error("VectorExpr is not allowed in metaSMTNodeVisitor.");
+}
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitVectorReduction(VectorReduction const &) {
+  throw std::runtime_error("VectorReduction is not allowed in metaSMTNodeVisitor.");
 }
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::visitForEach(ForEach const &) {

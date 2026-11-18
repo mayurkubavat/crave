@@ -434,6 +434,32 @@ BOOST_AUTO_TEST_CASE(vector_size_only) {
   BOOST_REQUIRE_GE(values.size(), total * 9 / 10);
 }
 
+struct ReductionItem : public crv_sequence_item {
+  ReductionItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_vector<unsigned int> w;
+  crv_constraint con = {v().size() == 4, foreach (v(), v()[_i] >= 100), v.sum() == 144u,
+                        w().size() >= 2 && w().size() <= 5, foreach (w(), w()[_i] > 1 && w()[_i] < 50),
+                        w.product() == 360u, w.or_() != 0u, w.and_() == w.and_(), w.xor_() == w.xor_()};
+};
+
+// The reductions of crv_vector, which have the type of the elements as in SystemVerilog
+BOOST_AUTO_TEST_CASE(vector_reductions) {
+  ReductionItem it{"item"};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.v.size(), 4u);
+    unsigned sum = 0;
+    for (unsigned i = 0; i < it.v.size(); i++) sum += it.v[i];
+    BOOST_REQUIRE_EQUAL(sum % 256, 144u);
+    BOOST_REQUIRE(2 <= it.w.size() && it.w.size() <= 5);
+    unsigned product = 1;
+    for (unsigned i = 0; i < it.w.size(); i++) product *= it.w[i];
+    BOOST_REQUIRE_EQUAL(product, 360u);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

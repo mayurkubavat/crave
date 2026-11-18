@@ -138,7 +138,17 @@ void VectorSolver::buildSolver(unsigned int const size) {
   elem_constraints_.assign(size, std::vector<NodePtr>());
 
   for(VectorConstraintPtr constraint : constraints_) {
-    if (!constraint->isUnique()) {
+    if (constraint->isReduction()) {
+      // a constraint on the reductions of all elements, which is solved once
+      ReplaceVisitor replacer(&vec_elements_);
+      constraint->expr()->visit(&replacer);
+      if (replacer.okay()) {
+        if (constraint->isSoft())
+          solver_->makeSoftAssertion(*replacer.result());
+        else
+          solver_->makeAssertion(*replacer.result());
+      }
+    } else if (!constraint->isUnique()) {
       ReplaceVisitor replacer(&vec_elements_);
       for (unsigned int i = 0u; i < size; ++i) {
         replacer.setVecIdx(i);

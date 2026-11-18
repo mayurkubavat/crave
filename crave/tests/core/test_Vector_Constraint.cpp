@@ -324,6 +324,156 @@ BOOST_AUTO_TEST_CASE(only_size_constrained_vect_test) {
   BOOST_REQUIRE_EQUAL(it.v.size(), default_rand_vec_size() + 7);
 }
 
+// The sum of the elements of a vector, whose number is the size of the vector
+BOOST_AUTO_TEST_CASE(vector_sum) {
+  rand_vec<unsigned short> v(NULL);
+  unsigned size = 0;
+  Generator gen;
+  gen(v().size() == reference(size));
+  gen(foreach (v(), v()[_i] < 100));
+  gen(v().sum() == 150);
+
+  for (size = 0; size <= 6; ++size) {
+    // the sum of fewer than 2 elements below 100 cannot be 150
+    BOOST_REQUIRE_EQUAL(gen.next(), size >= 2);
+    if (size < 2) continue;
+    BOOST_REQUIRE_EQUAL(v.size(), size);
+    unsigned sum = 0;
+    for (unsigned i = 0; i < v.size(); i++) {
+      BOOST_REQUIRE_LT(v[i], 100);
+      sum += v[i];
+    }
+    BOOST_REQUIRE_EQUAL(sum, 150u);
+  }
+}
+
+// As the sum() reduction method of SystemVerilog (IEEE 1800-2017 7.12.3), the sum has the type of the elements.
+BOOST_AUTO_TEST_CASE(vector_sum_element_width) {
+  rand_vec<unsigned char> v(NULL);
+  Generator gen;
+  gen(v().size() == 4);
+  gen(foreach (v(), v()[_i] >= 100));
+  gen(v().sum() == 144);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(v.size(), 4u);
+  unsigned sum = 0;
+  for (unsigned i = 0; i < v.size(); i++) sum += v[i];
+  BOOST_REQUIRE_GT(sum, 255u);
+  BOOST_REQUIRE_EQUAL(sum % 256, 144u);
+
+  // the sum of unsigned char elements never exceeds 255
+  rand_vec<unsigned char> w(NULL);
+  Generator gen2;
+  gen2(w().size() == 4);
+  gen2(w().sum() == 400);
+  BOOST_REQUIRE(!gen2.next());
+
+  // the sum of signed char elements is signed
+  rand_vec<signed char> s(NULL);
+  Generator gen3;
+  gen3(s().size() == 2);
+  gen3(foreach (s(), s()[_i] > 0));
+  gen3(s().sum() < 0);
+  BOOST_REQUIRE(gen3.next());
+  BOOST_REQUIRE(s[0] > 0 && s[1] > 0);
+  BOOST_REQUIRE(s[0] + s[1] > 127);
+  BOOST_REQUIRE(static_cast<signed char>(s[0] + s[1]) < 0);
+}
+
+BOOST_AUTO_TEST_CASE(vector_product_and_bitwise_reductions) {
+  rand_vec<unsigned char> v(NULL);
+  Generator gen;
+  gen(v().size() == 3);
+  gen(foreach (v(), v()[_i] > 1));
+  gen(v().product() == 30);
+  for (int n = 0; n < 5; ++n) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(static_cast<unsigned char>(v[0] * v[1] * v[2]), 30);
+  }
+
+  rand_vec<unsigned int> w(NULL);
+  Generator gen2;
+  gen2(w().size() == 4);
+  gen2(w().and_() == 0x10u);
+  gen2(w().or_() == 0xF0u);
+  gen2(w().xor_() == 0x20u);
+  gen2(foreach (w(), w()[_i] != w()[_i - 1]));
+  BOOST_REQUIRE(gen2.next());
+  BOOST_REQUIRE_EQUAL(w.size(), 4u);
+  BOOST_REQUIRE_EQUAL(w[0] & w[1] & w[2] & w[3], 0x10u);
+  BOOST_REQUIRE_EQUAL(w[0] | w[1] | w[2] | w[3], 0xF0u);
+  BOOST_REQUIRE_EQUAL(w[0] ^ w[1] ^ w[2] ^ w[3], 0x20u);
+}
+
+// The reductions of no elements are the identities of the operators.
+BOOST_AUTO_TEST_CASE(vector_reductions_of_empty_vector) {
+  rand_vec<unsigned char> v(NULL);
+  Generator gen;
+  gen(v().size() == 0);
+  gen(v().sum() == 0 && v().product() == 1 && v().and_() == 0xFF && v().or_() == 0 && v().xor_() == 0);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(v.size(), 0u);
+
+  rand_vec<signed char> s(NULL);
+  Generator gen2;
+  gen2(s().size() == 0);
+  gen2(s().and_() == -1);
+  BOOST_REQUIRE(gen2.next());
+
+  rand_vec<unsigned char> u(NULL);
+  Generator gen3;
+  gen3(u().size() == 0);
+  gen3(u().sum() == 1);
+  BOOST_REQUIRE(!gen3.next());
+}
+
+BOOST_AUTO_TEST_CASE(bool_vector_reductions) {
+  rand_vec<bool> a(NULL);
+  Generator gen;
+  gen(a().size() == 5);
+  gen(a().or_());
+  gen(!a().product());
+  gen(a().xor_());
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(gen.next());
+    unsigned count = 0;
+    for (unsigned i = 0; i < a.size(); i++) count += a[i] != 0;
+    BOOST_REQUIRE(count > 0 && count < 5);
+    BOOST_REQUIRE_EQUAL(count % 2, 1u);
+  }
+  rand_vec<bool> b(NULL);
+  Generator gen2;
+  gen2(b().size() == 3);
+  gen2(b().and_());
+  BOOST_REQUIRE(gen2.next());
+  BOOST_REQUIRE(b[0] != 0 && b[1] != 0 && b[2] != 0);
+}
+
+// A reduction in a foreach constraint is the reduction of all elements.
+BOOST_AUTO_TEST_CASE(vector_reduction_in_foreach) {
+  rand_vec<unsigned int> v(NULL);
+  Generator gen;
+  gen(v().size() == 4);
+  gen(foreach (v(), v()[_i] >= 1 && v()[_i] <= 10));
+  // no element is less than the mean, so all elements are equal
+  gen(foreach (v(), v()[_i] * 4 >= v().sum()));
+  BOOST_REQUIRE(gen.next());
+  unsigned sum = v[0] + v[1] + v[2] + v[3];
+  for (unsigned i = 0; i < v.size(); i++) BOOST_REQUIRE_GE(v[i] * 4, sum);
+  BOOST_REQUIRE(v[0] == v[1] && v[1] == v[2] && v[2] == v[3]);
+}
+
+// A constraint with a reduction may refer to the elements of its vector only.
+BOOST_AUTO_TEST_CASE(vector_reduction_with_other_variables) {
+  rand_vec<unsigned int> v(NULL);
+  rand_vec<unsigned int> w(NULL);
+  Variable<unsigned int> x;
+  Generator gen;
+  BOOST_CHECK_THROW(gen(v().sum() == x), std::runtime_error);
+  BOOST_CHECK_THROW(gen(v().sum() == w().sum()), std::runtime_error);
+  BOOST_CHECK_THROW(gen(v().sum() == v().size()), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

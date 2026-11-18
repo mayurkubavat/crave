@@ -133,6 +133,69 @@ void ReplaceVisitor::visitVectorExpr(VectorExpr const& v) {
   updateResult();
   subscript_stack_.push(0);
 }
+namespace {
+// combines the reduction of the elements before an element with the element
+NodePtr reduce(VectorReduction const& r, NodePtr const& lhs, NodePtr const& rhs) {
+  if (r.isBool()) {
+    // The solvers do not accept arithmetic and bitwise operators on booleans, the logical operators give the
+    // same results.
+    switch (r.kind()) {
+      case VectorReduction::Product:
+      case VectorReduction::And:
+        return new LogicalAndOpr(lhs, rhs);
+      case VectorReduction::Or:
+        return new LogicalOrOpr(lhs, rhs);
+      case VectorReduction::Xor:
+        return new NotEqualOpr(lhs, rhs);
+      default:
+        throw std::runtime_error("The sum of the elements of a bool vector is not supported.");
+    }
+  }
+  switch (r.kind()) {
+    case VectorReduction::Sum:
+      return new PlusOpr(lhs, rhs);
+    case VectorReduction::Product:
+      return new MultipliesOpr(lhs, rhs);
+    case VectorReduction::And:
+      return new AndOpr(lhs, rhs);
+    case VectorReduction::Or:
+      return new OrOpr(lhs, rhs);
+    default:
+      return new XorOpr(lhs, rhs);
+  }
+}
+
+// the reduction of no elements
+NodePtr identity(VectorReduction const& r) {
+  if (r.isBool()) {
+    if (r.kind() == VectorReduction::Sum) throw std::runtime_error("The sum of the elements of a bool vector is not supported.");
+    return new Constant(r.kind() == VectorReduction::Product || r.kind() == VectorReduction::And);
+  }
+  uint64_t const ones = r.sign() || r.bitsize() >= 64 ? ~uint64_t(0) : (uint64_t(1) << r.bitsize()) - 1;
+  switch (r.kind()) {
+    case VectorReduction::Product:
+      return new Constant(1, r.bitsize(), r.sign());
+    case VectorReduction::And:
+      return new Constant(ones, r.bitsize(), r.sign());
+    default:
+      return new Constant(0, r.bitsize(), r.sign());
+  }
+}
+}  // namespace
+
+// The reduction of the elements of the vector, in the width and the signedness of the elements.
+void ReplaceVisitor::visitVectorReduction(VectorReduction const& r) {
+  NodePtr result;
+  for (unsigned int i = 0; i < variables_->size(); ++i) {
+    VariableExpr& var = *variables_->at(i);
+    variables_->at(i) = new VariableExpr(var.id(), r.bitsize(), r.sign());
+    result = result ? reduce(r, result, variables_->at(i)) : NodePtr(variables_->at(i));
+  }
+  aux_stack_.push(result ? result : identity(r));
+  updateResult();
+  subscript_stack_.push(0);
+}
+
 void ReplaceVisitor::visitNotOpr(NotOpr const& n) {
   NodePtr child;
   evalUnaryExpr(n, child);

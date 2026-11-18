@@ -74,6 +74,40 @@ class crv_vector : public __rand_vec<T>, public crv_object {
   }
   
   void recursive_build(Generator& gen) const override { gen.addVecId(__rand_vec<T>::id()); }
+
+  /**
+   * \brief Gets the sum of the elements as a CRAVE expression, see Vector::sum().
+   *
+   * As the sum() reduction method of SystemVerilog, it has the type of the elements, and the number of elements is
+   * the size of the vector. A constraint with it may refer to the elements of this vector only.
+   *
+   * \return sum expression of the elements in the vector
+   */
+  expression sum() const { return make_expression((*this)().sum()); }
+
+  /**
+   * \brief Gets the product of the elements as a CRAVE expression, see Vector::product().
+   * \return product expression of the elements in the vector
+   */
+  expression product() const { return make_expression((*this)().product()); }
+
+  /**
+   * \brief Gets the bitwise AND of the elements as a CRAVE expression, see Vector::and_().
+   * \return bitwise AND expression of the elements in the vector
+   */
+  expression and_() const { return make_expression((*this)().and_()); }
+
+  /**
+   * \brief Gets the bitwise OR of the elements as a CRAVE expression, see Vector::or_().
+   * \return bitwise OR expression of the elements in the vector
+   */
+  expression or_() const { return make_expression((*this)().or_()); }
+
+  /**
+   * \brief Gets the bitwise XOR of the elements as a CRAVE expression, see Vector::xor_().
+   * \return bitwise XOR expression of the elements in the vector
+   */
+  expression xor_() const { return make_expression((*this)().xor_()); }
 };
 
 }  // namespace crave

@@ -58,6 +58,11 @@ void GetSupportSetVisitor::visitConstant(const Constant&) {}
 
 void GetSupportSetVisitor::visitVectorExpr(const VectorExpr& v) { support_vars.insert(v.id()); }
 
+void GetSupportSetVisitor::visitVectorReduction(const VectorReduction& r) {
+  support_vars.insert(r.id());
+  reduced_vectors.insert(r.id());
+}
+
 void GetSupportSetVisitor::visitNotOpr(const NotOpr& n) { visitUnaryExpr(n); }
 
 void GetSupportSetVisitor::visitNegOpr(const NegOpr& n) { visitUnaryExpr(n); }

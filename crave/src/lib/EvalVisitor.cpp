@@ -175,6 +175,9 @@ void EvalVisitor::visitConstant(const Constant& c) {
     exprStack_.push(std::make_pair(c, true));
 }
 
+// The elements of a vector are not assigned, so its reduction has no value.
+void EvalVisitor::visitVectorReduction(const VectorReduction&) { exprStack_.push(std::make_pair(Constant(), false)); }
+
 void EvalVisitor::visitVectorExpr(const VectorExpr& v) {
   eval_map::const_iterator ite(evalMap_->find(v.id()));
   if (ite != evalMap_->end())

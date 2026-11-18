@@ -132,6 +132,10 @@ void ComplexityEstimationVisitor::visitVectorExpr(const VectorExpr& v) {
   exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
 }
 
+void ComplexityEstimationVisitor::visitVectorReduction(const VectorReduction& r) {
+  exprStack_.push(std::make_pair(new VectorReduction(r), r.bitsize()));
+}
+
 void ComplexityEstimationVisitor::visitNotOpr(const NotOpr& n) { visitSimpleUnaryExpr(n); }
 
 void ComplexityEstimationVisitor::visitNegOpr(const NegOpr& n) { visitSimpleUnaryExpr(n); }

@@ -103,10 +103,19 @@ ConstraintPtr ConstraintManager::makeConstraint(std::string const& name, int c_i
 
   ConstraintPtr c;
 
+  // A reduction of the elements of a vector is solved by the solver of the vector, after the size of the
+  // vector has been solved. So a constraint with a reduction may refer to the elements of that vector only.
+  bool const reduction = !gssv.getReducedVectors().empty();
+  if (reduction && gssv.getSupportVars().size() != 1)
+    throw std::runtime_error("Constraint " + name +
+                             ": a constraint with a reduction of a vector may refer to the elements of that vector only.");
+
   if (boost::dynamic_pointer_cast<ForEach>(n) != 0) {
     c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), false, soft, cover);
   } else if (boost::dynamic_pointer_cast<Unique>(n) != 0) {
     c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), true, soft, cover);
+  } else if (reduction) {
+    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), false, soft, cover, true, true);
   } else {
     c = std::make_shared<UserConstraint>(c_id, n, name, gssv.getSupportVars(), soft, cover);
   }

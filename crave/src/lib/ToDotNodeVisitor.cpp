@@ -100,6 +100,16 @@ void ToDotVisitor::visitConstant(Constant const &c) {
   }
 }
 
+void ToDotVisitor::visitVectorReduction(VectorReduction const &r) {
+  static char const *const names[] = {"sum", "product", "and", "or", "xor"};
+  if (putNode(&r)) {
+    visitNode(r);
+    out_ << " [label=\"" << names[r.kind()] << " of vector variable: " << r.id();
+    visitTerminal(r);
+    out_ << "\"]" << std::endl;
+  }
+}
+
 void ToDotVisitor::visitVectorExpr(VectorExpr const &ve) {
   if (putNode(&ve)) {
     visitNode(ve);
