@@ -313,6 +313,18 @@ BOOST_AUTO_TEST_CASE(bool_rand_vec) {
   for (unsigned i = 1; i < a.size(); i++) BOOST_REQUIRE(a[i] != a[i - 1]);
 }
 
+// The elements of a bool vector are stored as 0 and 1, the values of false and true.
+BOOST_AUTO_TEST_CASE(bool_rand_vec_values) {
+  rand_vec<bool> a(NULL);
+  Generator gen;
+  gen(a().size() == 4);
+  gen(foreach (a(), a()[_i] == (_i % 2 == 0)));
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(a.size(), 4u);
+  for (unsigned i = 0; i < a.size(); i++)
+    BOOST_REQUIRE_EQUAL(static_cast<unsigned>(reinterpret_cast<unsigned char const&>(a[i])), (i + 1) % 2);
+}
+
 struct Item6 : public rand_obj {
   Item6() : v(this) { constraint(v().size() == default_rand_vec_size() + 7); }
   rand_vec<unsigned int> v;

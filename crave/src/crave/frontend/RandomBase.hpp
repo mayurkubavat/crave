@@ -29,6 +29,7 @@
 
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include "AssignResultToRef.hpp"
 #include "Constraint.hpp"
@@ -155,7 +156,9 @@ class __rand_vec_base1 : public __rand_vec_base {
     real_vec.clear();
     for (unsigned i = 0; i < values.size(); i++) {
       result.set_value(values[i]);
-      real_vec.push_back(tmp);
+      // The solver reads a true element of a bool vector, which is a signed bit, as -1. It is stored as 1, which
+      // is the value of true, as the elements are accessed as bool.
+      real_vec.push_back(std::is_same<T1, bool>::value ? T2(tmp != 0) : tmp);
     }
   }
 
