@@ -147,6 +147,10 @@ void VectorSolver::buildSolver(unsigned int const size) {
           solver_->makeSoftAssertion(*replacer.result());
         else
           solver_->makeAssertion(*replacer.result());
+      } else if (!constraint->isSoft()) {
+        // an element outside the vector is accessed, the constraint does not hold for this size
+        LOG(INFO) << "Constraint " << constraint->name() << " accesses an element outside vector " << vector_id_;
+        solver_->makeAssertion(Constant(false));
       }
     } else if (!constraint->isUnique()) {
       ReplaceVisitor replacer(&vec_elements_);

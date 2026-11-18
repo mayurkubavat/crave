@@ -410,7 +410,12 @@ void ReplaceVisitor::visitVectorAccess(VectorAccess const& v) {
 
     aux_stack_.push(variables_->at(i));
   } else {
-    aux_stack_.push(variables_->at(0));
+    // an element outside the vector, which may have no elements
+    if (variables_->empty())
+      aux_stack_.push(new Constant(0, static_cast<VectorExpr*>(lhs.get())->bitsize(),
+                                   static_cast<VectorExpr*>(lhs.get())->sign()));
+    else
+      aux_stack_.push(variables_->at(0));
     okay_ = false;
   }
   updateResult();

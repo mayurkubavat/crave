@@ -460,6 +460,19 @@ BOOST_AUTO_TEST_CASE(vector_reductions) {
   }
 }
 
+struct ReductionOutsideItem : public crv_sequence_item {
+  ReductionOutsideItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_constraint con = {v().size() == 2, v.sum() == 10u && v()[2] == 7u};
+};
+
+// randomize() fails if the reduction accesses an element outside the vector
+BOOST_AUTO_TEST_CASE(vector_reduction_element_outside) {
+  ReductionOutsideItem out{"out"};
+  BOOST_REQUIRE(!out.randomize());
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

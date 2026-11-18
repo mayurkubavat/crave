@@ -486,6 +486,31 @@ BOOST_AUTO_TEST_CASE(vector_reduction_with_other_variables) {
   BOOST_CHECK_THROW(gen(v().sum() == v().size()), std::runtime_error);
 }
 
+// A constraint with a reduction, which accesses an element outside the vector, does not hold.
+BOOST_AUTO_TEST_CASE(vector_reduction_element_outside) {
+  rand_vec<unsigned char> v(NULL);
+  Generator gen;
+  gen(v().size() == 2);
+  gen(v().sum() == 10 && v()[2] == 7);
+  BOOST_REQUIRE(!gen.next());
+
+  rand_vec<unsigned char> w(NULL);
+  Generator gen2;
+  gen2(w().size() == 2);
+  gen2(w().sum() == 10 && w()[1] == 7);
+  BOOST_REQUIRE(gen2.next());
+  BOOST_REQUIRE_EQUAL(w.size(), 2u);
+  BOOST_REQUIRE_EQUAL(w[1], 7);
+  BOOST_REQUIRE_EQUAL(w[0] + w[1], 10);
+
+  // an element of a vector without elements
+  rand_vec<unsigned char> u(NULL);
+  Generator gen3;
+  gen3(u().size() == 0);
+  gen3(u().sum() == 10 || u()[0] == 7);
+  BOOST_REQUIRE(!gen3.next());
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
