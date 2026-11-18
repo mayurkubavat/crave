@@ -29,6 +29,10 @@
 
 #include <crave/utils/Evaluator.hpp>
 
+#include <algorithm>
+#include <memory>
+#include <random>
+#include <stdexcept>
 #include <vector>
 
 using namespace crave;
@@ -179,8 +183,8 @@ BOOST_AUTO_TEST_CASE(sv_signedness_evaluator_values) {
     BOOST_REQUIRE(eval.evaluate(s + w));
     BOOST_REQUIRE_EQUAL(eval.result<unsigned short>(), static_cast<unsigned short>(z + 1000u));
     BOOST_REQUIRE(eval.evaluate(s - 1 < 0));
-    // the operation has the width of its widest operand
-    BOOST_REQUIRE_EQUAL(eval.result<bool>(), static_cast<signed char>(v - 1) < 0);
+    // the operation has the width of its context, which is the width of int
+    BOOST_REQUIRE_EQUAL(eval.result<bool>(), v - 1 < 0);
   }
 }
 
@@ -216,6 +220,431 @@ BOOST_AUTO_TEST_CASE(sv_signedness_nested_comparisons) {
   BOOST_REQUIRE(!eval.result<bool>());
   BOOST_REQUIRE(eval.evaluate((s > u) == (u > 4u)));
   BOOST_REQUIRE(eval.result<bool>());
+}
+
+// IEEE 1800-2017 11.6: the operands of an expression are extended to the width of the whole expression before
+// the operations, and an unsized literal, like an int constant, has 32 bits.
+BOOST_AUTO_TEST_CASE(sv_expression_widths) {
+  sv_signedness_guard guard(true);
+  Variable<signed char> c;
+  Variable<unsigned char> a, b;
+  Variable<short> s;
+
+  // c is zero-extended to 32 bits before ~
+  BOOST_REQUIRE(!satisfiable(c == -1 && ~c + 0u == 0u));
+  BOOST_REQUIRE(satisfiable(c == -1 && ~c + 0u == 0xFFFFFF00u));
+  // the sum has 32 bits in the context of an int, and 8 bits in the context of an unsigned char
+  BOOST_REQUIRE(satisfiable(a == 200 && b == 200 && a + b == 400));
+  BOOST_REQUIRE(satisfiable(a == 200 && b == 200 && a + b == static_cast<unsigned char>(144)));
+  BOOST_REQUIRE(!satisfiable(a == 200 && b == 200 && a + b == 144));
+  // a signed operand is sign-extended in a signed context
+  BOOST_REQUIRE(satisfiable(c == -128 && c - 1 < 0));
+  BOOST_REQUIRE(satisfiable(c == -128 && c - 1 == -129));
+  // a shift has the width of its context, the shift amount is self-determined
+  BOOST_REQUIRE(satisfiable(a == 255 && (a << 4) >> 4 == 255));
+  BOOST_REQUIRE(!satisfiable(a == 255 && (a << 4) >> 4 == a));
+  BOOST_REQUIRE(satisfiable(a == 255 && s == 4 && (a << s) == 0xFF0));
+  BOOST_REQUIRE(satisfiable(a == 1 && s == 8 && (a << s) == a - a));
+  // a comparison is a 1-bit value, its operands are context-determined among themselves
+  BOOST_REQUIRE(satisfiable(a == 255 && b == 1 && (a + b > 255) + 0u == 1u));
+  BOOST_REQUIRE(satisfiable(a == 255 && b == 1 && (a + b > static_cast<unsigned char>(254)) + 0u == 0u));
+  // the condition of if_then_else is self-determined, its branches are context-determined
+  BOOST_REQUIRE(satisfiable(a == 255 && if_then_else(a + 1u > 255u, a, b) + 1 == 256));
+
+  Evaluator eval;
+  eval.assign(c, static_cast<signed char>(-1));
+  eval.assign(a, static_cast<unsigned char>(200));
+  eval.assign(b, static_cast<unsigned char>(200));
+  BOOST_REQUIRE(eval.evaluate(~c + 0u == 0u));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(~c + 0u));
+  BOOST_REQUIRE_EQUAL(eval.result<unsigned>(), 0xFFFFFF00u);
+  BOOST_REQUIRE(eval.evaluate(a + b));
+  BOOST_REQUIRE_EQUAL(eval.result<unsigned>(), 144u);
+  BOOST_REQUIRE(eval.evaluate(a + b + 0));
+  BOOST_REQUIRE_EQUAL(eval.result<int>(), 400);
+}
+
+namespace {
+// A model of the rules of IEEE 1800-2017 11.6 and 11.8 for the widths and the types of expressions, which
+// computes the values of an expression of the operands of the test, independent of crave.
+namespace sv_model {
+enum Op { Var, Const, Slice, Neg, Compl, Add, Sub, Mul, Div, Mod, And, Or, Xor, Shl, Shr, Ite,
+          Lt, Le, Gt, Ge, Eq, Ne, LAnd, LOr, LNot };
+
+struct E;
+typedef std::shared_ptr<E> P;
+struct E {
+  Op op;
+  unsigned w;    // the width of a variable or a constant
+  bool s;        // the signedness of a variable or a constant
+  uint64_t v;    // the value of a constant, the index of a variable
+  unsigned r, l; // the range of a bit slice
+  P a, b, c;
+};
+
+uint64_t mask(unsigned w) { return w >= 64 ? ~uint64_t(0) : (uint64_t(1) << w) - 1; }
+uint64_t sext(uint64_t v, unsigned w) {
+  v &= mask(w);
+  return (w < 64 && ((v >> (w - 1)) & 1)) ? v | ~mask(w) : v;
+}
+
+bool isBool(E const& e) { return e.op >= Lt; }
+
+unsigned width(E const& e) {
+  switch (e.op) {
+    case Var: case Const: return e.w;
+    case Slice: return e.r - e.l + 1;
+    case Neg: case Compl: case Shl: case Shr: return width(*e.a);
+    case Ite: return std::max(width(*e.b), width(*e.c));
+    case Add: case Sub: case Mul: case Div: case Mod: case And: case Or: case Xor:
+      return std::max(width(*e.a), width(*e.b));
+    default: return 1;
+  }
+}
+
+bool sign(E const& e) {
+  switch (e.op) {
+    case Var: case Const: return e.s;
+    case Neg: case Compl: case Shl: case Shr: return sign(*e.a);
+    case Ite: return sign(*e.b) && sign(*e.c);
+    case Add: case Sub: case Mul: case Div: case Mod: case And: case Or: case Xor: return sign(*e.a) && sign(*e.b);
+    default: return false;
+  }
+}
+
+struct Values { uint64_t var[4]; };
+
+bool evalBool(E const& e, Values const& x);
+
+// the value of e in a context of width w and signedness s, in w bits
+uint64_t eval(E const& e, unsigned w, bool s, Values const& x) {
+  uint64_t const m = mask(w);
+  if (isBool(e)) return evalBool(e, x) ? 1 : 0;
+  switch (e.op) {
+    case Var: case Const: {
+      uint64_t const v = e.op == Var ? x.var[e.v] : e.v;
+      return (s ? sext(v, e.w) : (v & mask(e.w))) & m;
+    }
+    case Slice: return (x.var[e.v] >> e.l) & mask(e.r - e.l + 1);
+    case Neg: return (uint64_t(0) - eval(*e.a, w, s, x)) & m;
+    case Compl: return ~eval(*e.a, w, s, x) & m;
+    case Shl: case Shr: {
+      uint64_t const v = eval(*e.a, w, s, x);
+      uint64_t const amount = eval(*e.b, width(*e.b), sign(*e.b), x) & mask(width(*e.b));
+      if (amount >= w) return 0;
+      return (e.op == Shl ? v << amount : v >> amount) & m;
+    }
+    case Ite: return evalBool(*e.a, x) ? eval(*e.b, w, s, x) : eval(*e.c, w, s, x);
+    default: break;
+  }
+  uint64_t const p = eval(*e.a, w, s, x);
+  uint64_t const q = eval(*e.b, w, s, x);
+  switch (e.op) {
+    case Add: return (p + q) & m;
+    case Sub: return (p - q) & m;
+    case Mul: return (p * q) & m;
+    case And: return p & q;
+    case Or: return p | q;
+    case Xor: return p ^ q;
+    case Div: case Mod: {
+      if (!s) return (e.op == Div ? p / q : p % q) & m;
+      int64_t const i = static_cast<int64_t>(sext(p, w));
+      int64_t const j = static_cast<int64_t>(sext(q, w));
+      if (j == -1) return e.op == Div ? (uint64_t(0) - p) & m : 0;
+      return static_cast<uint64_t>(e.op == Div ? i / j : i % j) & m;
+    }
+    default: throw std::logic_error("not an integer operator");
+  }
+}
+
+bool evalBool(E const& e, Values const& x) {
+  switch (e.op) {
+    case LAnd: return evalBool(*e.a, x) && evalBool(*e.b, x);
+    case LOr: return evalBool(*e.a, x) || evalBool(*e.b, x);
+    case LNot: return !evalBool(*e.a, x);
+    default: break;
+  }
+  if (isBool(*e.a) && isBool(*e.b)) {
+    bool const p = evalBool(*e.a, x), q = evalBool(*e.b, x);
+    return e.op == Eq ? p == q : p != q;
+  }
+  unsigned const w = std::max(width(*e.a), width(*e.b));
+  bool const s = sign(*e.a) && sign(*e.b);
+  uint64_t const p = eval(*e.a, w, s, x), q = eval(*e.b, w, s, x);
+  bool less, equal = p == q;
+  if (s)
+    less = static_cast<int64_t>(sext(p, w)) < static_cast<int64_t>(sext(q, w));
+  else
+    less = p < q;
+  switch (e.op) {
+    case Lt: return less;
+    case Le: return less || equal;
+    case Gt: return !less && !equal;
+    case Ge: return !less;
+    case Eq: return equal;
+    case Ne: return !equal;
+    default: throw std::logic_error("not a boolean operator");
+  }
+}
+
+// the operands: signed char, unsigned char, short and unsigned short
+unsigned const varWidth[4] = {8, 8, 16, 16};
+bool const varSign[4] = {true, false, true, false};
+
+struct Builder {
+  explicit Builder(unsigned seed) : rng(seed) {}
+  std::mt19937 rng;
+  unsigned pick(unsigned n) { return rng() % n; }
+
+  P node(Op op, P a = P(), P b = P(), P c = P()) {
+    P e(new E());
+    e->op = op;
+    e->a = a;
+    e->b = b;
+    e->c = c;
+    return e;
+  }
+
+  P leaf(Op op, uint64_t v, unsigned w = 0, bool s = false) {
+    P e = node(op);
+    e->v = v;
+    e->w = op == Var ? varWidth[v] : w;
+    e->s = op == Var ? varSign[v] : s;
+    return e;
+  }
+
+  P var() {
+    P e = node(Var);
+    e->v = pick(4);
+    e->w = varWidth[e->v];
+    e->s = varSign[e->v];
+    return e;
+  }
+
+  // a constant of one of the integer types, which is not zero if nonZero is set
+  P constant(bool nonZero = false) {
+    static unsigned const widths[] = {8, 16, 32, 64};
+    P e = node(Const);
+    e->w = widths[pick(10) < 7 ? 2 : pick(4)];
+    e->s = pick(2) != 0;
+    uint64_t v;
+    switch (pick(4)) {
+      case 0: v = pick(10); break;
+      case 1: v = uint64_t(0) - 1 - pick(3); break;
+      case 2: v = uint64_t(1) << (e->w - 1); break;
+      default: v = (uint64_t(rng()) << 32) | rng(); break;
+    }
+    e->v = v & mask(e->w);
+    if (nonZero && e->v == 0) e->v = 3;
+    return e;
+  }
+
+  P integer(int depth) {
+    if (depth <= 0) {
+      unsigned const k = pick(10);
+      if (k < 5) return var();
+      if (k < 9) return constant();
+      P e = var();
+      e->op = Slice;
+      e->l = pick(e->w);
+      e->r = e->l + pick(e->w - e->l);
+      return e;
+    }
+    switch (pick(12)) {
+      case 0: return node(pick(2) ? Neg : Compl, integer(depth - 1));
+      case 1: return node(Add, integer(depth - 1), integer(depth - 1));
+      case 2: return node(Sub, integer(depth - 1), integer(depth - 1));
+      case 3: return node(Mul, integer(depth - 1), constant());
+      case 4: return node(pick(2) ? Div : Mod, integer(depth - 1), constant(true));
+      case 5: return node(And, integer(depth - 1), integer(depth - 1));
+      case 6: return node(Or, integer(depth - 1), integer(depth - 1));
+      case 7: return node(Xor, integer(depth - 1), integer(depth - 1));
+      case 8: return node(pick(2) ? Shl : Shr, integer(depth - 1), pick(2) ? var() : constant());
+      case 9: return node(Ite, boolean(depth - 1), integer(depth - 1), integer(depth - 1));
+      case 10: return boolean(depth - 1);
+      default: return integer(depth - 1);
+    }
+  }
+
+  P boolean(int depth) {
+    unsigned const k = depth <= 0 ? 0 : pick(8);
+    if (k == 6) return node(pick(2) ? LAnd : LOr, boolean(depth - 1), boolean(depth - 1));
+    if (k == 7) return node(LNot, boolean(depth - 1));
+    static Op const cmp[] = {Lt, Le, Gt, Ge, Eq, Ne};
+    return node(cmp[pick(6)], integer(depth), integer(depth));
+  }
+};
+
+template <typename T>
+expression constantExpr(uint64_t v) {
+  return value_to_expression(static_cast<T>(v));
+}
+
+struct Crave {
+  Variable<signed char> sc;
+  Variable<unsigned char> uc;
+  Variable<short> ss;
+  Variable<unsigned short> us;
+
+  expression build(E const& e) {
+    switch (e.op) {
+      case Var:
+        switch (e.v) {
+          case 0: return make_expression(sc);
+          case 1: return make_expression(uc);
+          case 2: return make_expression(ss);
+          default: return make_expression(us);
+        }
+      case Slice:
+        switch (e.v) {
+          case 0: return make_expression(bitslice(e.r, e.l, sc));
+          case 1: return make_expression(bitslice(e.r, e.l, uc));
+          case 2: return make_expression(bitslice(e.r, e.l, ss));
+          default: return make_expression(bitslice(e.r, e.l, us));
+        }
+      case Const:
+        switch (e.w) {
+          case 8: return e.s ? constantExpr<signed char>(e.v) : constantExpr<unsigned char>(e.v);
+          case 16: return e.s ? constantExpr<short>(e.v) : constantExpr<unsigned short>(e.v);
+          case 32: return e.s ? constantExpr<int>(e.v) : constantExpr<unsigned>(e.v);
+          default: return e.s ? constantExpr<long long>(e.v) : constantExpr<unsigned long long>(e.v);
+        }
+      case Neg: return make_expression(-build(*e.a));
+      case Compl: return make_expression(~build(*e.a));
+      case LNot: return make_expression(!build(*e.a));
+      case Ite: return make_expression(if_then_else(build(*e.a), build(*e.b), build(*e.c)));
+      default: break;
+    }
+    expression const p = build(*e.a);
+    expression const q = build(*e.b);
+    switch (e.op) {
+      case Add: return make_expression(p + q);
+      case Sub: return make_expression(p - q);
+      case Mul: return make_expression(p * q);
+      case Div: return make_expression(p / q);
+      case Mod: return make_expression(p % q);
+      case And: return make_expression(p & q);
+      case Or: return make_expression(p | q);
+      case Xor: return make_expression(p ^ q);
+      case Shl: return make_expression(p << q);
+      case Shr: return make_expression(p >> q);
+      case Lt: return make_expression(p < q);
+      case Le: return make_expression(p <= q);
+      case Gt: return make_expression(p > q);
+      case Ge: return make_expression(p >= q);
+      case Eq: return make_expression(p == q);
+      case Ne: return make_expression(p != q);
+      case LAnd: return make_expression(p && q);
+      default: return make_expression(p || q);
+    }
+  }
+
+  void assign(Evaluator& eval, Values const& x) {
+    eval.assign(sc, static_cast<signed char>(x.var[0]));
+    eval.assign(uc, static_cast<unsigned char>(x.var[1]));
+    eval.assign(ss, static_cast<short>(x.var[2]));
+    eval.assign(us, static_cast<unsigned short>(x.var[3]));
+  }
+};
+
+// the values of the operands, which are raw bits of their widths
+Values values(unsigned i8, unsigned i16) {
+  static uint64_t const v16[] = {0, 1, 0x7FFF, 0x8000, 0xFFFF, 0x00FF, 0x0100, 0xFF00, 0x1234, 0xFEDC, 0x0008};
+  Values x;
+  x.var[0] = i8 & 0xFF;
+  x.var[1] = (i8 * 167 + 13) & 0xFF;
+  x.var[2] = v16[i16 % 11];
+  x.var[3] = v16[(i16 * 7 + 3) % 11];
+  return x;
+}
+}  // namespace sv_model
+}  // namespace
+
+// The evaluator and the solver agree with a model of the rules of SystemVerilog for the widths and the types
+// of expressions, for many random expressions over 8-bit and 16-bit operands.
+BOOST_AUTO_TEST_CASE(sv_expression_widths_model) {
+  using namespace sv_model;
+  sv_signedness_guard guard(true);
+  Builder builder(20261117);
+  Crave crv;
+
+  for (unsigned n = 0; n < 120; ++n) {
+    P const b = builder.boolean(1 + n % 3);
+    P const i = builder.integer(1 + n % 3);
+    expression const be = crv.build(*b);
+    expression const ie = crv.build(*i);
+    unsigned const iw = width(*i);
+    bool const is = sign(*i);
+
+    // the evaluator, for every value of the 8-bit operands
+    Evaluator ev;
+    for (unsigned v8 = 0; v8 < 256; ++v8) {
+      for (unsigned v16 = 0; v16 < 11; v16 += 2) {
+        Values const x = values(v8, v16);
+        crv.assign(ev, x);
+        BOOST_REQUIRE(ev.evaluate(be));
+        if (ev.result<bool>() != evalBool(*b, x))
+          BOOST_FAIL("boolean expression " << n << " disagrees for " << v8 << ", " << v16);
+        if (!isBool(*i)) {
+          BOOST_REQUIRE(ev.evaluate(ie));
+          uint64_t const expected = is ? sext(eval(*i, iw, is, x), iw) : eval(*i, iw, is, x);
+          if (ev.result<unsigned long long>() != expected)
+            BOOST_FAIL("integer expression " << n << " disagrees for " << v8 << ", " << v16 << ": "
+                                             << ev.result<unsigned long long>() << " != " << expected);
+        }
+      }
+    }
+
+    // the solver, which finds the value of the boolean expression for given values of the operands
+    signed char sc;
+    unsigned char uc;
+    short ss;
+    unsigned short us;
+    Variable<bool> r;
+    Generator gen;
+    gen(crv.sc == reference(sc))(crv.uc == reference(uc))(crv.ss == reference(ss))(crv.us == reference(us));
+    gen(r == be);
+    for (unsigned k = 0; k < 24; ++k) {
+      unsigned const v8 = (k * 89 + n) & 0xFF;
+      Values const x = values(v8, k + n);
+      sc = static_cast<signed char>(x.var[0]);
+      uc = static_cast<unsigned char>(x.var[1]);
+      ss = static_cast<short>(x.var[2]);
+      us = static_cast<unsigned short>(x.var[3]);
+      BOOST_REQUIRE(gen.next());
+      if (gen[r] != evalBool(*b, x))
+        BOOST_FAIL("the solver disagrees for boolean expression " << n << " for " << v8 << ", " << (k + n));
+    }
+  }
+}
+
+// The evaluator agrees with the model for every value of a 16-bit operand.
+BOOST_AUTO_TEST_CASE(sv_expression_widths_16bit) {
+  using namespace sv_model;
+  sv_signedness_guard guard(true);
+  Builder m(0);
+  Crave crv;
+  // ~ss + 0u == 0u and us + us > (unsigned short)0x7FFF
+  P const b = m.node(Eq, m.node(Add, m.node(Compl, m.leaf(Var, 2)), m.leaf(Const, 0, 32, false)),
+                     m.leaf(Const, 0, 32, false));
+  P const c = m.node(Gt, m.node(Add, m.leaf(Var, 3), m.leaf(Var, 3)), m.leaf(Const, 0x7FFF, 16, false));
+  expression const be = crv.build(*b);
+  expression const ce = crv.build(*c);
+  Evaluator ev;
+  unsigned holds = 0;
+  for (unsigned v = 0; v < 0x10000; ++v) {
+    Values x = values(0, 0);
+    x.var[2] = x.var[3] = v;
+    crv.assign(ev, x);
+    BOOST_REQUIRE(ev.evaluate(be));
+    BOOST_REQUIRE_EQUAL(ev.result<bool>(), evalBool(*b, x));
+    BOOST_REQUIRE(ev.evaluate(ce));
+    BOOST_REQUIRE_EQUAL(ev.result<bool>(), evalBool(*c, x));
+    holds += ev.result<bool>();
+  }
+  // the sum wraps around at 16 bits
+  BOOST_REQUIRE_EQUAL(holds, 0x8000u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // SvSignedness_t
