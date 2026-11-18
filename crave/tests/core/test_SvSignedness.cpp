@@ -251,6 +251,10 @@ BOOST_AUTO_TEST_CASE(sv_expression_widths) {
   // a comparison is a 1-bit value, its operands are context-determined among themselves
   BOOST_REQUIRE(satisfiable(a == 255 && b == 1 && (a + b > 255) + 0u == 1u));
   BOOST_REQUIRE(satisfiable(a == 255 && b == 1 && (a + b > static_cast<unsigned char>(254)) + 0u == 0u));
+  // a relational operator compares booleans as 1-bit unsigned values
+  BOOST_REQUIRE(satisfiable(a == 1 && b == 2 && (a > b) < (b > a)));
+  BOOST_REQUIRE(!satisfiable(a == 1 && b == 2 && (a > b) > (b > a)));
+  BOOST_REQUIRE(satisfiable(a == 1 && b == 2 && (a > b) <= (a > b)));
   // the condition of if_then_else is self-determined, its branches are context-determined
   BOOST_REQUIRE(satisfiable(a == 255 && if_then_else(a + 1u > 255u, a, b) + 1 == 256));
 
@@ -266,6 +270,11 @@ BOOST_AUTO_TEST_CASE(sv_expression_widths) {
   BOOST_REQUIRE_EQUAL(eval.result<unsigned>(), 144u);
   BOOST_REQUIRE(eval.evaluate(a + b + 0));
   BOOST_REQUIRE_EQUAL(eval.result<int>(), 400);
+  eval.assign(b, static_cast<unsigned char>(100));
+  BOOST_REQUIRE(eval.evaluate((a < b) < (b < a)));
+  BOOST_REQUIRE(eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate((a < b) > (b < a)));
+  BOOST_REQUIRE(!eval.result<bool>());
 }
 
 namespace {
@@ -368,10 +377,7 @@ bool evalBool(E const& e, Values const& x) {
     case LNot: return !evalBool(*e.a, x);
     default: break;
   }
-  if (isBool(*e.a) && isBool(*e.b)) {
-    bool const p = evalBool(*e.a, x), q = evalBool(*e.b, x);
-    return e.op == Eq ? p == q : p != q;
-  }
+  // two booleans are compared as 1-bit unsigned values
   unsigned const w = std::max(width(*e.a), width(*e.b));
   bool const s = sign(*e.a) && sign(*e.b);
   uint64_t const p = eval(*e.a, w, s, x), q = eval(*e.b, w, s, x);
@@ -443,6 +449,13 @@ struct Builder {
     return e;
   }
 
+  // The operands are generated from the last to the first, in a fixed order, as the order of the evaluation of
+  // the arguments of a function differs between compilers.
+  P binary(Op op, int depth) {
+    P const b = integer(depth);
+    return node(op, integer(depth), b);
+  }
+
   P integer(int depth) {
     if (depth <= 0) {
       unsigned const k = pick(10);
@@ -455,16 +468,34 @@ struct Builder {
       return e;
     }
     switch (pick(12)) {
-      case 0: return node(pick(2) ? Neg : Compl, integer(depth - 1));
-      case 1: return node(Add, integer(depth - 1), integer(depth - 1));
-      case 2: return node(Sub, integer(depth - 1), integer(depth - 1));
-      case 3: return node(Mul, integer(depth - 1), constant());
-      case 4: return node(pick(2) ? Div : Mod, integer(depth - 1), constant(true));
-      case 5: return node(And, integer(depth - 1), integer(depth - 1));
-      case 6: return node(Or, integer(depth - 1), integer(depth - 1));
-      case 7: return node(Xor, integer(depth - 1), integer(depth - 1));
-      case 8: return node(pick(2) ? Shl : Shr, integer(depth - 1), pick(2) ? var() : constant());
-      case 9: return node(Ite, boolean(depth - 1), integer(depth - 1), integer(depth - 1));
+      case 0: {
+        P const a = integer(depth - 1);
+        return node(pick(2) ? Neg : Compl, a);
+      }
+      case 1: return binary(Add, depth - 1);
+      case 2: return binary(Sub, depth - 1);
+      case 3: {
+        P const b = constant();
+        return node(Mul, integer(depth - 1), b);
+      }
+      case 4: {
+        P const b = constant(true);
+        P const a = integer(depth - 1);
+        return node(pick(2) ? Div : Mod, a, b);
+      }
+      case 5: return binary(And, depth - 1);
+      case 6: return binary(Or, depth - 1);
+      case 7: return binary(Xor, depth - 1);
+      case 8: {
+        P const b = pick(2) ? var() : constant();
+        P const a = integer(depth - 1);
+        return node(pick(2) ? Shl : Shr, a, b);
+      }
+      case 9: {
+        P const c = integer(depth - 1);
+        P const b = integer(depth - 1);
+        return node(Ite, boolean(depth - 1), b, c);
+      }
       case 10: return boolean(depth - 1);
       default: return integer(depth - 1);
     }
@@ -472,10 +503,16 @@ struct Builder {
 
   P boolean(int depth) {
     unsigned const k = depth <= 0 ? 0 : pick(8);
-    if (k == 6) return node(pick(2) ? LAnd : LOr, boolean(depth - 1), boolean(depth - 1));
+    if (k == 6) {
+      P const b = boolean(depth - 1);
+      P const a = boolean(depth - 1);
+      return node(pick(2) ? LAnd : LOr, a, b);
+    }
     if (k == 7) return node(LNot, boolean(depth - 1));
     static Op const cmp[] = {Lt, Le, Gt, Ge, Eq, Ne};
-    return node(cmp[pick(6)], integer(depth), integer(depth));
+    P const b = integer(depth);
+    P const a = integer(depth);
+    return node(cmp[pick(6)], a, b);
   }
 };
 
