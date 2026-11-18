@@ -511,6 +511,29 @@ BOOST_AUTO_TEST_CASE(vector_reduction_element_outside) {
   BOOST_REQUIRE(!gen3.next());
 }
 
+// A size, for which a constraint on a reduction does not hold, is excluded, and the size is solved again.
+BOOST_AUTO_TEST_CASE(vector_reduction_size_retry) {
+  rand_vec<unsigned char> v(NULL);
+  Generator gen;
+  gen(v().size() <= 3);
+  gen(foreach (v(), v()[_i] < 5));
+  gen(v().sum() == 10);
+  for (int n = 0; n < 20; ++n) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v.size(), 3u);
+    BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 10);
+  }
+
+  // no size satisfies the reduction
+  rand_vec<unsigned char> w(NULL);
+  Generator gen2;
+  gen2(w().size() <= 2);
+  gen2(foreach (w(), w()[_i] < 5));
+  gen2(w().sum() == 10);
+  BOOST_REQUIRE(!gen2.next());
+  BOOST_REQUIRE(!gen2.next());
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

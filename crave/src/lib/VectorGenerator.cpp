@@ -49,7 +49,11 @@ Constant to_constant(std::string const& str, unsigned bitsize, bool sign) {
 }  // namespace
 
 VectorSolver::VectorSolver(int vector_id)
-    : constraints_(), vector_id_(vector_id), solver_(FactoryMetaSMT::getNewInstance()), vec_elements_() {}
+    : constraints_(),
+      vector_id_(vector_id),
+      solver_(FactoryMetaSMT::getNewInstance()),
+      vec_elements_(),
+      failed_with_solved_size_(false) {}
 
 void VectorSolver::addConstraint(VectorConstraintPtr vc) {
   constraints_.push_back(vc);
@@ -67,11 +71,13 @@ bool VectorSolver::solve(const VariableGenerator& var_gen) {
   __rand_vec_base* vector = vectorBaseMap[vector_id_];
 
   unsigned int size = default_rand_vec_size();
-  if (!var_gen.read(vector->size_var(), &size)) {
+  bool const solved_size = var_gen.read(vector->size_var(), &size);
+  if (!solved_size) {
     LOG(INFO) << "Use default size for vector " << vector_id_;
   } else {
     LOG(INFO) << "Size of vector " << vector_id_ << " = " << size;
   }
+  failed_with_solved_size_ = false;
   resetSolver(size);
   makeSuggestions();
   bool result = solver_->solve(false);
@@ -85,6 +91,9 @@ bool VectorSolver::solve(const VariableGenerator& var_gen) {
   }
   else {
     LOG(INFO) << "Failed solving vector " << vector_id_;
+    if (solved_size)
+      for (VectorConstraintPtr constraint : constraints_)
+        if (constraint->isReduction() && !constraint->isSoft()) failed_with_solved_size_ = true;
   }
   return result;
 }
@@ -187,11 +196,22 @@ void VectorSolver::buildSolver(unsigned int const size) {
   }
 }
 
-VectorGenerator::VectorGenerator() : vector_solvers_() {}
+VectorGenerator::VectorGenerator() : vector_solvers_(), failed_(nullptr) {}
+
+bool VectorGenerator::failedSize(int* id, unsigned int* size) const {
+  if (!failed_ || !failed_->failedWithSolvedSize()) return false;
+  *id = failed_->id();
+  *size = failed_->size();
+  return true;
+}
 
 bool VectorGenerator::solve(const VariableGenerator& var_gen, const std::set<int>& vec_ids) {
+  failed_ = nullptr;
   for(VectorSolverMap::value_type & c_pair : vector_solvers_) {
-    if (!c_pair.second.solve(var_gen)) return false;
+    if (!c_pair.second.solve(var_gen)) {
+      failed_ = &c_pair.second;
+      return false;
+    }
   }
   for(int id : vec_ids) {
     if (vector_solvers_.find(id) != vector_solvers_.end()) continue;
@@ -210,6 +230,7 @@ bool VectorGenerator::solve(const VariableGenerator& var_gen, const std::set<int
 }
 
 void VectorGenerator::reset(const std::vector<VectorConstraintPtr>& v) {
+  failed_ = nullptr;
   vector_solvers_.clear();
   for(VectorConstraintPtr vc : v) { addConstraint(vc); }
 }

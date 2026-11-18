@@ -473,6 +473,23 @@ BOOST_AUTO_TEST_CASE(vector_reduction_element_outside) {
   BOOST_REQUIRE(!out.randomize());
 }
 
+struct ReductionRetryItem : public crv_sequence_item {
+  ReductionRetryItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_constraint con = {v().size() <= 3, foreach (v(), v()[_i] < 5), v.sum() == 10u};
+};
+
+// randomize() succeeds if a size satisfies the reduction
+BOOST_AUTO_TEST_CASE(vector_reduction_size_retry) {
+  ReductionRetryItem it{"item"};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.v.size(), 3u);
+    BOOST_REQUIRE_EQUAL(it.v[0] + it.v[1] + it.v[2], 10);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

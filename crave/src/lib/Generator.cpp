@@ -95,7 +95,28 @@ bool Generator::next() {
     resetConstraints();
     rebuild(true);
   }
-  return var_gen_->solve() && vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_);
+  // The size of a vector is solved before its elements. If a constraint on a reduction of the elements does not
+  // hold for the size, the other variables are solved again without that size, up to a bound of sizes.
+  static unsigned const max_excluded_sizes = 64;
+  std::vector<std::string> excluded;
+  bool result = false;
+  while (var_gen_->solve()) {
+    if (vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_)) {
+      result = true;
+      break;
+    }
+    int id;
+    unsigned size;
+    if (excluded.size() >= max_excluded_sizes || !vec_gen_.failedSize(&id, &size)) break;
+    std::string const name = "vector_" + std::to_string(id) + "_size_not_" + std::to_string(size);
+    if (!constr_mng_.enableConstraint(name)) constr_mng_.makeConstraint(name, vectorBaseMap[id]->size_var() != size, &ctx_);
+    excluded.push_back(name);
+    resetConstraints();
+    rebuild(true);
+  }
+  // the excluded sizes may hold after the constraints are changed
+  for (std::string const& name : excluded) constr_mng_.disableConstraint(name);
+  return result;
 }
 
 bool Generator::nextCov() {
