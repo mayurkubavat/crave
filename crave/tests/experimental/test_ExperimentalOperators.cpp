@@ -607,4 +607,86 @@ BOOST_AUTO_TEST_CASE(divide) {
 
   VariableDefaultSolver::bypass_constraint_analysis = false;
 }
+struct array_product_s1 : public crv_sequence_item {
+  array_product_s1(crv_object_name) {}
+  crv_array<unsigned, 3> arr;
+  crv_constraint con = {arr.product() == 30u, arr[0]() > 1u, arr[1]() > 1u, arr[2]() > 1u,
+                        arr[0]() < 30u, arr[1]() < 30u, arr[2]() < 30u};
+};
+
+BOOST_AUTO_TEST_CASE(array_product_t1) {
+  array_product_s1 item("item");
+
+  std::set<unsigned> elements;
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.arr[0] * item.arr[1] * item.arr[2], 30u);
+    for (unsigned j = 0; j < 3; ++j) elements.insert(item.arr[j]);
+  }
+  BOOST_REQUIRE(elements == std::set<unsigned>({2, 3, 5}));
+}
+
+// As in SystemVerilog, the product has the width of the elements and wraps around.
+struct array_product_s2 : public crv_sequence_item {
+  array_product_s2(crv_object_name) {}
+  crv_array<unsigned char, 3> arr;
+  crv_constraint con = {arr.product() == 0u, arr[0]() != 0u, arr[1]() != 0u, arr[2]() != 0u};
+};
+
+BOOST_AUTO_TEST_CASE(array_product_t2) {
+  array_product_s2 item("item");
+
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(item.arr[0], 0u);
+    BOOST_REQUIRE_NE(item.arr[1], 0u);
+    BOOST_REQUIRE_NE(item.arr[2], 0u);
+    BOOST_REQUIRE_EQUAL((unsigned char)(item.arr[0] * item.arr[1] * item.arr[2]), 0u);
+  }
+}
+
+struct array_bitwise_s1 : public crv_sequence_item {
+  array_bitwise_s1(crv_object_name) {}
+  crv_array<unsigned char, 3> arr;
+  crv_constraint con = {arr.and_() == 0x01u, arr.or_() == 0x0fu, arr.xor_() == 0x03u};
+};
+
+BOOST_AUTO_TEST_CASE(array_bitwise_t1) {
+  array_bitwise_s1 item("item");
+
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    unsigned char a = item.arr[0], b = item.arr[1], c = item.arr[2];
+    BOOST_REQUIRE_EQUAL(a & b & c, 0x01);
+    BOOST_REQUIRE_EQUAL(a | b | c, 0x0f);
+    BOOST_REQUIRE_EQUAL(a ^ b ^ c, 0x03);
+  }
+}
+
+struct array_bool_s1 : public crv_sequence_item {
+  array_bool_s1(crv_object_name) {}
+  crv_array<bool, 3> arr;
+  crv_constraint con = {arr.and_() == false, arr.or_() == true, arr.xor_() == false};
+};
+
+struct array_bool_s2 : public crv_sequence_item {
+  array_bool_s2(crv_object_name) {}
+  crv_array<bool, 3> arr;
+  crv_constraint con = {arr.product()};
+};
+
+BOOST_AUTO_TEST_CASE(array_bool_t1) {
+  array_bool_s1 item("item");
+
+  for (unsigned i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    // exactly two elements are true
+    BOOST_REQUIRE_EQUAL(item.arr[0] + item.arr[1] + item.arr[2], 2);
+  }
+
+  array_bool_s2 item2("item2");
+  BOOST_REQUIRE(item2.randomize());
+  BOOST_REQUIRE(item2.arr[0] && item2.arr[1] && item2.arr[2]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
