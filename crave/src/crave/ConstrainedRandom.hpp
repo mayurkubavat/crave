@@ -68,7 +68,7 @@ void set_solver_backend(std::string const&);
 
 /*!
  * \ingroup setting
- * \brief Selects the signedness rules of SystemVerilog for the operands of constraints and expressions.
+ * \brief Selects the signedness and width rules of SystemVerilog for the operands of constraints and expressions.
  *
  * <p>By default, the result of an operation is signed if one of its operands is signed, a signed operand is
  * sign-extended to the width of the other operand, a comparison of a signed and an unsigned operand
@@ -81,12 +81,16 @@ void set_solver_backend(std::string const&);
  * unsigned, the type of a shift is the type of its left operand, and the shift amount and the condition of
  * crave::if_then_else are self-determined. For c of -1, which is converted to 255 then,
  * <code>c > 5u</code> holds and <code>c == 0xFFFFFFFFu</code> does not hold.</p>
- * <p>The widths are not changed, the rules of IEEE 1800-2017 11.6 for the widths of expressions are not applied:
- * an operation has the width of its widest operand, and a constant the width that its value needs. An operand
- * is extended to the width of the other operand of its operation, not to the width of the whole expression
- * before an operation on it. For c of -1, <code>~c + 0u == 0u</code> holds, as <code>~c</code> and the sum
- * have 8 bits, whereas in SystemVerilog c is extended to 32 bits before <code>~</code> and it does not hold.
- * Likewise, the sum of two <code>unsigned char</code> variables wraps around at 8 bits.</p>
+ * <p>The widths of expressions follow IEEE 1800-2017 11.6 as well. A constant has the width of its type, like
+ * an unsized integer literal, which has 32 bits for an int. The operands of an arithmetic or bitwise operator
+ * and the branches of crave::if_then_else are context-determined: they are extended to the width of the
+ * whole expression, which is the width of its widest operand, before the operations. The operands of a
+ * comparison are context-determined among themselves, and its result is a 1-bit value. The shift amount, the
+ * condition of crave::if_then_else, the operands of the logical operators and the variable of a bit slice are
+ * self-determined, and the shift amount is unsigned. For c of -1, <code>~c + 0u == 0u</code> does not hold, as
+ * c is extended to 32 bits before <code>~</code>. For <code>unsigned char</code> a and b of 200,
+ * <code>a + b == 400</code> holds, whereas <code>a + b == (unsigned char)144</code> holds as well, as the sum
+ * has 8 bits there.</p>
  * <p>The setting applies to the constraints and expressions defined after it is changed, and to
  * crave::Evaluator, which evaluates an expression as the solver does then. It can also be set by the option
  * <code>sv_signedness</code> (true or false) of the config file, see crave::init(). The default is false.</p>
