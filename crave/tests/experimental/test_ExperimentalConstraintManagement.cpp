@@ -224,4 +224,78 @@ BOOST_AUTO_TEST_CASE(rand_mode_object) {
   BOOST_REQUIRE_LT(item.inner.y, 1000u);
 }
 
+struct diag_inner_item : public crv_sequence_item {
+  diag_inner_item(crv_object_name) {}
+  crv_variable<unsigned> v;
+  crv_constraint bound{"bound", v() < 10u};
+};
+
+struct diag_item : public crv_sequence_item {
+  diag_item(crv_object_name) : sub("sub") {}
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  diag_inner_item sub;
+
+  crv_constraint range{"range", a() < 10u, b() < 10u};
+  crv_constraint sum{"sum", a() + b() == 4u};
+  crv_constraint product{"product", a() * b() == 4u};
+  crv_constraint not_two{"not_two", a() != 2u};
+  crv_soft_constraint prefer_one{"prefer_one", a() == 1u};
+};
+
+BOOST_AUTO_TEST_CASE(analyse_contradiction_hard_and_with) {
+  diag_item item("it");
+
+  // Can inspect contradictions even before randomize() is called.
+  auto pre_conflicts = item.analyse_contradiction();
+  BOOST_REQUIRE_GE(pre_conflicts.size(), 1u);
+
+  BOOST_REQUIRE(!item.randomize());
+  auto conflicts = item.analyse_contradiction();
+  BOOST_REQUIRE_GE(conflicts.size(), 1u);
+  std::set<std::string> mus(conflicts[0].begin(), conflicts[0].end());
+  BOOST_REQUIRE_EQUAL(mus.count("it.sum#0"), 1u);
+  BOOST_REQUIRE_EQUAL(mus.count("it.product#0"), 1u);
+  BOOST_REQUIRE_EQUAL(mus.count("it.not_two#0"), 1u);
+  // In 32-bit bitvector arithmetic, (2^31 + 2) satisfies sum, product and not_two
+  // unless bounded by range#0 (a < 10) or range#1 (b < 10).
+  BOOST_REQUIRE(mus.count("it.range#0") == 1u || mus.count("it.range#1") == 1u);
+
+  // Deactivate not_two: now a==2, b==2 is solvable, and soft constraint prefer_one (a==1) is dropped.
+  item.not_two.deactivate();
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 2u);
+  BOOST_REQUIRE_EQUAL(item.b, 2u);
+  BOOST_REQUIRE(item.analyse_contradiction().empty());
+  auto dropped_soft = item.inactive_soft_constraints();
+  BOOST_REQUIRE_EQUAL(dropped_soft.size(), 1u);
+  BOOST_REQUIRE_EQUAL(dropped_soft[0], "it.prefer_one#0");
+
+  // Inline randomize_with() contradiction reports the inline clause alongside conflicting member constraints.
+  BOOST_REQUIRE(!item.randomize_with(item.a() > 5u));
+  auto with_conflicts = item.analyse_contradiction();
+  BOOST_REQUIRE_GE(with_conflicts.size(), 1u);
+  bool saw_inline = false;
+  for (auto const& group : with_conflicts) {
+    for (auto const& cname : group) {
+      if (cname == "it.randomize_with#0") saw_inline = true;
+    }
+  }
+  BOOST_REQUIRE(saw_inline);
+}
+
+BOOST_AUTO_TEST_CASE(analyse_contradiction_hierarchy) {
+  diag_item item("top");
+  item.not_two.deactivate();
+  BOOST_REQUIRE(item.randomize());
+
+  // Force a cross-hierarchy conflict between parent inline constraint and child sub.bound.
+  BOOST_REQUIRE(!item.randomize_with(item.sub.v() >= 20u));
+  auto conflicts = item.analyse_contradiction();
+  BOOST_REQUIRE_EQUAL(conflicts.size(), 1u);
+  std::set<std::string> mus(conflicts[0].begin(), conflicts[0].end());
+  std::set<std::string> expected{"top.sub.bound#0", "top.randomize_with#0"};
+  BOOST_REQUIRE(mus == expected);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // ConstraintManagement

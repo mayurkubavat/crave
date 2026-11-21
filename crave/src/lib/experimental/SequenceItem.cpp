@@ -30,9 +30,10 @@
 
 namespace crave
 {
-  crv_sequence_item::crv_sequence_item() : gen_(), built_(false), cloned_(false) {}
+  crv_sequence_item::crv_sequence_item() : gen_(), rand_with_gen_(), last_gen_(), built_(false), cloned_(false) {}
 
-  crv_sequence_item::crv_sequence_item(crv_sequence_item const & other) : crv_object(other), gen_(), built_(false), cloned_(true) {}
+  crv_sequence_item::crv_sequence_item(crv_sequence_item const & other)
+      : crv_object(other), gen_(), rand_with_gen_(), last_gen_(), built_(false), cloned_(true) {}
 
   std::string crv_sequence_item::obj_kind() const { return "crv_sequence_item"; }
 
@@ -65,6 +66,28 @@ namespace crave
 	  }
   }
 
+  Generator& crv_sequence_item::ensure_generator_() {
+    assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
+    if (!last_gen_) {
+      crosscheck_constraints();
+      if (!built_) {
+        gen_ = std::make_shared<Generator>();
+        recursive_build(*gen_);
+        built_ = true;
+      }
+      last_gen_ = gen_;
+    }
+    return *last_gen_;
+  }
+
+  std::vector<std::vector<std::string>> crv_sequence_item::analyse_contradiction() {
+    return ensure_generator_().analyseContradiction();
+  }
+
+  std::vector<std::string> crv_sequence_item::inactive_soft_constraints() {
+    return ensure_generator_().getInactiveSofts();
+  }
+
   bool crv_sequence_item::randomize() {
     assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
     recursive_pre_randomize();
@@ -75,6 +98,7 @@ namespace crave
       recursive_build(*gen_);
       built_ = true;
     }
+    last_gen_ = gen_;
     if (!gen_->nextCov()) return false;
     recursive_post_randomize();
     return true;
@@ -88,16 +112,21 @@ namespace crave
   void crv_sequence_item::request_rebuild() {
     built_ = false;
     gen_.reset();
+    rand_with_gen_.reset();
+    last_gen_.reset();
     crv_object::request_rebuild();
   }
 
   bool crv_sequence_item::randomize_with_expr_list(const expression_list & list) {
     assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
     recursive_pre_randomize();
+    crosscheck_constraints();
     // TODO Generator caching
     rand_with_gen_ = std::make_shared<Generator>();
     recursive_build(*rand_with_gen_);
-    for (auto e : list) (*rand_with_gen_)(e);
+    unsigned cnt = 0;
+    for (auto e : list) (*rand_with_gen_)(fullname() + ".randomize_with#" + std::to_string(cnt++), e);
+    last_gen_ = rand_with_gen_;
     if (!rand_with_gen_->next()) return false;
     recursive_post_randomize();
     return true;

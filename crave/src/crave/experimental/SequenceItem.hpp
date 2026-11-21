@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "Coverage.hpp"
 #include "Expression.hpp"
 #include "Object.hpp"
@@ -86,12 +89,30 @@ class crv_sequence_item : public crv_object {
 
   void crosscheck_constraints ();
 
+  /**
+   * \brief Returns minimal unsatisfiable subsets of hard constraint expressions.
+   *
+   * Inspects the active constraint graph (or the most recent randomize() /
+   * randomize_with() attempt) and returns each minimal contradicting set of
+   * constraint expression names (e.g. "item.cstr#0", "item.randomize_with#0").
+   * Returns an empty vector when the hard constraints are satisfiable.
+   */
+  std::vector<std::vector<std::string>> analyse_contradiction();
+
+  /**
+   * \brief Returns the names of soft constraint expressions deactivated to
+   * make the constraint system satisfiable.
+   */
+  std::vector<std::string> inactive_soft_constraints();
+
  protected:
   void request_rebuild() override;
+  Generator& ensure_generator_();
 
   bool randomize_with_expr_list(expression_list const&);
   std::shared_ptr<Generator> gen_;
   std::shared_ptr<Generator> rand_with_gen_;
+  std::shared_ptr<Generator> last_gen_;
   bool built_;
   bool cloned_;
 };
