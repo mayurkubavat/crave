@@ -73,6 +73,7 @@ struct VariableDefaultSolver : VariableSolver {
   std::pair<uint64_t, uint64_t> keyBounds(NodePtr const& var, uint64_t key, std::vector<NodePtr>& assumptions);
 
   std::map<int, std::shared_ptr<BddSampler> > bdd_samplers_;
+  std::map<int, std::vector<Constant> > inside_samplers_;
   std::set<int> replaced_dist_refs_;
   // a value of a cyclic random variable, which the last solve() has taken, and the state before a new cycle
   struct RandcUndo {

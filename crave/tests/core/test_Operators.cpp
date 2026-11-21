@@ -802,4 +802,101 @@ BOOST_AUTO_TEST_CASE(bitslice_t) {
   BOOST_REQUIRE_THROW(gen(bitslice(16, 3, x) == 0xFF), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(inside_negation_soundness) {
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    Variable<unsigned> x;
+    std::set<unsigned> s{5, 6};
+    Generator gen(x == 5 && !inside(x, s));
+    BOOST_REQUIRE(!gen.next());
+
+    Variable<unsigned> x2;
+    std::set<unsigned> s2{1, 2, 3};
+    Generator gen2(!inside(x2, s2) && x2 < 5);
+    for (int i = 0; i < 30; ++i) {
+      BOOST_REQUIRE(gen2.next());
+      unsigned const val = gen2[x2];
+      BOOST_REQUIRE(val == 0u || val == 4u);
+    }
+
+    std::set<unsigned> empty;
+    Variable<unsigned> x3;
+    Generator gen3(!inside(x3, empty) && x3 == 42);
+    BOOST_REQUIRE(gen3.next());
+    BOOST_REQUIRE_EQUAL(gen3[x3], 42u);
+
+    std::vector<unsigned> dup{1, 1, 2};
+    Variable<unsigned> x4;
+    Generator gen4(inside(x4, dup) && x4 == 2);
+    BOOST_REQUIRE(gen4.next());
+    BOOST_REQUIRE_EQUAL(gen4[x4], 2u);
+
+    Variable<unsigned> x5;
+    Generator gen5(!inside(x5, dup) && x5 < 4);
+    for (int i = 0; i < 20; ++i) {
+      BOOST_REQUIRE(gen5.next());
+      unsigned const val = gen5[x5];
+      BOOST_REQUIRE(val == 0u || val == 3u);
+    }
+  }
+  set_solver_backend("Z3");
+}
+
+BOOST_AUTO_TEST_CASE(inside_conditional_disjunction_bool) {
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    std::set<unsigned> s{5, 6};
+    Variable<unsigned> x, y;
+    Generator gen(x == 5 && if_then(inside(x, s), y == 1) && y == 2);
+    BOOST_REQUIRE(!gen.next());
+
+    std::set<unsigned> s2{2, 5};
+    randv<unsigned> a(NULL), b(NULL);
+    Generator gen2;
+    gen2(a() < 8)(if_then_else(inside(a(), s2), b() == 10, b() == 20));
+    bool hit_in = false, hit_out = false;
+    for (int i = 0; i < 60; ++i) {
+      BOOST_REQUIRE(gen2.next());
+      if (a == 2u || a == 5u) {
+        BOOST_REQUIRE_EQUAL(b, 10u);
+        hit_in = true;
+      } else {
+        BOOST_REQUIRE_EQUAL(b, 20u);
+        hit_out = true;
+      }
+    }
+    BOOST_REQUIRE(hit_in);
+    BOOST_REQUIRE(hit_out);
+
+    Variable<unsigned> d1, d2;
+    Generator gen3(d1 == 5 && (inside(d1, s) || d2 == 1) && d2 == 2);
+    BOOST_REQUIRE(gen3.next());
+
+    Variable<unsigned> d3, d4;
+    Generator gen4(d3 == 4 && (inside(d3, s) || d4 == 1) && d4 == 2);
+    BOOST_REQUIRE(!gen4.next());
+
+    Variable<unsigned> d5, d6;
+    Generator gen5(d5 == 5 && !(inside(d5, s) || d6 == 1));
+    BOOST_REQUIRE(!gen5.next());
+
+    Variable<unsigned> bx;
+    Variable<bool> bf;
+    Generator gen6(bx == 5 && (inside(bx, s) == bf));
+    BOOST_REQUIRE(gen6.next());
+    BOOST_REQUIRE(gen6[bf]);
+
+    Variable<unsigned> bx2;
+    Variable<bool> bf2;
+    Generator gen7(bx2 == 4 && (inside(bx2, s) == bf2));
+    BOOST_REQUIRE(gen7.next());
+    BOOST_REQUIRE(!gen7[bf2]);
+  }
+  set_solver_backend("Z3");
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context

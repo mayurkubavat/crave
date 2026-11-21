@@ -615,4 +615,29 @@ BOOST_AUTO_TEST_CASE(equal_t3) {
   BOOST_REQUIRE(eval.result<bool>());
 }
 
+BOOST_AUTO_TEST_CASE(inside_negation_and_unassigned_equal) {
+  std::set<unsigned> s{1, 7, 9};
+  crv_variable<unsigned> x;
+  crv_variable<unsigned> y;
+  Evaluator eval;
+
+  eval.assign(x(), 7u);
+  eval.assign(y(), 2u);
+  BOOST_REQUIRE(eval.evaluate(!inside(x(), s)));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(if_then(inside(x(), s), y() == 1u)));
+  BOOST_REQUIRE(!eval.result<bool>());
+
+  eval.assign(x(), 5u);
+  BOOST_REQUIRE(eval.evaluate(!inside(x(), s)));
+  BOOST_REQUIRE(eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(if_then(inside(x(), s), y() == 1u)));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  eval.assign(a(), 5u);
+  BOOST_REQUIRE(!eval.evaluate(a() == b() && b() == 5u));
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Evaluations

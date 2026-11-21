@@ -295,23 +295,6 @@ void EvalVisitor::visitXorOpr(const XorOpr& x) {
 }
 
 void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
-  // include tmp variable for inside operation
-  VariableExpr* v1 = exact_ ? dynamic_cast<VariableExpr*>(eq.lhs().get()) : static_cast<VariableExpr*>(eq.lhs().get());
-  VariableExpr* v2 = exact_ ? dynamic_cast<VariableExpr*>(eq.rhs().get()) : static_cast<VariableExpr*>(eq.rhs().get());
-
-  if (v1 && v2 && v1->id() != 0 && v2->id() != 0) {
-    // both operands are variables
-    eval_map::iterator ite1 = evalMap_->find(v1->id());
-    eval_map::iterator ite2 = evalMap_->find(v2->id());
-    if (ite1 != evalMap_->end() && ite2 == evalMap_->end()) {
-      evalMap_->insert(std::make_pair(v2->id(), ite1->second));
-    }
-    if (ite1 == evalMap_->end() && ite2 != evalMap_->end()) {
-      evalMap_->insert(std::make_pair(v1->id(), ite2->second));
-    }
-  }
-
-  // regular evaluation
   if (exactCompare(eq)) return;
   stack_entry lhs, rhs;
   evalBinExpr(eq, lhs, rhs);

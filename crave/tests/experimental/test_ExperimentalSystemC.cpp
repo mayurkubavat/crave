@@ -151,6 +151,35 @@ BOOST_AUTO_TEST_CASE(scope_randomize_systemc) {
   BOOST_REQUIRE_EQUAL(i.to_int(), -1);
 }
 
+struct inside_sc_exp_item : public crv_sequence_item {
+  inside_sc_exp_item(crv_object_name) {}
+  crv_variable<sc_int<8> > a;
+  crv_variable<sc_bigint<40> > b;
+  crv_variable<bool> flag;
+  std::set<sc_int<8> > sa{-10, -1, 5, 10};
+  std::vector<long long> sb{-5, 7, 1LL << 35};
+  crv_constraint con_a{"con_a"};
+  crv_constraint con_b{"con_b"};
+};
+
+BOOST_AUTO_TEST_CASE(inside_sc_experimental) {
+  inside_sc_exp_item item("item");
+  item.con_a = {item.a() == -1, !inside(item.a(), item.sa)};
+  item.con_b = {inside(item.b(), item.sb)};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con_a = {item.a() == -1, if_then(inside(item.a(), item.sa), item.flag() == true), item.flag() == false};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con_a = {!inside(item.a(), item.sa), item.a() >= -2, item.a() <= 2};
+  item.con_b = {item.b() == (1LL << 35), inside(item.b(), item.sb)};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(static_cast<sc_int<8> >(item.a), -1);
+    BOOST_REQUIRE_EQUAL(static_cast<sc_bigint<40> >(item.b).to_int64(), 1LL << 35);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Ex_SystemC_t
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

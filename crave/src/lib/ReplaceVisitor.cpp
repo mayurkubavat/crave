@@ -228,6 +228,8 @@ void ReplaceVisitor::visitInside(Inside const& i) {
   evalUnaryExpr(i, child);
   aux_stack_.push(new Inside(child, i.collection()));
   updateResult();
+  subscript_stack_.pop();
+  subscript_stack_.push(0);
 }
 void ReplaceVisitor::visitExtendExpr(ExtendExpression const& e) {
   NodePtr child;
