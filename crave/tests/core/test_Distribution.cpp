@@ -27,10 +27,13 @@
 #include <boost/test/unit_test.hpp>
 
 #include <crave/ConstrainedRandom.hpp>
+#include <lib/BddSampler.hpp>
 
 #include <boost/format.hpp>
 
+#include <memory>
 #include <set>
+#include <vector>
 #include <iostream>
 
 // using namespace std;
@@ -39,6 +42,17 @@ using namespace crave;
 using boost::format;
 
 BOOST_FIXTURE_TEST_SUITE(Distribution_t, Context_Fixture)
+
+// the weight of a range is the number of its values, also if it does not fit into the type of the values
+BOOST_AUTO_TEST_CASE(range_weight_t) {
+  BOOST_REQUIRE_EQUAL(range<int>(-5, 5).weight_, 11u);
+  BOOST_REQUIRE_EQUAL(range<int>(-2147483647 - 1, 2147483646).weight_, 4294967295ull);
+  BOOST_REQUIRE_EQUAL(range<int>(-1, 2147483647).weight_, 2147483649ull);
+  BOOST_REQUIRE_EQUAL(range<unsigned char>(0, 255).weight_, 256u);
+  BOOST_REQUIRE_EQUAL(range<short>(-32768, 32767).weight_, 65536u);
+  BOOST_REQUIRE_EQUAL(range<long long>(-9223372036854775807LL - 1, -1).weight_, 9223372036854775808ull);
+  BOOST_REQUIRE_EQUAL(range<unsigned>(1, 4294967295u).weight_, 4294967295ull);
+}
 
 BOOST_AUTO_TEST_CASE(variable_dist_t1) {
   Variable<int> v;
@@ -148,6 +162,64 @@ BOOST_AUTO_TEST_CASE(dist_of_boolean75) {
   }
 
   BOOST_REQUIRE_GT(counter, 0);
+}
+
+BOOST_AUTO_TEST_CASE(single_variable_constraint_spread) {
+  // The solutions of constraints on a single variable without a distribution
+  // are sampled with a BDD, if CUDD is available.
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  randv<unsigned> x(NULL);
+  Generator gen;
+  gen(x() <= 10);
+
+  std::set<unsigned> values;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_LE(x, 10);
+    values.insert(x);
+  }
+  BOOST_REQUIRE_GE(values.size(), 9);
+}
+
+BOOST_AUTO_TEST_CASE(single_variable_constraint_spread_64_bits) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  randv<uint64_t> x(NULL);
+  Generator gen;
+  gen(x() >= 100);
+
+  std::set<uint32_t> low_words;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_GE(x, 100);
+    low_words.insert(static_cast<uint32_t>(x));
+  }
+  BOOST_REQUIRE_GE(low_words.size(), 190);
+}
+
+// The samplers are shared, so many objects with the same constraints do not need more of them.
+struct s_many_objects : public rand_obj {
+  randv<unsigned> addr, len;
+  s_many_objects() : addr(this), len(this) {
+    constraint(addr() <= 0xffff);
+    constraint(1 <= len() && len() <= 64);
+  }
+};
+
+BOOST_AUTO_TEST_CASE(many_objects_share_samplers) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  std::vector<std::unique_ptr<s_many_objects> > objects;
+  objects.emplace_back(new s_many_objects());
+  BOOST_REQUIRE(objects.back()->next());
+  std::size_t count = BddSampler::count();
+  for (int i = 0; i < 100; i++) {
+    objects.emplace_back(new s_many_objects());
+    BOOST_REQUIRE(objects.back()->next());
+    BOOST_REQUIRE_LE(objects.back()->addr, 0xffff);
+  }
+  BOOST_REQUIRE_EQUAL(BddSampler::count(), count);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

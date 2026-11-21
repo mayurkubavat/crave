@@ -42,7 +42,10 @@ class FixWidthVisitor : NodeVisitor {
   typedef std::pair<result_type, int> stack_entry;
 
  public:
-  FixWidthVisitor() : NodeVisitor(), exprStack_() {}
+  /**
+   * Creates a visitor, which applies the signedness rules selected by crave::set_sv_signedness() at its creation.
+   */
+  FixWidthVisitor();
 
  private:
   virtual void visitNode(Node const&);
@@ -56,6 +59,7 @@ class FixWidthVisitor : NodeVisitor {
   virtual void visitVariableExpr(VariableExpr const&);
   virtual void visitConstant(Constant const&);
   virtual void visitVectorExpr(VectorExpr const&);
+  virtual void visitVectorReduction(VectorReduction const&);
   virtual void visitNotOpr(NotOpr const&);
   virtual void visitNegOpr(NegOpr const&);
   virtual void visitComplementOpr(ComplementOpr const&);
@@ -95,18 +99,30 @@ class FixWidthVisitor : NodeVisitor {
   template <typename T>
   void visitNumberResultUnaryExpr(const T& object);
   template <typename T>
+  void visitPromotedUnaryExpr(const T& object);
+  template <typename T>
   void visitBooleanResultBinExpr(const T& object);
+  template <typename T>
+  void visitRelationalBinExpr(const T& object);
+  template <typename T>
+  void visitLogicalBinExpr(const T& object);
+  result_type toBoolean(stack_entry const&);
+  void promoteToInteger(stack_entry&);
 
  public:
-  result_type fixWidth(Node const& expr) {
-    expr.visit(this);
-    stack_entry entry;
-    pop(entry);
-    return entry.first;
-  }
+  /**
+   * Fixes the widths of the operands of a constraint, which is a boolean expression afterwards.
+   */
+  result_type fixWidth(Node const& expr);
+
+  /**
+   * Fixes the widths of the operands of an expression, which keeps its type.
+   */
+  result_type fixWidthExpr(Node const& expr);
 
  private:
   std::stack<stack_entry> exprStack_;
+  bool sv_signedness_;
 };
 
 }  // end namespace crave

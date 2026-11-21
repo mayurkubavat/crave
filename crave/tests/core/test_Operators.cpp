@@ -422,6 +422,61 @@ BOOST_AUTO_TEST_CASE(divide) {
   VariableDefaultSolver::bypass_constraint_analysis = false;
 }
 
+// The quotient of a signed and an unsigned operand is the one of their values, as in C++ after the promotion
+// of both operands to int.
+BOOST_AUTO_TEST_CASE(divide_mixed_signedness) {
+  Variable<signed char> s;
+  Variable<unsigned char> u;
+  Variable<short> q;
+  Variable<short> s16;
+  Variable<short> u16;
+
+  // for all values of both 8-bit operands, the quotients equal the ones of the 16-bit signed operands
+  Generator gen1(u != 0u && s16 == s && u16 == u);
+  gen1(q == s / u)(q != s16 / u16);
+  BOOST_REQUIRE(!gen1.next());
+  Generator gen2(s != 0 && s16 == s && u16 == u);
+  gen2(q == u / s)(q != u16 / s16);
+  BOOST_REQUIRE(!gen2.next());
+
+  int const values[][2] = {{-1, 129}, {1, 128}, {1, 255}, {-1, 255}, {-128, 255}, {-7, 2}, {-128, 1}, {127, 200}};
+  for (int const* v : values) {
+    Generator gen(s == v[0] && u == v[1]);
+    Variable<int> a;
+    Variable<int> b;
+    gen(a == u / s)(b == s / u);
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], v[1] / v[0]);
+    BOOST_REQUIRE_EQUAL(gen[b], v[0] / v[1]);
+  }
+
+  Variable<int> x;
+  Variable<int> xq;
+  Variable<long long> l;
+  Variable<long long> lq;
+  Generator gen(x == -8 && l == -9);
+  gen(xq == x / 2u)(lq == l / 2u);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(gen[xq], -4);
+  BOOST_REQUIRE_EQUAL(gen[lq], -4);
+}
+
+// The elements of a vector are divided as scalars of their type.
+BOOST_AUTO_TEST_CASE(divide_mixed_signedness_vector) {
+  placeholder i;
+  __rand_vec<int> v;
+  Generator gen;
+  // the quotient of an int and an unsigned constant greater than any int is 0, as for long long operands
+  gen(v().size() == 4u)(foreach (v(), v()[i] / 3000000000u != 0));
+  BOOST_REQUIRE(!gen.next());
+
+  __rand_vec<unsigned char> w;
+  Generator gen2;
+  gen2(w().size() == 4u)(foreach (w(), w()[i] / (signed char)-1 == -129));
+  BOOST_REQUIRE(gen2.next());
+  for (unsigned k = 0; k < w.size(); ++k) BOOST_REQUIRE_EQUAL(w[k], 129);
+}
+
 BOOST_AUTO_TEST_CASE(element_inside_set) {
   std::set<unsigned> s;
   s.insert(1);
@@ -629,6 +684,110 @@ BOOST_AUTO_TEST_CASE(if_then_t1) {
       BOOST_REQUIRE_LE(gen[b], 1000);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(if_then_else_int_t1) {
+  Variable<unsigned> a;
+  Variable<unsigned> b;
+  Variable<int> c;
+  Generator gen(a < 4);
+  gen(if_then(a, b == 1));
+  gen(if_then_else(a == 0, b, b + 1u) == 0u);
+  gen(if_then_else(c < 0, c, -c) < -3 && c > -10 && c < 10);
+
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 0u);
+    BOOST_REQUIRE_EQUAL(gen[b], 0u);
+    BOOST_REQUIRE(gen[c] > 3 || gen[c] < -3);
+  }
+}
+
+// As in C++, a boolean branch is promoted to an integer if the other branch is an integer.
+BOOST_AUTO_TEST_CASE(if_then_else_mixed_branches) {
+  for (unsigned av = 0; av < 2; ++av) {
+    Variable<bool> f;
+    Variable<unsigned> a;
+    Variable<unsigned> b;
+    Variable<unsigned> x;
+    Generator gen(a == av && x < 4);
+    gen(if_then_else(a == 0, f, x) == 1u);
+    gen(if_then_else(a == 0, b, b == 7));
+
+    for (int i = 0; i < 10; ++i) {
+      BOOST_REQUIRE(gen.next());
+      if (av == 0) {
+        BOOST_REQUIRE(gen[f]);
+        BOOST_REQUIRE_NE(gen[b], 0u);
+      } else {
+        BOOST_REQUIRE_EQUAL(gen[x], 1u);
+        BOOST_REQUIRE_EQUAL(gen[b], 7u);
+      }
+    }
+  }
+}
+
+// As in C++, a boolean operand of an operation with an integer operand is promoted to an integer.
+BOOST_AUTO_TEST_CASE(bool_integer_operands) {
+  Variable<bool> f;
+  Variable<unsigned> x;
+  Variable<unsigned> y;
+  Variable<unsigned> z;
+  Generator gen(x < 4 && z < 3);
+  gen(f == x);
+  gen(y == f + 1u);
+  gen(z);
+
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_LT(gen[x], 2u);
+    BOOST_REQUIRE_EQUAL(gen[f], gen[x] == 1);
+    BOOST_REQUIRE_EQUAL(gen[y], gen[f] ? 2u : 1u);
+    BOOST_REQUIRE_NE(gen[z], 0u);
+  }
+}
+
+// As in C++, a boolean is promoted to an int, also if both operands are booleans.
+BOOST_AUTO_TEST_CASE(bool_integer_promotion_width) {
+  Variable<bool> f;
+  Variable<bool> g;
+  Variable<int> x;
+  Variable<int> y;
+  Variable<int> z;
+  Variable<int> w;
+  Generator gen(f == true && g == true);
+  gen(x == f - 2);
+  gen(y == f + g);
+  gen(z == -f);
+  gen(w == (f & g) + (f ^ g));
+
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(gen[x], -1);
+  BOOST_REQUIRE_EQUAL(gen[y], 2);
+  BOOST_REQUIRE_EQUAL(gen[z], -1);
+  BOOST_REQUIRE_EQUAL(gen[w], 1);
+}
+
+// As in C++, the boolean operands of a relational operator are promoted to integers.
+BOOST_AUTO_TEST_CASE(bool_relational_operands) {
+  Variable<bool> f;
+  Variable<bool> g;
+  Variable<unsigned> a;
+  Variable<unsigned> b;
+  Generator gen((a > 3u) < (b > 3u));
+  gen(f <= g)(f != g);
+  gen((a > 3u) >= f);
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_LE(gen[a], 3u);
+    BOOST_REQUIRE_GT(gen[b], 3u);
+    BOOST_REQUIRE(!gen[f]);
+    BOOST_REQUIRE(gen[g]);
+  }
+  Generator gen2(f > g || g >= f);
+  BOOST_REQUIRE(gen2.next());
+  Generator gen3(f > g && f <= g);
+  BOOST_REQUIRE(!gen3.next());
 }
 
 BOOST_AUTO_TEST_CASE(bitslice_t) {

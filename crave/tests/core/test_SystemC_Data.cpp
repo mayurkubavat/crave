@@ -29,8 +29,10 @@
 
 #include <crave/ConstrainedRandom.hpp>
 #include <crave/frontend/SystemC.hpp>
+#include <systemc>
 
 #include <boost/format.hpp>
+#include <algorithm>
 #include <iostream>
 using boost::format;
 
@@ -124,6 +126,39 @@ BOOST_AUTO_TEST_CASE(randv_sc_dt_t) {
   BOOST_REQUIRE_EQUAL(d, 14);  // deviation to sc_uint semantics (no overflow, thus d == 30)
 }
 
+BOOST_AUTO_TEST_CASE(inside_sc_uint_t) {
+  using namespace sc_dt;
+
+  std::set<sc_uint<8> > s{0, 64, 128, 192};
+  Variable<sc_uint<8> > v;
+  Generator gen(inside(v, s));
+
+  std::set<sc_uint<8> > seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    sc_uint<8> r = gen[v];
+    BOOST_REQUIRE(s.find(r) != s.end());
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
+BOOST_AUTO_TEST_CASE(inside_sc_int_t) {
+  using namespace sc_dt;
+
+  std::set<sc_int<8> > s{-128, -1, 5, 127};
+  randv<sc_int<8> > v;
+  Generator gen(inside(v(), s));
+
+  std::set<sc_int<8> > seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    BOOST_REQUIRE(s.find(v) != s.end());
+    seen.insert(v);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
 BOOST_AUTO_TEST_CASE(randv_sc_dt_op_support_t) {
   using namespace sc_dt;
 
@@ -190,6 +225,139 @@ BOOST_AUTO_TEST_CASE(randv_sc_dt_op_support_t) {
   BOOST_CHECK(1 != c);
   BOOST_CHECK(!(c == 1));
   BOOST_CHECK(c != 1);
+}
+
+BOOST_AUTO_TEST_CASE(dist_sc_int_t) {
+  using namespace sc_dt;
+
+  Variable<sc_int<8> > v;
+  Generator gen(dist(v, distribution<sc_int<8> >::create(range<sc_int<8> >(-4, -2))(weighted_value<sc_int<8> >(100, 3))));
+
+  std::set<int> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.next());
+    int r = gen[v].to_int();
+    BOOST_REQUIRE((-4 <= r && r <= -2) || r == 100);
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(dist_sc_uint_t) {
+  using namespace sc_dt;
+
+  randv<sc_uint<8> > v;
+  Generator gen(dist(v(), distribution<sc_uint<8> >::simple_range(250, 255)));
+
+  std::set<unsigned> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.next());
+    unsigned r = static_cast<sc_uint<8> >(v).to_uint();
+    BOOST_REQUIRE(250 <= r && r <= 255);
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), 6);
+}
+
+BOOST_AUTO_TEST_CASE(sc_biguint_t) {
+  using namespace sc_dt;
+
+  Variable<sc_biguint<2> > i, j;
+  Variable<sc_bigint<3> > k;
+  Generator gen(i != j && k == i - j);
+
+  for (unsigned n = 0; n < 20; ++n) {
+    BOOST_REQUIRE(gen.next());
+    sc_biguint<2> iv = gen[i];
+    sc_biguint<2> jv = gen[j];
+    sc_bigint<3> kv = gen[k];
+    BOOST_REQUIRE_NE(iv, jv);
+    BOOST_REQUIRE_EQUAL(kv.to_int(), iv.to_int() - jv.to_int());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(inside_sc_biguint_t) {
+  using namespace sc_dt;
+
+  std::set<sc_biguint<8> > s{0, 3, 200, 255};
+  Variable<sc_biguint<8> > v;
+  Generator gen(inside(v, s));
+
+  std::set<sc_biguint<8> > seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    sc_biguint<8> r = gen[v];
+    BOOST_REQUIRE(s.find(r) != s.end());
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
+BOOST_AUTO_TEST_CASE(inside_sc_bigint_t) {
+  using namespace sc_dt;
+
+  std::vector<long long> s{-5, 7, 1LL << 35};
+  Variable<sc_bigint<40> > v;
+  Generator gen(inside(v, s));
+
+  std::set<long long> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.nextCov());
+    long long r = gen[v].to_int64();
+    BOOST_REQUIRE(std::find(s.begin(), s.end(), r) != s.end());
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), s.size());
+}
+
+BOOST_AUTO_TEST_CASE(dist_sc_bigint_t) {
+  using namespace sc_dt;
+
+  Variable<sc_bigint<16> > v;
+  Generator gen(dist(v, distribution<sc_bigint<16> >::create(range<sc_bigint<16> >(-1000, -998))(
+                            weighted_value<sc_bigint<16> >(20000, 3))));
+
+  std::set<long long> seen;
+  for (unsigned i = 0; i < 100; ++i) {
+    BOOST_REQUIRE(gen.next());
+    long long r = gen[v].to_int64();
+    BOOST_REQUIRE((-1000 <= r && r <= -998) || r == 20000);
+    seen.insert(r);
+  }
+  BOOST_REQUIRE_EQUAL(seen.size(), 4);
+}
+
+BOOST_AUTO_TEST_CASE(randv_sc_bigint_t) {
+  using namespace sc_dt;
+
+  randv<sc_bigint<40> > a;
+  randv<sc_biguint<12> > b;
+  Generator gen;
+  gen(a() > -(1LL << 38))(a() < -(1LL << 36));
+  gen(b() > 4000u);
+
+  for (unsigned n = 0; n < 20; ++n) {
+    BOOST_REQUIRE(gen.next());
+    long long const av = static_cast<sc_bigint<40> >(a).to_int64();
+    unsigned long long const bv = static_cast<sc_biguint<12> >(b).to_uint64();
+    BOOST_REQUIRE(av > -(1LL << 38) && av < -(1LL << 36));
+    BOOST_REQUIRE(bv > 4000u && bv < 4096u);
+    BOOST_REQUIRE(a < 0);
+    BOOST_REQUIRE(0 > a);
+    BOOST_REQUIRE_EQUAL(a + 1, av + 1);
+    BOOST_REQUIRE_EQUAL(1 - a, 1 - av);
+    BOOST_REQUIRE_EQUAL(b * 2, static_cast<long long>(bv * 2));
+    BOOST_REQUIRE_EQUAL(b % 7, static_cast<long long>(bv % 7));
+    BOOST_REQUIRE_EQUAL(~b & 0xfff, static_cast<long long>(~bv & 0xfff));
+    BOOST_REQUIRE(b != 0);
+  }
+
+  a = -3;
+  b = a;
+  BOOST_REQUIRE_EQUAL(a, -3);
+  BOOST_REQUIRE_EQUAL(b, 4093);
+  ++b;
+  BOOST_REQUIRE_EQUAL(b, 4094);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // SystemC_Data

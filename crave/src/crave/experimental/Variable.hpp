@@ -242,13 +242,14 @@ class crv_variable<T, typename std::enable_if<std::is_integral<T>::value>::type>
    * generate random value
    */
   bool randomize() override {
+    if (!this->rand_mode()) return true;
     static distribution<T> dist;
     this->value = dist.nextValue();
     return true;
   }
 
   void create_default_cstr () {
-	 c_var_uniform = { dist(this->var, make_distribution(range<T>(std::numeric_limits<T>::min(), std::numeric_limits<T>::max())))};
+	 c_var_uniform = { dist(this->var, implicit_distribution(make_distribution(range<T>(std::numeric_limits<T>::min(), std::numeric_limits<T>::max()))))};
   }
   
   unsigned getVarID() override {
@@ -273,13 +274,14 @@ class crv_variable<bool> : public crv_var, public crv_variable_base<bool> {
    * generate random value
    */
   bool randomize() override {
+    if (!rand_mode()) return true;
     static distribution<bool> dist;
     this->value = dist.nextValue();
     return true;
   }
 
   void create_default_cstr () {
-	  c_var_uniform = { dist(this->var, distribution<bool>::create(0.5))};
+	  c_var_uniform = { dist(this->var, implicit_distribution(distribution<bool>::create(0.5)))};
   }
 
   unsigned getVarID() override {

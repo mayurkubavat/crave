@@ -142,6 +142,15 @@ struct is_signed<crave::vector_tag<T> > : public crave::is_signed<T> {};
 template <typename T, typename Enable = void>
 struct to_constant_expr {};
 
+/**
+ * builtin integer type that holds the values of T, used to draw values of T from a distribution
+ */
+template <typename T, typename Enable = void>
+struct distribution_value_type {
+  typedef T type;
+  static type value(T const& v) { return v; }
+};
+
 }  // namespace crave
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

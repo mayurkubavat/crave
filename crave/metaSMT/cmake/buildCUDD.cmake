@@ -24,7 +24,7 @@ ExternalProject_Add(cudd_ext
     ${CUDD_SOURCE_ARGS}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     UPDATE_COMMAND ""
-    CONFIGURE_COMMAND bash -c "touch configure.ac aclocal.m4 configure Makefile.am Makefile.in && ./configure --enable-obj --enable-dddmp --prefix=${install_dir} --libdir=${CUDD_LIBDIR}"
+    CONFIGURE_COMMAND bash -c "touch configure.ac aclocal.m4 configure Makefile.am Makefile.in config.h.in && ./configure --enable-obj --enable-dddmp --prefix=${install_dir} --libdir=${CUDD_LIBDIR}"
     BUILD_COMMAND make -j${CRAVE_BUILD_JOBS}
     INSTALL_COMMAND make install
     BUILD_IN_SOURCE 1

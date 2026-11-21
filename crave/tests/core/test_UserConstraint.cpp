@@ -119,10 +119,20 @@ BOOST_AUTO_TEST_CASE(ComplexityEstimationVisitorTest) {
   BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*v1r3), 4);
   BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*c4), 0);
   BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*c10), 0);
-  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulV1r1V1r2), 64);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulV1r1V1r2), 128);
   BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*V1r3Minus), 4);
-  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulV1r3Plus), 68);
-  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*equal), 68);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulV1r3Plus), 132);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*equal), 132);
+
+  // a multiplication with a constant is not simpler than the one with a variable of the same size
+  crave::NodePtr mulV1r1C10(new crave::MultipliesOpr(v1r1, c10));
+  crave::NodePtr mulC10V1r1(new crave::MultipliesOpr(c10, v1r1));
+  crave::NodePtr modV1r1C10(new crave::ModuloOpr(v1r1, c10));
+  crave::NodePtr mulC4C10(new crave::MultipliesOpr(c4, c10));
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulV1r1C10), 64);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulC10V1r1), 64);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*modV1r1C10), 64);
+  BOOST_REQUIRE_EQUAL(visitor.getComplexityEstimation(*mulC4C10), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Syntax

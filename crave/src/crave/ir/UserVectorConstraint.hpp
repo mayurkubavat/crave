@@ -40,13 +40,20 @@ class UserVectorConstraint : public UserConstraint {
 
  public:
   UserVectorConstraint(unsigned const id, expression const expr, std::string const& name, std::set<int> support_vars,
-                       bool const unique, bool const soft = false, bool const cover = false, bool const enabled = true);
+                       bool const unique, bool const soft = false, bool const cover = false, bool const enabled = true,
+                       bool const reduction = false);
 
   bool isUnique();
+  /**
+   * Whether the constraint is a constraint on reductions of the elements of the vector, which is solved once
+   * for all elements, not for each element like a crave::foreach constraint.
+   */
+  bool isReduction();
   int getVectorId();
   bool isVectorConstraint();
 
  protected:
   bool unique_;
+  bool reduction_;
 };
 }  // namespace crave
