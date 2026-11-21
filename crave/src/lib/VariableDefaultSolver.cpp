@@ -44,6 +44,7 @@
 namespace crave {
 
 extern RandomSeedManager rng;
+extern std::function<bool(void)> random_bit;
 
 namespace {
 // writes the structure of an expression, which identifies the constraints of a cycle of a randc variable
@@ -114,6 +115,21 @@ Constant readValue(VariableExpr const& var, std::string const& str) {
   return Constant(signExtend(var, value), var.bitsize(), var.sign());
 }
 
+// a constant sampled from a BDD bit-string where don't-care bits ('X'/'-') are randomized
+Constant sampleConstant(VariableExpr const& var, std::string const& str) {
+  if (var.isBool()) {
+    if (str == "true" || str == "1") return Constant(true);
+    if (str == "false" || str == "0") return Constant(false);
+    return Constant(random_bit());
+  }
+  uint64_t value = 0;
+  for (char c : str) {
+    value <<= 1;
+    if (c == '1' || (c != '0' && random_bit())) value |= 1;
+  }
+  return Constant(signExtend(var, value), var.bitsize(), var.sign());
+}
+
 // the most significant bit of a signed variable, which is inverted to order its values as unsigned keys
 uint64_t keySign(VariableExpr const& var) {
   return var.sign() && !var.isBool() ? uint64_t(1) << (var.bitsize() - 1) : 0;
@@ -172,16 +188,10 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     ordered_vars_.insert(ids.begin(), ids.end());
   }
 
-  bool has_randc = false;
-  for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables)
-    if (randc_state(pair.first)) has_randc = true;
-
   for(ConstraintPtr c : constr_pttn_) {
     if (c->isCover()) continue;  // default solver ignores cover constraints
-    if (c->isSoft() && has_randc) {
-      // the soft constraints are decided after the values of the randc variables have been chosen
-      randc_softs_.push_back(c->expr());
-    } else if (c->isSoft()) {
+    if (c->isSoft()) {
+      soft_constraints_.push_back(c);
       solver_->makeSoftAssertion(*c->expr());
     } else {
       solver_->makeAssertion(*c->expr());
@@ -201,10 +211,15 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) vars_with_user_dist.insert(var_id);
   }
 
+  std::set<int> read_ref_ids;
+  for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) read_ref_ids.insert(pair.first);
+  std::set<int> write_ref_ids;
+  for (VariableContainer::WriteRefPair const& pair : var_ctn_.write_references) write_ref_ids.insert(pair.first);
+
+  std::map<int, ConstraintList> const& svc_map = constr_pttn_.singleVariableConstraintMap();
   if (FactoryMetaSMT::isDefined(CUDD)) {
     LOG(INFO) << "Get BDD samplers for constraints involving single variable";
-    std::map<int, ConstraintList> const& svc_map = constr_pttn_.singleVariableConstraintMap();
-    for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
+    for (VariableContainer::WriteRefPair& pair : var_ctn_.write_references) {
       int id = pair.first;
       if (svc_map.find(id) == svc_map.end()) continue;
       // The default distribution of a variable ranges over all values of its type and does not
@@ -214,7 +229,7 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
         continue;
       }
       std::vector<NodePtr> exprs;
-      for(ConstraintPtr c : svc_map.at(id)) exprs.push_back(c->expr());
+      for (ConstraintPtr c : svc_map.at(id)) exprs.push_back(c->expr());
       std::shared_ptr<BddSampler> sampler = BddSampler::get(exprs);
       if (!sampler) {
         // the constraints are too complex for a BDD, the variable is randomized like the ones without
@@ -227,12 +242,27 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     }
   }
 
+  for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables) {
+    int id = pair.first;
+    if (read_ref_ids.count(id) || var_ctn_.dist_ref_to_var_map.count(id)) continue;
+    if (bdd_samplers_.count(id) || vars_with_user_dist.count(id)) continue;
+    if (svc_map.find(id) == svc_map.end() || svc_map.at(id).size() != 1) continue;
+    if (Inside const* in = dynamic_cast<Inside const*>(svc_map.at(id).front()->expr().get())) {
+      if (dynamic_cast<VariableExpr const*>(in->child().get()) && !in->collection().empty()) {
+        inside_samplers_[id].assign(in->collection().begin(), in->collection().end());
+        if (write_ref_ids.count(id)) vars_with_dist.insert(id);
+        LOG(INFO) << "  Inside sampler for var #" << id << " found";
+      }
+    }
+  }
+
   // A distribution of the user or a BDD sampler replaces the default distribution of a variable.
   // Without them, e.g. if the constraints are too complex for a BDD, it stays in effect.
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) continue;
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
-    if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id)) replaced_dist_refs_.insert(pair.first);
+    if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id) || inside_samplers_.count(var_id))
+      replaced_dist_refs_.insert(pair.first);
   }
 
   if (2 * vars_with_dist.size() > var_ctn_.write_references.size()) return;  // not necessary to randomize more
@@ -265,6 +295,7 @@ void VariableDefaultSolver::analyseConstraints() {
 
 bool VariableDefaultSolver::solve() {
   LOG(INFO) << "Solve constraints in partition " << constr_pttn_;
+  has_solution_ = false;
   if (!contradictions_.empty()) {
     LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
     return false;
@@ -289,47 +320,79 @@ bool VariableDefaultSolver::solve() {
 
   // As in SystemVerilog, the values of the randc variables are chosen before the other variables are solved.
   std::vector<NodePtr> assumptions;
-  bool solved = randc.empty() && solve_levels_.empty() ? solveWith(assumptions, randc) : true;
-  for (RandcMap::value_type const& pair : randc) {
-    if (!solved) break;
-    solved = solveRandc(pair.first, *pair.second, assumptions, randc);
-  }
-
-  // As the randc variables are solved first, a soft constraint, which contradicts their values, is dropped.
-  if (solved && !randc_softs_.empty()) {
-    bool model = true;
-    for (NodePtr const& soft : randc_softs_) {
-      assumptions.push_back(soft);
-      model = solveWith(assumptions, randc);
-      if (!model) assumptions.pop_back();
+  bool solved = true;
+  if (randc.empty() && solve_levels_.empty()) {
+    solved = solveWith(assumptions, randc, false);
+  } else {
+    for (RandcMap::value_type const& pair : randc) {
+      if (!solved) break;
+      solved = solveRandc(pair.first, *pair.second, assumptions, randc);
     }
-    if (!model) solved = solveWith(assumptions, randc);
-  }
 
-  if (solved && !solve_levels_.empty()) solved = solveOrdered(assumptions, randc);
+    if (solved && !solve_levels_.empty()) {
+      if (!soft_constraints_.empty()) {
+        for (VariableContainer::ReadRefPair& pair : var_ctn_.read_references)
+          solver_->makeAssumption(*pair.second->expr());
+        for (NodePtr const& assumption : assumptions) solver_->makeAssumption(*assumption);
+        std::vector<unsigned int> inactive = solver_->resolveSofts();
+        updateInactiveSofts(inactive);
+        std::size_t inact_idx = 0;
+        for (std::size_t i = 0; i < soft_constraints_.size(); ++i) {
+          if (inact_idx < inactive.size() && inactive[inact_idx] == i) {
+            ++inact_idx;
+          } else {
+            assumptions.push_back(soft_constraints_[i]->expr());
+          }
+        }
+      } else {
+        inactive_softs_.clear();
+      }
+      solved = solveOrdered(assumptions, randc);
+    } else if (solved && !randc.empty() && !soft_constraints_.empty()) {
+      solved = solveWith(assumptions, randc, false);
+    }
+  }
 
   if (solved) {
+    if (solve_levels_.empty()) {
+      if (soft_constraints_.empty())
+        inactive_softs_.clear();
+      else
+        updateInactiveSofts(solver_->getInactiveSofts());
+    }
+    has_solution_ = true;
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
       solver_->read(*var_ctn_.variables[pair.first], *pair.second);
     }
     LOG(INFO) << "Done solving partition " << constr_pttn_;
     return true;
   }
+  inactive_softs_.clear();
   LOG(INFO) << "Failed due to conflict with read references";
   return false;
 }
 
-bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc) {
+bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc,
+                                      bool ignore_softs) {
   // the random values of the randc variables are given by their cycles
-  for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
-    int id = pair.first;
-    if (bdd_samplers_.find(id) == bdd_samplers_.end() || randc.count(id)) continue;
+  for (auto const& entry : bdd_samplers_) {
+    int id = entry.first;
+    if (randc.count(id)) continue;
     if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
     std::string str;
-    CHECK(bdd_samplers_[id]->sample(&str));  // otherwise, contradiction must have been found!
-    NodePtr value(new Constant(pair.second->to_constant(str)));
+    CHECK(entry.second->sample(&str));  // otherwise, contradiction must have been found!
     NodePtr var = var_ctn_.variables[id];
+    NodePtr value(new Constant(sampleConstant(static_cast<VariableExpr const&>(*var), str)));
     NodePtr eq(new EqualOpr(var, value));
+    solver_->makeSuggestion(*eq);
+  }
+  for (auto const& entry : inside_samplers_) {
+    int id = entry.first;
+    if (randc.count(id)) continue;
+    if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
+    Constant const& chosen = entry.second[random_unsigned(entry.second.size())];
+    NodePtr var = var_ctn_.variables[id];
+    NodePtr eq(new EqualOpr(var, new Constant(chosen)));
     solver_->makeSuggestion(*eq);
   }
 
@@ -357,7 +420,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
     }
   }
 
-  return solver_->solve();
+  return solver_->solve(ignore_softs);
 }
 
 // lists unused values of a randc variable, which satisfy the constraints, window by window, see solveRandc()
@@ -378,7 +441,7 @@ void VariableDefaultSolver::listWindows(NodePtr const& var, RandcState const& st
     while (listed.size() < randc_max_listed) {
       assumptions.push_back(in_window);
       if (!excluded.empty()) assumptions.push_back(new NotOpr(randcInside(var, excluded)));
-      bool const found = solveWith(assumptions, randc);
+      bool const found = solveWith(assumptions, randc, true);
       assumptions.resize(n);
       if (!found) break;
       std::string str;
@@ -437,7 +500,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       --n;
       uint64_t const value = values[n];
       assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
-      if (solveWith(assumptions, randc)) {
+      if (solveWith(assumptions, randc, true)) {
         undo.value = value;
         undo.listed = std::find(state.listed.begin(), state.listed.end(), value) != state.listed.end();
         randc_undo_.push_back(undo);
@@ -484,7 +547,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
         values.assign(excluded.begin(), excluded.end());
       }
       assumptions.push_back(inside ? randcInside(var, values) : NodePtr(new NotOpr(randcInside(var, values))));
-      bool const found = solveWith(assumptions, randc);
+      bool const found = solveWith(assumptions, randc, true);
       assumptions.pop_back();
       if (!found) break;
       std::string str;
@@ -513,7 +576,7 @@ bool VariableDefaultSolver::solveOrdered(std::vector<NodePtr>& assumptions, Rand
   unordered_vars_.clear();
   for (std::size_t i = 0; i < solve_levels_.size(); ++i)
     if (!solveLevel(i, assumptions, randc)) return false;
-  return solveWith(assumptions, randc);
+  return solveWith(assumptions, randc, true);
 }
 
 bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& assumptions, RandcMap const& randc) {
@@ -563,7 +626,7 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
         std::map<int, std::shared_ptr<BddSampler> >::iterator sampler = bdd_samplers_.find(level[i]);
         std::string str;
         if (sampler != bdd_samplers_.end() && sampler->second->sample(&str))
-          assumptions.push_back(new EqualOpr(vars[i], new Constant(readValue(v, str))));
+          assumptions.push_back(new EqualOpr(vars[i], new Constant(sampleConstant(v, str))));
         else
           assumptions.push_back(new EqualOpr(vars[i], new Constant(randomValue(v))));
       }
@@ -727,20 +790,12 @@ void VariableDefaultSolver::analyseHards() {
   }
 }
 
-void VariableDefaultSolver::analyseSofts() {
-  std::vector<unsigned int> result = solver_->analyseSofts();
-  std::vector<unsigned int>::iterator ite = result.begin();
-  unsigned cnt = 0;
-
-  for(ConstraintPtr c : constr_pttn_) {
-    if (ite == result.end()) break;
-    if (c->isSoft()) {
-      if (*ite == cnt) {
-        ite++;
-        inactive_softs_.push_back(c->name());
-      }
-      cnt++;
-    }
+void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) {
+  inactive_softs_.clear();
+  for (unsigned int idx : inactive_indices) {
+    if (idx < soft_constraints_.size()) inactive_softs_.push_back(soft_constraints_[idx]->name());
   }
 }
+
+void VariableDefaultSolver::analyseSofts() { updateInactiveSofts(solver_->resolveSofts()); }
 }

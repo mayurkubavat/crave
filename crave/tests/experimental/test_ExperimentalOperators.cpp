@@ -32,6 +32,8 @@
 
 using namespace crave;
 
+CRAVE_BETTER_ENUM(inside_color_enum, INSIDE_RED, INSIDE_GREEN, INSIDE_BLUE);
+
 BOOST_FIXTURE_TEST_SUITE(Ex_Operators_t, Context_Fixture)
 
 struct logical_not_s1 : crv_sequence_item {
@@ -802,6 +804,38 @@ BOOST_AUTO_TEST_CASE(array_bool_t1) {
   array_bool_s2 item2("item2");
   BOOST_REQUIRE(item2.randomize());
   BOOST_REQUIRE(item2.arr[0] && item2.arr[1] && item2.arr[2]);
+}
+
+struct inside_soundness_item : public crv_sequence_item {
+  inside_soundness_item(crv_object_name) {}
+  crv_variable<unsigned> x;
+  crv_variable<unsigned> y;
+  crv_variable<inside_color_enum> c;
+  std::set<unsigned> s{5, 6};
+  std::set<unsigned> s2{1, 2, 3};
+  std::set<inside_color_enum> cs{inside_color_enum::INSIDE_RED};
+  crv_constraint con{"con"};
+};
+
+BOOST_AUTO_TEST_CASE(inside_negation_and_if_then) {
+  inside_soundness_item item("item");
+  item.con = {item.x() == 5u, !inside(item.x(), item.s)};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con = {!inside(item.x(), item.s2), item.x() < 5u};
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE(item.x == 0u || item.x == 4u);
+  }
+
+  item.con = {item.x() == 5u, if_then(inside(item.x(), item.s), item.y() == 1u), item.y() == 2u};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con = {!inside(item.c(), item.cs)};
+  for (int i = 0; i < 20; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE(item.c == inside_color_enum::INSIDE_GREEN || item.c == inside_color_enum::INSIDE_BLUE);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

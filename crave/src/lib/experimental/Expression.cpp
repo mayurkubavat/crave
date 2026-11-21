@@ -28,7 +28,13 @@
 
 namespace crave
 {
-  void expression_list::operator=(expression_list const& list) { exprs_ = list.exprs_; }
+  void expression_list::operator=(expression_list const& list) {
+    exprs_ = list.exprs_;
+    softs_ = list.softs_;
+  }
 
-  void expression_list::join(expression_list const& list) { exprs_.insert(end(), list.begin(), list.end()); }
+  void expression_list::join(expression_list const& list) {
+    exprs_.insert(end(), list.begin(), list.end());
+    softs_.insert(softs_.end(), list.softs_.begin(), list.softs_.end());
+  }
 }

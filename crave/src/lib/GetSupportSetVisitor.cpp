@@ -56,11 +56,15 @@ void GetSupportSetVisitor::visitVariableExpr(const VariableExpr& v) { support_va
 
 void GetSupportSetVisitor::visitConstant(const Constant&) {}
 
-void GetSupportSetVisitor::visitVectorExpr(const VectorExpr& v) { support_vars.insert(v.id()); }
+void GetSupportSetVisitor::visitVectorExpr(const VectorExpr& v) {
+  support_vars.insert(v.id());
+  vector_vars.insert(v.id());
+}
 
 void GetSupportSetVisitor::visitVectorReduction(const VectorReduction& r) {
   support_vars.insert(r.id());
   reduced_vectors.insert(r.id());
+  vector_vars.insert(r.id());
 }
 
 void GetSupportSetVisitor::visitNotOpr(const NotOpr& n) { visitUnaryExpr(n); }

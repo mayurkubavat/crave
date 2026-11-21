@@ -64,6 +64,13 @@ struct ConstraintManager {
     return ConstraintManager::makeConstraint(name, c_id, n, ctx, soft, cover);
   }
 
+  template <typename Expr>
+  ConstraintPtr makeConstraint(std::string const& name, int c_id, soft_expr<Expr> e, Context* ctx,
+                               bool const soft = true, bool const cover = false) {
+    (void)soft;
+    return makeConstraint(name, c_id, e.expr, ctx, true, cover);
+  }
+
   ConstraintPtr makeConstraint(std::string const& name, int c_id, NodePtr n, Context* ctx, bool const soft = false,
                                bool const cover = false);
 
@@ -74,9 +81,23 @@ struct ConstraintManager {
   }
 
   template <typename Expr>
+  ConstraintPtr makeConstraint(std::string const& name, soft_expr<Expr> e, Context* ctx, bool const soft = true,
+                               bool const cover = false) {
+    (void)soft;
+    return makeConstraint(name, new_constraint_id(), e.expr, ctx, true, cover);
+  }
+
+  template <typename Expr>
   ConstraintPtr makeConstraint(Expr e, Context* ctx, bool const soft = false, bool const cover = false) {
     int id = new_constraint_id();
     return makeConstraint("constraint_" + std::to_string(id), id, e, ctx, soft, cover);
+  }
+
+  template <typename Expr>
+  ConstraintPtr makeConstraint(soft_expr<Expr> e, Context* ctx, bool const soft = true, bool const cover = false) {
+    (void)soft;
+    int id = new_constraint_id();
+    return makeConstraint("constraint_" + std::to_string(id), id, e.expr, ctx, true, cover);
   }
 
   std::ostream& printDotGraph(std::ostream& os);

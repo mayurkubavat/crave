@@ -53,7 +53,14 @@ template <typename SolverType>
 class metaSMTVisitorImpl : public metaSMTVisitor {
  public:
   metaSMTVisitorImpl()
-      : metaSMTVisitor(), solver_(), exprStack_(), terminals_(), softs_(), assumptions_(), suggestions_() {}
+      : metaSMTVisitor(),
+        solver_(),
+        exprStack_(),
+        terminals_(),
+        softs_(),
+        assumptions_(),
+        suggestions_(),
+        last_inactive_softs_() {}
 
   virtual void visitNode(Node const &);
   virtual void visitTerminal(Terminal const &);
@@ -101,6 +108,8 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   virtual void makeSuggestion(Node const &);
   virtual void makeAssumption(Node const &);
   virtual std::vector<unsigned int> analyseSofts();
+  virtual std::vector<unsigned int> resolveSofts();
+  virtual std::vector<unsigned int> const& getInactiveSofts() const;
   virtual std::vector<std::vector<unsigned int> > analyseContradiction(std::map<unsigned int, NodePtr> const &);
   virtual bool solve(bool ignoreSofts);
   virtual bool read(Node const &var, AssignResult &);
@@ -126,6 +135,7 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   std::vector<result_type> softs_;
   std::vector<result_type> assumptions_;
   std::vector<result_type> suggestions_;
+  std::vector<unsigned int> last_inactive_softs_;
 };
 
 template <typename SolverType>
@@ -596,7 +606,7 @@ void metaSMTVisitorImpl<SolverType>::makeSoftAssertion(Node const &expr) {
   stack_entry entry;
   pop(entry);
 
-  softs_.push_back(entry.first);
+  softs_.push_back(evaluate(solver_, preds::equal(entry.first, preds::True)));
 }
 
 template <typename SolverType>
@@ -622,19 +632,68 @@ void metaSMTVisitorImpl<SolverType>::makeAssumption(Node const &expr) {
 template <typename SolverType>
 std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::analyseSofts() {
   std::vector<unsigned int> result;
-  // implements soft constraint semantics of the HVL e
-  for (unsigned int i = 0; i < softs_.size(); i++) {
-    metaSMT::assumption(solver_, preds::equal(softs_[i], preds::True));
+  // IEEE 1800-2023 18.5.14: last-added soft constraint has highest priority
+  for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+    unsigned int const i = static_cast<unsigned int>(idx - 1);
+    metaSMT::assumption(solver_, softs_[i]);
     if (metaSMT::solve(solver_)) {
       // accept
-      metaSMT::assertion(solver_, preds::equal(softs_[i], preds::True));
+      metaSMT::assertion(solver_, softs_[i]);
     } else {
       // reject
       result.push_back(i);
     }
   }
+  std::reverse(result.begin(), result.end());
+  last_inactive_softs_ = result;
   softs_.clear();
   return result;
+}
+
+template <typename SolverType>
+std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::resolveSofts() {
+  last_inactive_softs_.clear();
+  if (softs_.empty()) {
+    assumptions_.clear();
+    return last_inactive_softs_;
+  }
+
+  for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+  if (metaSMT::solve(solver_)) {
+    assumptions_.clear();
+    return last_inactive_softs_;
+  }
+
+  if (!assumptions_.empty()) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    if (!metaSMT::solve(solver_)) {
+      assumptions_.clear();
+      return last_inactive_softs_;
+    }
+  }
+
+  std::vector<result_type> active_softs;
+  active_softs.reserve(softs_.size());
+  for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+    unsigned int const i = static_cast<unsigned int>(idx - 1);
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+    metaSMT::assumption(solver_, softs_[i]);
+    if (metaSMT::solve(solver_)) {
+      active_softs.push_back(softs_[i]);
+    } else {
+      last_inactive_softs_.push_back(i);
+    }
+  }
+  std::reverse(last_inactive_softs_.begin(), last_inactive_softs_.end());
+  assumptions_.clear();
+  return last_inactive_softs_;
+}
+
+template <typename SolverType>
+std::vector<unsigned int> const& metaSMTVisitorImpl<SolverType>::getInactiveSofts() const {
+  return last_inactive_softs_;
 }
 
 template <typename SolverType>
@@ -668,14 +727,90 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
   crave::random_shuffle(assumptions_.begin(), assumptions_.end());
   crave::random_shuffle(suggestions_.begin(), suggestions_.end());
 
-  while (true) {
-    for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  if (ignoreSofts || softs_.empty()) {
+    while (true) {
+      for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
 
-    for(result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
+      for(result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
 
-    if (!ignoreSofts) {
-      for(result_type const & item : softs_) { metaSMT::assumption(solver_, preds::equal(item, preds::True)); }
+      if (metaSMT::solve(solver_)) {
+        result = true;
+        break;
+      }
+
+      if (suggestions_.empty()) break;
+
+      // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
+      // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
+      unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
+      for (unsigned i = 0; i < drop; i++) {
+        unsigned select = crave::random_unsigned(suggestions_.size());
+        std::swap(suggestions_[select], suggestions_.back());
+        suggestions_.pop_back();
+      }
     }
+
+    assumptions_.clear();
+    suggestions_.clear();
+
+    return result;
+  }
+
+  last_inactive_softs_.clear();
+
+  // Fast path: try assumptions_ + suggestions_ + all softs_
+  for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+  if (metaSMT::solve(solver_)) {
+    assumptions_.clear();
+    suggestions_.clear();
+    return true;
+  }
+
+  // Slow path: resolve soft constraints against assumptions_ alone so suggestions_ are preserved
+  std::vector<result_type> active_softs;
+  bool all_softs_sat = false;
+  if (!suggestions_.empty()) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+    if (metaSMT::solve(solver_)) {
+      active_softs = softs_;
+      all_softs_sat = true;
+    }
+  }
+
+  if (!all_softs_sat) {
+    if (!assumptions_.empty()) {
+      for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+      if (!metaSMT::solve(solver_)) {
+        assumptions_.clear();
+        suggestions_.clear();
+        return false;
+      }
+    }
+
+    active_softs.reserve(softs_.size());
+    for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+      unsigned int const i = static_cast<unsigned int>(idx - 1);
+      for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+      for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+      metaSMT::assumption(solver_, softs_[i]);
+      if (metaSMT::solve(solver_)) {
+        active_softs.push_back(softs_[i]);
+      } else {
+        last_inactive_softs_.push_back(i);
+      }
+    }
+    std::reverse(last_inactive_softs_.begin(), last_inactive_softs_.end());
+  }
+
+  // Run suggestion pruning loop (or single solve when suggestions_.empty()) so the solver stores a model
+  // consistent with assumptions_ + all active_softs.
+  while (true) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
 
     if (metaSMT::solve(solver_)) {
       result = true;
@@ -684,8 +819,6 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
 
     if (suggestions_.empty()) break;
 
-    // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
-    // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
     unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
     for (unsigned i = 0; i < drop; i++) {
       unsigned select = crave::random_unsigned(suggestions_.size());

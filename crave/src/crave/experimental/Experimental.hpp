@@ -57,7 +57,13 @@ namespace crave {
 template <typename... Exprs>
 bool solve(Exprs... exprs) {
   Generator gen;
-  for (auto e : expression_list(exprs...)) gen(e);
+  expression_list list(exprs...);
+  for (std::size_t i = 0; i < list.size(); ++i) {
+    if (list.is_soft(i))
+      gen.soft(list[i]);
+    else
+      gen(list[i]);
+  }
   return gen.next();
 }
 

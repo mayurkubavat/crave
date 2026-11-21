@@ -660,4 +660,34 @@ BOOST_AUTO_TEST_CASE(sv_signedness_config) {
   std::remove(file);
 }
 
+BOOST_AUTO_TEST_CASE(inside_negation_and_conditional_eval) {
+  bool const old_setting = sv_signedness();
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    std::set<unsigned> s{1, 7, 9};
+    Variable<unsigned> x;
+    Variable<unsigned> y;
+    Evaluator eval;
+
+    eval.assign(x, 7u);
+    eval.assign(y, 2u);
+    BOOST_REQUIRE(eval.evaluate(!inside(x, s)));
+    BOOST_REQUIRE(!eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(if_then(inside(x, s), y == 1u)));
+    BOOST_REQUIRE(!eval.result<bool>());
+
+    eval.assign(x, 5u);
+    BOOST_REQUIRE(eval.evaluate(!inside(x, s)));
+    BOOST_REQUIRE(eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(if_then(inside(x, s), y == 1u)));
+    BOOST_REQUIRE(eval.result<bool>());
+
+    Variable<unsigned> a;
+    Variable<unsigned> b;
+    eval.assign(a, 5u);
+    BOOST_REQUIRE(!eval.evaluate(a == b && b == 5u));
+  }
+  set_sv_signedness(old_setting);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Evaluations

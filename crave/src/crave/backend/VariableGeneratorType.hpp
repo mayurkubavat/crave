@@ -63,6 +63,13 @@ struct VariableGenerator {
     return false;
   }
 
+  bool read(int id, std::string& value) const {
+    for (VarSolverPtr vs : solvers_) {
+      if (vs->read(id, value)) return true;
+    }
+    return false;
+  }
+
   std::vector<std::vector<std::string> > analyseContradiction();
 
   std::vector<std::string> getInactiveSofts() const;

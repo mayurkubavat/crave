@@ -50,11 +50,13 @@ struct VariableSolver {
 
   template <typename T>
   bool read(Variable<T> const& var, T* value) {
-    if (var_ctn_.variables.find(var.id()) == var_ctn_.variables.end()) return false;
+    if (!has_solution_ || var_ctn_.variables.find(var.id()) == var_ctn_.variables.end()) return false;
     AssignResultToRef<T> result(value);
     solver_->read(*var_ctn_.variables[var.id()], result);
     return true;
   }
+
+  bool read(int id, std::string& value) const;
 
   std::vector<std::vector<std::string> > getContradictions() const;
 
@@ -64,6 +66,7 @@ struct VariableSolver {
   VariableContainer var_ctn_;
   const ConstraintPartition& constr_pttn_;
   SolverPtr solver_;
+  bool has_solution_ = false;
 
   std::vector<std::vector<std::string> > contradictions_;
   std::vector<std::string> inactive_softs_;

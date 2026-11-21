@@ -26,6 +26,7 @@
 
 
 #pragma once
+#include <type_traits>
 #include "../frontend/PlaceHolder.hpp"
 #include "../frontend/ReadReference.hpp"
 #include "../frontend/VectorConstraint.hpp"
@@ -237,4 +238,26 @@ OUT& operator<<(OUT& out, operator_unique const& tag);
 */
 template <typename OUT>
 OUT& operator<<(OUT& out, operator_bitslice const& tag);
+
+template <typename Expr>
+struct soft_expr {
+  explicit soft_expr(Expr const& e) : expr(e) {}
+  Expr expr;
+};
+
+template <typename Expr>
+struct is_soft_expr : std::false_type {};
+
+template <typename Expr>
+struct is_soft_expr<soft_expr<Expr>> : std::true_type {};
+
+/**
+ * \ingroup operators
+ * \brief Marks an inline constraint expression as a soft constraint (IEEE 1800-2023 18.5.14).
+ */
+template <typename Expr>
+soft_expr<Expr> soft(Expr const& expr) {
+  static_assert(!is_soft_expr<Expr>::value, "nested crave::soft() is not allowed");
+  return soft_expr<Expr>(expr);
+}
 }  // namespace crave

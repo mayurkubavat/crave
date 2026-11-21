@@ -65,10 +65,8 @@ struct crv_variable_base_ : public crv_object {
    *
    * As rand_mode() of a random variable in SystemVerilog, a variable whose randomization is
    * disabled is not randomized: it keeps its value and constraints treat it as a state variable.
-   *
-   * Unlike in SystemVerilog, a soft constraint that contradicts the current value of such a
-   * variable is not dropped, randomize() fails instead. CRAVE decides which soft constraints hold
-   * before the values of state variables are known, as it does for crave::reference().
+   * Any soft constraint that contradicts the current value of such a variable is dynamically
+   * dropped during solving and re-activates when the value becomes compatible again.
    *
    * \param on true to enable, false to disable the randomization.
    */

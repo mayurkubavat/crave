@@ -229,4 +229,29 @@ BOOST_AUTO_TEST_CASE(scope_randomize_no_dangling_references) {
   BOOST_REQUIRE_EQUAL(vars->variables.size(), variables);
 }
 
+BOOST_AUTO_TEST_CASE(scope_randomize_inline_soft) {
+  int x = 0;
+  int y = 0;
+  int ext = 4;
+
+  // Conflicting soft with hard constraint drops; non-conflicting soft holds
+  BOOST_REQUIRE(crave::randomize(x, y).with(reference(x) >= 0, reference(x) < 10, soft(reference(x) == 20),
+                                            soft(reference(y) == 5)));
+  BOOST_REQUIRE(x >= 0 && x < 10);
+  BOOST_REQUIRE_EQUAL(y, 5);
+
+  // Last-wins priority across multiple inline softs
+  BOOST_REQUIRE(crave::randomize(x).with(reference(x) >= 0, reference(x) < 100, soft(reference(x) == 10),
+                                         soft(reference(x) == 25)));
+  BOOST_REQUIRE_EQUAL(x, 25);
+
+  // Dynamic external state inside soft(...)
+  BOOST_REQUIRE(crave::randomize(x).with(reference(x) >= 0, reference(x) < 10, soft(reference(x) == reference(ext))));
+  BOOST_REQUIRE_EQUAL(x, 4);
+
+  ext = 50;
+  BOOST_REQUIRE(crave::randomize(x).with(reference(x) >= 0, reference(x) < 10, soft(reference(x) == reference(ext))));
+  BOOST_REQUIRE(x >= 0 && x < 10);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // ExperimentalScopeRandomize_t

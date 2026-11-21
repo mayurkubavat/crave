@@ -34,6 +34,8 @@
 
 #include <set>
 #include <iostream>
+#include <memory>
+#include <vector>
 
 using std::ostream;
 using boost::format;
@@ -480,6 +482,256 @@ BOOST_AUTO_TEST_CASE(hier_constr_t) {
 
   BOOST_REQUIRE(it.item.enable_constraint("c1"));
   BOOST_REQUIRE(!it.next());
+}
+
+BOOST_AUTO_TEST_CASE(direct_metaSMTVisitor_last_wins) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // 1. analyseSofts(): last-added soft wins (index 1 wins over index 0)
+    {
+      std::unique_ptr<metaSMTVisitor> visitor(FactoryMetaSMT::getNewInstance());
+      NodePtr x(new VariableExpr(new_var_id(), 32, false));
+      NodePtr s1(new EqualOpr(x, new Constant(10u, 32, false)));
+      NodePtr s2(new EqualOpr(x, new Constant(20u, 32, false)));
+      visitor->makeSoftAssertion(*s1);
+      visitor->makeSoftAssertion(*s2);
+
+      std::vector<unsigned int> rejected = visitor->analyseSofts();
+      BOOST_REQUIRE_EQUAL(rejected.size(), 1u);
+      BOOST_REQUIRE_EQUAL(rejected[0], 0u);
+      BOOST_REQUIRE(visitor->solve(true));
+
+      unsigned val = 0;
+      AssignResultToRef<unsigned> ref(&val);
+      BOOST_REQUIRE(visitor->read(*x, ref));
+      BOOST_REQUIRE_EQUAL(val, 20u);
+    }
+
+    // 2. Dynamic makeSoftAssertion + makeAssumption + solve(false): last-wins & fallback
+    {
+      std::unique_ptr<metaSMTVisitor> visitor(FactoryMetaSMT::getNewInstance());
+      NodePtr x(new VariableExpr(new_var_id(), 32, false));
+      NodePtr y(new VariableExpr(new_var_id(), 32, false));
+      NodePtr hard(new LessOpr(x, new Constant(100u, 32, false)));
+      NodePtr s1(new EqualOpr(x, new Constant(10u, 32, false)));
+      NodePtr s2(new EqualOpr(x, new Constant(20u, 32, false)));
+      NodePtr s3(new EqualOpr(y, new Constant(7u, 32, false)));
+
+      visitor->makeAssertion(*hard);
+      visitor->makeSoftAssertion(*s1);
+      visitor->makeSoftAssertion(*s2);
+      visitor->makeSoftAssertion(*s3);
+
+      // Block s2 transiently via assumption -> s1 (x == 10) and s3 (y == 7) hold
+      NodePtr block_s2(new NotEqualOpr(x, new Constant(20u, 32, false)));
+      visitor->makeAssumption(*block_s2);
+      BOOST_REQUIRE(visitor->solve(false));
+
+      unsigned xv = 0, yv = 0;
+      AssignResultToRef<unsigned> xref(&xv), yref(&yv);
+      BOOST_REQUIRE(visitor->read(*x, xref));
+      BOOST_REQUIRE(visitor->read(*y, yref));
+      BOOST_REQUIRE_EQUAL(xv, 10u);
+      BOOST_REQUIRE_EQUAL(yv, 7u);
+
+      // Next solve without blocking assumption -> s2 (x == 20) re-activates and wins over s1
+      BOOST_REQUIRE(visitor->solve(false));
+      BOOST_REQUIRE(visitor->read(*x, xref));
+      BOOST_REQUIRE(visitor->read(*y, yref));
+      BOOST_REQUIRE_EQUAL(xv, 20u);
+      BOOST_REQUIRE_EQUAL(yv, 7u);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(variable_default_solver_dynamic_reference_soft) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    Variable<unsigned> a, b;
+    unsigned ext = 5;
+    Generator gen(a < 100u);
+    gen.soft("s1", a == 10u);
+    gen.soft("s2", a == 20u);
+    gen.soft("s3", b == reference(ext));
+    gen.soft("s4", a == reference(ext));
+
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 5u);
+    BOOST_REQUIRE_EQUAL(gen[b], 5u);
+    {
+      std::vector<std::string> inact = gen.getInactiveSofts();
+      std::sort(inact.begin(), inact.end());
+      std::vector<std::string> expected = list_of("s1")("s2");
+      BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+    }
+
+    // Mutate reference without rebuilding: s4 conflicts with a < 100u -> drops, s2 wins over s1, s3 stays active
+    ext = 200;
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 20u);
+    BOOST_REQUIRE_EQUAL(gen[b], 200u);
+    {
+      std::vector<std::string> inact = gen.getInactiveSofts();
+      std::sort(inact.begin(), inact.end());
+      std::vector<std::string> expected = list_of("s1")("s4");
+      BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+    }
+
+    // Mutate reference back to compatible value: s4 re-activates!
+    ext = 7;
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 7u);
+    BOOST_REQUIRE_EQUAL(gen[b], 7u);
+    {
+      std::vector<std::string> inact = gen.getInactiveSofts();
+      std::sort(inact.begin(), inact.end());
+      std::vector<std::string> expected = list_of("s1")("s2");
+      BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(bypass_constraint_analysis_with_softs) {
+  struct Guard {
+    bool prev_bypass;
+    Guard() : prev_bypass(VariableDefaultSolver::bypass_constraint_analysis) {
+      VariableDefaultSolver::bypass_constraint_analysis = true;
+    }
+    ~Guard() {
+      VariableDefaultSolver::bypass_constraint_analysis = prev_bypass;
+      set_solver_backend("Z3");
+    }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    Variable<unsigned> a, b;
+    unsigned ext = 9;
+    Generator gen(a < 10u);
+    gen.soft("s1", a == 5u);
+    gen.soft("s2", a == 7u);
+    gen.soft("s3", a == reference(ext));
+    gen.soft("s4", b == 42u);
+
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 9u);
+    BOOST_REQUIRE_EQUAL(gen[b], 42u);
+
+    ext = 50;
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 7u);
+    BOOST_REQUIRE_EQUAL(gen[b], 42u);
+
+    ext = 3;
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(gen[a], 3u);
+    BOOST_REQUIRE_EQUAL(gen[b], 42u);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(randc_conflicting_softs_last_wins) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    Variable<unsigned char> x;
+    Variable<unsigned> y;
+    Generator gen(x < 4u);
+    gen.soft("s1", y == 10u);
+    gen.soft("s2", y == 20u);
+    gen.soft("s3", x == 2u);
+    gen.randc(x);
+
+    std::set<unsigned> seen;
+    for (int i = 0; i < 4; ++i) {
+      BOOST_REQUIRE(gen.next());
+      unsigned xv = gen[x];
+      seen.insert(xv);
+      BOOST_REQUIRE_EQUAL(gen[y], 20u);
+
+      std::vector<std::string> inact = gen.getInactiveSofts();
+      std::sort(inact.begin(), inact.end());
+      if (xv == 2u) {
+        std::vector<std::string> expected = list_of("s1");
+        BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+      } else {
+        std::vector<std::string> expected = list_of("s1")("s3");
+        BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+      }
+    }
+    BOOST_REQUIRE_EQUAL(seen.size(), 4u);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(solve_before_with_conflicting_softs) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    {
+      Variable<bool> s;
+      Variable<unsigned> d;
+      Generator gen(if_then(s, d == 0u));
+      gen.solve_before(s, d);
+      gen.soft("s1", d == 1u);
+      gen.soft("s2", s == true);
+
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[s], true);
+      BOOST_REQUIRE_EQUAL(gen[d], 0u);
+      std::vector<std::string> inact = gen.getInactiveSofts();
+      std::vector<std::string> expected = list_of("s1");
+      BOOST_REQUIRE_EQUAL_COLLECTIONS(inact.begin(), inact.end(), expected.begin(), expected.end());
+    }
+
+    {
+      unsigned ext = 1;
+      Variable<unsigned> x, y;
+      Generator gen(x < 10u && y == x + 1u);
+      gen.solve_before(x, y);
+      gen.soft("s1", x == 3u);
+      gen.soft("s2", x == reference(ext));
+
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[x], 1u);
+      BOOST_REQUIRE_EQUAL(gen[y], 2u);
+      BOOST_REQUIRE(gen.getInactiveSofts() == std::vector<std::string>({"s1"}));
+
+      ext = 20;
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[x], 3u);
+      BOOST_REQUIRE_EQUAL(gen[y], 4u);
+      BOOST_REQUIRE(gen.getInactiveSofts() == std::vector<std::string>({"s2"}));
+
+      ext = 5;
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[x], 5u);
+      BOOST_REQUIRE_EQUAL(gen[y], 6u);
+      BOOST_REQUIRE(gen.getInactiveSofts() == std::vector<std::string>({"s1"}));
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context
