@@ -27,6 +27,67 @@
 #include <utility>
 #include <vector>
 
+class ctrl_rand_reg : public uvm_randomized_reg {
+ public:
+  uvm::uvm_reg_field* mode;
+  uvm::uvm_reg_field* trim3;
+  uvm::uvm_reg_field* div;
+  uvm::uvm_reg_field* ro_rev;
+
+  crave::crv_variable<unsigned int> v_mode;
+  crave::crv_variable<unsigned int> v_trim3;
+  crave::crv_variable<unsigned int> v_div;
+  crave::crv_variable<unsigned int> v_ro_rev;
+
+  crave::crv_constraint c_ctrl {
+    v_mode() < 3u,
+    crave::if_then(v_mode() == 0u, v_div() == 1u),
+    v_div() >= 1u, v_div() <= 16u
+  };
+
+  ctrl_rand_reg(crave::crv_object_name name = "ctrl_rand_reg")
+      : uvm_randomized_reg(name, 32, uvm::UVM_NO_COVERAGE),
+        mode(nullptr), trim3(nullptr), div(nullptr), ro_rev(nullptr) {}
+
+  virtual void build() {
+    mode = uvm::uvm_reg_field::type_id::create("mode");
+    mode->configure(this, 2, 0, "RW", false, 0, true, true, false);
+
+    // 3-bit field with no explicit user constraint on v_trim3: bind_field must
+    // automatically constrain v_trim3 <= 7.
+    trim3 = uvm::uvm_reg_field::type_id::create("trim3");
+    trim3->configure(this, 3, 2, "RW", false, 5, true, true, false);
+
+    div = uvm::uvm_reg_field::type_id::create("div");
+    div->configure(this, 8, 8, "RW", false, 1, true, true, false);
+
+    ro_rev = uvm::uvm_reg_field::type_id::create("ro_rev");
+    ro_rev->configure(this, 8, 16, "RO", false, 0xa5, true, false, false);
+
+    bind_field(mode, v_mode);
+    bind_field(trim3, v_trim3);
+    bind_field(div, v_div);
+    bind_field(ro_rev, v_ro_rev);
+  }
+};
+
+class ctrl_reg_block : public uvm::uvm_reg_block {
+ public:
+  ctrl_rand_reg* ctrl;
+
+  ctrl_reg_block(const std::string& name = "ctrl_reg_block")
+      : uvm::uvm_reg_block(name, uvm::UVM_NO_COVERAGE), ctrl(nullptr) {}
+
+  virtual void build() {
+    default_map = create_map("default_map", 0x0, 4, uvm::UVM_LITTLE_ENDIAN);
+    ctrl = new ctrl_rand_reg("ctrl");
+    ctrl->configure(this);
+    ctrl->build();
+    default_map->add_reg(ctrl, 0x0, "RW");
+    lock_model();
+  }
+};
+
 class bus_item : public uvm_randomized_sequence_item {
  public:
   crave::crv_variable<unsigned int> addr;
@@ -149,16 +210,20 @@ class crave2uvm_test_comp : public uvm::uvm_test {
  public:
   uvm::uvm_sequencer<bus_item>* seqr;
   sink_driver* drv;
+  ctrl_reg_block* reg_blk;
 
   UVM_COMPONENT_UTILS(crave2uvm_test_comp);
 
   crave2uvm_test_comp(uvm::uvm_component_name name)
-      : uvm::uvm_test(name), seqr(nullptr), drv(nullptr) {}
+      : uvm::uvm_test(name), seqr(nullptr), drv(nullptr), reg_blk(nullptr) {}
 
   void build_phase(uvm::uvm_phase& phase) override {
     uvm::uvm_test::build_phase(phase);
     seqr = new uvm::uvm_sequencer<bus_item>("seqr");
     drv = new sink_driver("drv");
+    reg_blk = new ctrl_reg_block("reg_blk");
+    reg_blk->build();
+    reg_blk->reset();
   }
 
   void connect_phase(uvm::uvm_phase& phase) override {
@@ -168,13 +233,48 @@ class crave2uvm_test_comp : public uvm::uvm_test {
 
   void run_phase(uvm::uvm_phase& phase) override {
     phase.raise_objection(this);
+
+    for (int i = 0; i < 32; ++i) {
+      if (!reg_blk->ctrl->randomize()) {
+        UVM_ERROR("REG_RND", "uvm_randomized_reg::randomize() failed");
+      }
+      unsigned int m = reg_blk->ctrl->mode->get().to_uint();
+      unsigned int t = reg_blk->ctrl->trim3->get().to_uint();
+      unsigned int d = reg_blk->ctrl->div->get().to_uint();
+      unsigned int r = reg_blk->ctrl->ro_rev->get().to_uint();
+      if (m >= 3u || (m == 0u && d != 1u) || d < 1u || d > 16u) {
+        UVM_ERROR("REG_CSTR", "uvm_randomized_reg violated cross-field constraint");
+      }
+      if (static_cast<unsigned int>(reg_blk->ctrl->v_trim3) > 7u || t != static_cast<unsigned int>(reg_blk->ctrl->v_trim3)) {
+        UVM_ERROR("REG_WIDTH", "bind_field failed to bound 3-bit field variable");
+      }
+      if (r != 0xa5u) {
+        UVM_ERROR("REG_RO", "RO field desired value was modified by randomize()");
+      }
+    }
+
+    if (reg_blk->ctrl->randomize_with(reg_blk->ctrl->v_trim3() == 8u)) {
+      UVM_ERROR("REG_OVERFLOW", "3-bit bound variable accepted out-of-range value 8");
+    }
+
+    if (!reg_blk->ctrl->randomize_with(reg_blk->ctrl->v_mode() == 2u,
+                                       reg_blk->ctrl->v_trim3() == 6u,
+                                       reg_blk->ctrl->v_div() == 12u)) {
+      UVM_ERROR("REG_RND_WITH", "uvm_randomized_reg::randomize_with() failed");
+    }
+    if (reg_blk->ctrl->mode->get().to_uint() != 2u ||
+        reg_blk->ctrl->trim3->get().to_uint() != 6u ||
+        reg_blk->ctrl->div->get().to_uint() != 12u ||
+        reg_blk->ctrl->ro_rev->get().to_uint() != 0xa5u) {
+      UVM_ERROR("REG_SYNC", "uvm_randomized_reg::randomize_with() did not sync desired fields");
+    }
+
     top_seq* seq = top_seq::type_id::create("seq");
     seq->start(seqr);
     phase.drop_objection(this);
   }
 
   void check_phase(uvm::uvm_phase&) override {
-    // s1: 2..4 items, s2: 3 items (0x40..0x42), pri_item: (0x64,0x77), on_item: (0x68,0x88), plain_seq: (0x90,0x99)
     if (drv->seen.size() < 8 || drv->seen.size() > 10) {
       std::ostringstream os;
       os << "Expected 8..10 items, got " << drv->seen.size();

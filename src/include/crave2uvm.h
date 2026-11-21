@@ -33,6 +33,7 @@
 
 #include "uvm_randomized_sequence_item.h"
 #include "uvm_randomized_sequence.h"
+#include "uvm_randomized_reg.h"
 
 namespace crave2uvm_detail {
 
