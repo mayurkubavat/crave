@@ -326,62 +326,33 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     return new_value<Integer>(i);
   }
 
+  template <typename Integer, typename VarTerm, typename CollectionTerm>
+  result_type make_inside(VarTerm const& var_term, CollectionTerm const& c) {
+    typedef typename boost::proto::result_of::value<CollectionTerm>::type Collection;
+    typedef typename boost::range_value<Collection>::type CollectionEntry;
+
+    unsigned width = bitsize_traits<Integer>::value;
+    bool sign = crave::is_signed<Integer>::value;
+
+    std::set<Constant> constants;
+    for (CollectionEntry const& entry : boost::proto::value(c)) {
+      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
+      constants.insert(Constant(i, width, sign));
+    }
+
+    return new Inside(boost::proto::eval(var_term, *this), constants);
+  }
+
   template <typename Integer, typename CollectionTerm>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_inside>::type const&,
                          WriteReference<Integer> const& var_term, CollectionTerm const& c) {
-    typedef typename boost::proto::result_of::value<CollectionTerm>::type Collection;
-    typedef typename boost::range_value<Collection>::type CollectionEntry;
-
-    unsigned width = bitsize_traits<Integer>::value;
-    bool sign = crave::is_signed<Integer>::value;
-
-    typedef typename distribution_value_type<Integer>::type DistInt;
-    std::set<Constant> constants;
-    distribution<DistInt> dist;
-    for(CollectionEntry const & entry : boost::proto::value(c)) {
-      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
-      constants.insert(Constant(i, width, sign));
-      dist(weighted_value<DistInt>(i, 1));
-    }
-
-    unsigned id = new_var_id();
-    result_type tmp_var = new_var(id, width, sign);
-    std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<Integer>(dist, tmp_var));
-    dist_references_.push_back(std::make_pair(id, ref_expr));
-
-    result_type val_equal_tmp(new EqualOpr(boost::proto::eval(var_term, *this), tmp_var));
-    result_type tmp_inside(new Inside(tmp_var, constants));
-    dist_ref_to_var_map[id] = var_term.id();
-    return new LogicalAndOpr(val_equal_tmp, tmp_inside);
+    return make_inside<Integer>(var_term, c);
   }
-  
+
   template <typename Integer, typename CollectionTerm>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_inside>::type const&,
                          Variable<Integer> const& var_term, CollectionTerm const& c) {
-    typedef typename boost::proto::result_of::value<CollectionTerm>::type Collection;
-    typedef typename boost::range_value<Collection>::type CollectionEntry;
-
-    unsigned width = bitsize_traits<Integer>::value;
-    bool sign = crave::is_signed<Integer>::value;
-
-    typedef typename distribution_value_type<Integer>::type DistInt;
-    std::set<Constant> constants;
-    distribution<DistInt> dist;
-    for(CollectionEntry const & entry : boost::proto::value(c)) {
-      typename distribution_value_type<CollectionEntry>::type i = distribution_value_type<CollectionEntry>::value(entry);
-      constants.insert(Constant(i, width, sign));
-      dist(weighted_value<DistInt>(i, 1));
-    }
-
-    unsigned id = new_var_id();
-    result_type tmp_var = new_var(id, width, sign);
-    std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<Integer>(dist, tmp_var));
-    dist_references_.push_back(std::make_pair(id, ref_expr));
-
-    result_type val_equal_tmp(new EqualOpr(boost::proto::eval(var_term, *this), tmp_var));
-    result_type tmp_inside(new Inside(tmp_var, constants));
-    dist_ref_to_var_map[id] = var_term.id();
-    return new LogicalAndOpr(val_equal_tmp, tmp_inside);
+    return make_inside<Integer>(var_term, c);
   }
 
   template <typename Integer, typename DistInt>

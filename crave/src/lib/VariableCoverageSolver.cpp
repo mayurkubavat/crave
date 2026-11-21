@@ -42,6 +42,7 @@ VariableCoverageSolver::VariableCoverageSolver(const VariableContainer& vcon, co
 }
 
 bool VariableCoverageSolver::solve() {
+  has_solution_ = false;
 
   for(ConstraintPtr c : constr_pttn_) {
     if (!c->isCover()) continue;
@@ -55,6 +56,7 @@ bool VariableCoverageSolver::solve() {
     }
     solver_->makeAssumption(*c->expr());
     if (solver_->solve()) {
+      has_solution_ = true;
       LOG(INFO) << "Solve partition " << constr_pttn_ << " hitting constraint " << c->name();
       covered_set_.insert(c->name());
 

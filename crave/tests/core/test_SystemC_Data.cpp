@@ -360,6 +360,50 @@ BOOST_AUTO_TEST_CASE(randv_sc_bigint_t) {
   BOOST_REQUIRE_EQUAL(b, 4094);
 }
 
+BOOST_AUTO_TEST_CASE(inside_negation_sc_t) {
+  using namespace sc_dt;
+
+  {
+    std::set<sc_uint<8> > s{0, 64, 128, 192};
+    Variable<sc_uint<8> > v;
+    Generator gen(v == 64 && !inside(v, s));
+    BOOST_REQUIRE(!gen.next());
+
+    Variable<sc_uint<8> > v2;
+    Generator gen2(!inside(v2, s) && v2 <= 2);
+    for (int i = 0; i < 15; ++i) {
+      BOOST_REQUIRE(gen2.next());
+      BOOST_REQUIRE(gen2[v2] == 1 || gen2[v2] == 2);
+    }
+  }
+  {
+    std::set<sc_int<8> > s{-128, -1, 5, 127};
+    randv<sc_int<8> > v;
+    Variable<bool> flag;
+    Generator gen(v() == -1 && if_then(inside(v(), s), flag == true) && flag == false);
+    BOOST_REQUIRE(!gen.next());
+
+    randv<sc_int<8> > v2;
+    Generator gen2(!inside(v2(), s) && v2() >= -2 && v2() <= 2);
+    for (int i = 0; i < 15; ++i) {
+      BOOST_REQUIRE(gen2.next());
+      BOOST_REQUIRE_NE(v2, -1);
+    }
+  }
+  {
+    std::set<sc_biguint<8> > s{0, 3, 200, 255};
+    Variable<sc_biguint<8> > v;
+    Generator gen(v == 200 && !inside(v, s));
+    BOOST_REQUIRE(!gen.next());
+  }
+  {
+    std::vector<long long> s{-5, 7, 1LL << 35};
+    Variable<sc_bigint<40> > v;
+    Generator gen(v == (1LL << 35) && !inside(v, s));
+    BOOST_REQUIRE(!gen.next());
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // SystemC_Data
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

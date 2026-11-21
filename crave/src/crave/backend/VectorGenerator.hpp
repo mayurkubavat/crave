@@ -67,6 +67,7 @@ struct VectorSolver {
  private:
   std::vector<VectorConstraintPtr> constraints_;
   int vector_id_;
+  std::set<int> scalar_vars_;
   SolverPtr solver_;
   VectorElements vec_elements_;
   // hard constraints, which involve only a single element, for every element

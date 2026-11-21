@@ -475,15 +475,19 @@ BOOST_AUTO_TEST_CASE(vector_reduction_in_foreach) {
   BOOST_REQUIRE(v[0] == v[1] && v[1] == v[2] && v[2] == v[3]);
 }
 
-// A constraint with a reduction may refer to the elements of its vector only.
+// A constraint with a reduction may refer to the elements of its vector and scalar variables/references.
 BOOST_AUTO_TEST_CASE(vector_reduction_with_other_variables) {
   rand_vec<unsigned int> v(NULL);
   rand_vec<unsigned int> w(NULL);
   Variable<unsigned int> x;
   Generator gen;
-  BOOST_CHECK_THROW(gen(v().sum() == x), std::runtime_error);
+  gen(x == 15u)(v().size() == 3)(v().sum() == x);
+  BOOST_REQUIRE(gen.next());
+  BOOST_REQUIRE_EQUAL(v.size(), 3u);
+  BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 15u);
   BOOST_CHECK_THROW(gen(v().sum() == w().sum()), std::runtime_error);
   BOOST_CHECK_THROW(gen(v().sum() == v().size()), std::runtime_error);
+  BOOST_CHECK_THROW(gen(v().sum() == w()[0]), std::runtime_error);
 }
 
 // A constraint with a reduction, which accesses an element outside the vector, does not hold.
@@ -532,6 +536,253 @@ BOOST_AUTO_TEST_CASE(vector_reduction_size_retry) {
   gen2(w().sum() == 10);
   BOOST_REQUIRE(!gen2.next());
   BOOST_REQUIRE(!gen2.next());
+}
+
+BOOST_AUTO_TEST_CASE(unique_standalone_widths) {
+  {
+    rand_vec<unsigned int> v(NULL);
+    Generator gen;
+    gen(v().size() == 5)(unique(v()));
+    bool non_trivial = false;
+    for (int n = 0; n < 5; ++n) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 5u);
+      BOOST_REQUIRE(check_unique(v));
+      for (unsigned i = 0; i < v.size(); ++i)
+        if (v[i] > 1u) non_trivial = true;
+    }
+    BOOST_REQUIRE(non_trivial);
+  }
+  {
+    rand_vec<signed char> v(NULL);
+    Generator gen;
+    gen(v().size() == 5)(unique(v()));
+    bool non_trivial = false;
+    for (int n = 0; n < 5; ++n) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 5u);
+      BOOST_REQUIRE(check_unique(v));
+      for (unsigned i = 0; i < v.size(); ++i)
+        if (v[i] < -1 || v[i] > 1) non_trivial = true;
+    }
+    BOOST_REQUIRE(non_trivial);
+  }
+  {
+    rand_vec<uint64_t> v(NULL);
+    Generator gen;
+    gen(v().size() == 5)(unique(v()));
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v.size(), 5u);
+    BOOST_REQUIRE(check_unique(v));
+  }
+  {
+    rand_vec<bool> b(NULL);
+    Generator gen2;
+    gen2(b().size() == 2)(unique(b()));
+    BOOST_REQUIRE(gen2.next());
+    BOOST_REQUIRE_EQUAL(b.size(), 2u);
+    BOOST_REQUIRE_NE(b[0], b[1]);
+
+    rand_vec<bool> b3(NULL);
+    Generator gen3;
+    gen3(b3().size() == 3)(unique(b3()));
+    BOOST_REQUIRE(!gen3.next());
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    Generator gen;
+    gen(unique(v()))(v().size() == 5)(foreach (v(), v()[_i] < 100u));
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v.size(), 5u);
+    BOOST_REQUIRE(check_unique(v));
+    for (unsigned i = 0; i < v.size(); ++i) BOOST_REQUIRE_LT(v[i], 100u);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(vector_scalar_before_vector) {
+  {
+    Variable<unsigned int> s;
+    rand_vec<unsigned int> v(NULL);
+    Generator gen;
+    gen(v().size() == 3)(s == 7u)(foreach (v(), v()[_i] == s));
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v.size(), 3u);
+    for (unsigned i = 0; i < v.size(); ++i) BOOST_REQUIRE_EQUAL(v[i], 7u);
+  }
+  {
+    randv<unsigned int> r(NULL);
+    rand_vec<unsigned int> w(NULL);
+    Generator gen;
+    gen(w().size() == 3)(r() == 11u)(w().sum() == r());
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(w.size(), 3u);
+    BOOST_REQUIRE_EQUAL(w[0] + w[1] + w[2], 11u);
+  }
+  {
+    unsigned int ext = 9;
+    rand_vec<unsigned int> u(NULL);
+    Generator gen;
+    gen(u().size() == 3)(foreach (u(), u()[_i] == reference(ext)));
+    BOOST_REQUIRE(gen.next());
+    for (unsigned i = 0; i < u.size(); ++i) BOOST_REQUIRE_EQUAL(u[i], 9u);
+    ext = 42;
+    BOOST_REQUIRE(gen.next());
+    for (unsigned i = 0; i < u.size(); ++i) BOOST_REQUIRE_EQUAL(u[i], 42u);
+  }
+}
+
+struct RandObjScalarSum : public rand_obj {
+  RandObjScalarSum() : x(this), v(this) {
+    constraint(v().size() == 3);
+    constraint(v().sum() == x());
+  }
+  randv<unsigned char> x;
+  rand_vec<unsigned char> v;
+};
+
+BOOST_AUTO_TEST_CASE(vector_scalar_and_ref_import) {
+  {
+    rand_vec<unsigned int> v(NULL);
+    randv<unsigned int> s(NULL);
+    Generator gen;
+    gen(v().size() == 3)(s() >= 10u && s() <= 30u)(v().sum() == s());
+    std::set<unsigned int> seen;
+    for (int n = 0; n < 10; ++n) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], static_cast<unsigned int>(s));
+      seen.insert(static_cast<unsigned int>(s));
+    }
+    BOOST_REQUIRE_GT(seen.size(), 1u);
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    Variable<bool> b;
+    Generator gen;
+    gen(v().size() == 3)(b == true)(foreach (v(), if_then_else(b, v()[_i] == 1u, v()[_i] == 2u)));
+    BOOST_REQUIRE(gen.next());
+    for (unsigned i = 0; i < v.size(); ++i) BOOST_REQUIRE_EQUAL(v[i], 1u);
+  }
+  {
+    RandObjScalarSum obj;
+    for (int n = 0; n < 5; ++n) {
+      BOOST_REQUIRE(obj.next());
+      unsigned char sum = static_cast<unsigned char>(obj.v[0] + obj.v[1] + obj.v[2]);
+      BOOST_REQUIRE_EQUAL(sum, static_cast<unsigned char>(obj.x));
+    }
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    unsigned int total = 12;
+    Generator gen;
+    gen(v().size() == 3)(v().sum() == reference(total));
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 12u);
+    total = 21;
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 21u);
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    Variable<unsigned int> total;
+    Generator gen;
+    gen(total == 10u)(v().size() == 3)(v().sum() == total);
+    gen.soft(foreach (v(), v()[_i] < 3u));
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 10u);
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    Generator gen;
+    gen(v().size() >= 2 && v().size() <= 5)(foreach (v(), v()[_i] < v().size()));
+    for (int n = 0; n < 10; ++n) {
+      BOOST_REQUIRE(gen.next());
+      for (unsigned i = 0; i < v.size(); ++i) BOOST_REQUIRE_LT(v[i], v.size());
+    }
+    rand_vec<unsigned int> v2(NULL);
+    Generator gen2(foreach (v2(), v2()[_i] < v2().size()));
+    BOOST_REQUIRE(gen2.next());
+    for (unsigned i = 0; i < v2.size(); ++i) BOOST_REQUIRE_LT(v2[i], v2.size());
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    randv<unsigned int> x(NULL);
+    Generator gen;
+    gen(v().size() == 3)(v().sum() == x());
+    gen.cover(x() == 15u);
+    BOOST_REQUIRE(gen.nextCov());
+    BOOST_REQUIRE_EQUAL(static_cast<unsigned int>(x), 15u);
+    unsigned int sum = 0;
+    for (unsigned i = 0; i < v.size(); ++i) sum += v[i];
+    BOOST_REQUIRE_EQUAL(sum, 15u);
+
+    rand_vec<unsigned int> v2(NULL);
+    Variable<unsigned int> xv;
+    Generator gen2;
+    gen2(v2().size() == 3)(v2().sum() == xv);
+    gen2.cover(xv == 15u);
+    BOOST_REQUIRE(gen2.nextCov());
+    unsigned int sum2 = 0;
+    for (unsigned i = 0; i < v2.size(); ++i) sum2 += v2[i];
+    BOOST_REQUIRE_EQUAL(sum2, 15u);
+  }
+  {
+    rand_vec<unsigned char> v(NULL);
+    Variable<unsigned char> total;
+    Generator gen;
+    gen(total == 10u)(v().size() <= 3)(foreach (v(), v()[_i] < 5u))(v().sum() == total);
+    BOOST_REQUIRE(gen.next());
+    BOOST_REQUIRE_EQUAL(v.size(), 3u);
+    BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 10);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(foreach_inside_subscript) {
+  {
+    rand_vec<unsigned int> v(NULL);
+    Variable<unsigned int> x;
+    std::set<unsigned int> s{1u};
+    Generator gen;
+    gen(v().size() == 3)(x == 1u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 1u, 0u)] == 7u + _i));
+    bool const ok = gen.next();
+    BOOST_CHECK(ok);
+    if (ok) {
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_CHECK_EQUAL(v[0], 7u);
+      BOOST_CHECK_EQUAL(v[1], 8u);
+      BOOST_CHECK_EQUAL(v[2], 9u);
+    }
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    Variable<unsigned int> x;
+    std::set<unsigned int> s{1u};
+    Generator gen;
+    gen(v().size() == 3)(x == 0u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 0u, 1u)] == 7u + _i))(
+        foreach (v(), if_then(_i == 0u, v()[_i] == 42u)));
+    bool const ok = gen.next();
+    BOOST_CHECK(ok);
+    if (ok) {
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_CHECK_EQUAL(v[0], 42u);
+      BOOST_CHECK_EQUAL(v[1], 7u);
+      BOOST_CHECK_EQUAL(v[2], 8u);
+    }
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    randv<unsigned int> r(NULL);
+    std::set<unsigned int> s{1u, 2u};
+    Generator gen;
+    gen(v().size() == 3)(r() == 2u)(foreach (v(), v()[_i + if_then_else(inside(r(), s), 1u, 0u)] == 7u + _i));
+    bool const ok = gen.next();
+    BOOST_CHECK(ok);
+    if (ok) {
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_CHECK_EQUAL(v[0], 7u);
+      BOOST_CHECK_EQUAL(v[1], 8u);
+      BOOST_CHECK_EQUAL(v[2], 9u);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

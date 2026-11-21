@@ -283,6 +283,16 @@ BOOST_AUTO_TEST_CASE(randc_inside) {
   for (int cycle = 0; cycle < 3; ++cycle) require_permutation(generate(gen, x, 3), expected);
 }
 
+BOOST_AUTO_TEST_CASE(randc_not_inside) {
+  Variable<unsigned char> x;
+  std::set<unsigned char> excluded{0, 2};
+  Generator gen(x < 4u && !inside(x, excluded));
+  gen.randc(x);
+
+  std::set<int> expected{1, 3};
+  for (int cycle = 0; cycle < 3; ++cycle) require_permutation(generate(gen, x, 2), expected);
+}
+
 BOOST_AUTO_TEST_CASE(randc_unsatisfiable) {
   Variable<unsigned char> x;
   Generator gen(x > 3u && x < 2u);

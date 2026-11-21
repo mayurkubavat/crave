@@ -44,6 +44,7 @@
 namespace crave {
 
 extern RandomSeedManager rng;
+extern std::function<bool(void)> random_bit;
 
 namespace {
 // writes the structure of an expression, which identifies the constraints of a cycle of a randc variable
@@ -111,6 +112,21 @@ Constant readValue(VariableExpr const& var, std::string const& str) {
   if (var.isBool()) return Constant(str == "true" || str == "1");
   uint64_t value = 0;
   for (char c : str) value = (value << 1) | (c == '1' ? 1 : 0);
+  return Constant(signExtend(var, value), var.bitsize(), var.sign());
+}
+
+// a constant sampled from a BDD bit-string where don't-care bits ('X'/'-') are randomized
+Constant sampleConstant(VariableExpr const& var, std::string const& str) {
+  if (var.isBool()) {
+    if (str == "true" || str == "1") return Constant(true);
+    if (str == "false" || str == "0") return Constant(false);
+    return Constant(random_bit());
+  }
+  uint64_t value = 0;
+  for (char c : str) {
+    value <<= 1;
+    if (c == '1' || (c != '0' && random_bit())) value |= 1;
+  }
   return Constant(signExtend(var, value), var.bitsize(), var.sign());
 }
 
@@ -201,10 +217,15 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) vars_with_user_dist.insert(var_id);
   }
 
+  std::set<int> read_ref_ids;
+  for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) read_ref_ids.insert(pair.first);
+  std::set<int> write_ref_ids;
+  for (VariableContainer::WriteRefPair const& pair : var_ctn_.write_references) write_ref_ids.insert(pair.first);
+
+  std::map<int, ConstraintList> const& svc_map = constr_pttn_.singleVariableConstraintMap();
   if (FactoryMetaSMT::isDefined(CUDD)) {
     LOG(INFO) << "Get BDD samplers for constraints involving single variable";
-    std::map<int, ConstraintList> const& svc_map = constr_pttn_.singleVariableConstraintMap();
-    for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
+    for (VariableContainer::WriteRefPair& pair : var_ctn_.write_references) {
       int id = pair.first;
       if (svc_map.find(id) == svc_map.end()) continue;
       // The default distribution of a variable ranges over all values of its type and does not
@@ -214,7 +235,7 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
         continue;
       }
       std::vector<NodePtr> exprs;
-      for(ConstraintPtr c : svc_map.at(id)) exprs.push_back(c->expr());
+      for (ConstraintPtr c : svc_map.at(id)) exprs.push_back(c->expr());
       std::shared_ptr<BddSampler> sampler = BddSampler::get(exprs);
       if (!sampler) {
         // the constraints are too complex for a BDD, the variable is randomized like the ones without
@@ -227,12 +248,27 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     }
   }
 
+  for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables) {
+    int id = pair.first;
+    if (read_ref_ids.count(id) || var_ctn_.dist_ref_to_var_map.count(id)) continue;
+    if (bdd_samplers_.count(id) || vars_with_user_dist.count(id)) continue;
+    if (svc_map.find(id) == svc_map.end() || svc_map.at(id).size() != 1) continue;
+    if (Inside const* in = dynamic_cast<Inside const*>(svc_map.at(id).front()->expr().get())) {
+      if (dynamic_cast<VariableExpr const*>(in->child().get()) && !in->collection().empty()) {
+        inside_samplers_[id].assign(in->collection().begin(), in->collection().end());
+        if (write_ref_ids.count(id)) vars_with_dist.insert(id);
+        LOG(INFO) << "  Inside sampler for var #" << id << " found";
+      }
+    }
+  }
+
   // A distribution of the user or a BDD sampler replaces the default distribution of a variable.
   // Without them, e.g. if the constraints are too complex for a BDD, it stays in effect.
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) continue;
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
-    if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id)) replaced_dist_refs_.insert(pair.first);
+    if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id) || inside_samplers_.count(var_id))
+      replaced_dist_refs_.insert(pair.first);
   }
 
   if (2 * vars_with_dist.size() > var_ctn_.write_references.size()) return;  // not necessary to randomize more
@@ -265,6 +301,7 @@ void VariableDefaultSolver::analyseConstraints() {
 
 bool VariableDefaultSolver::solve() {
   LOG(INFO) << "Solve constraints in partition " << constr_pttn_;
+  has_solution_ = false;
   if (!contradictions_.empty()) {
     LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
     return false;
@@ -309,6 +346,7 @@ bool VariableDefaultSolver::solve() {
   if (solved && !solve_levels_.empty()) solved = solveOrdered(assumptions, randc);
 
   if (solved) {
+    has_solution_ = true;
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
       solver_->read(*var_ctn_.variables[pair.first], *pair.second);
     }
@@ -321,15 +359,24 @@ bool VariableDefaultSolver::solve() {
 
 bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc) {
   // the random values of the randc variables are given by their cycles
-  for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
-    int id = pair.first;
-    if (bdd_samplers_.find(id) == bdd_samplers_.end() || randc.count(id)) continue;
+  for (auto const& entry : bdd_samplers_) {
+    int id = entry.first;
+    if (randc.count(id)) continue;
     if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
     std::string str;
-    CHECK(bdd_samplers_[id]->sample(&str));  // otherwise, contradiction must have been found!
-    NodePtr value(new Constant(pair.second->to_constant(str)));
+    CHECK(entry.second->sample(&str));  // otherwise, contradiction must have been found!
     NodePtr var = var_ctn_.variables[id];
+    NodePtr value(new Constant(sampleConstant(static_cast<VariableExpr const&>(*var), str)));
     NodePtr eq(new EqualOpr(var, value));
+    solver_->makeSuggestion(*eq);
+  }
+  for (auto const& entry : inside_samplers_) {
+    int id = entry.first;
+    if (randc.count(id)) continue;
+    if (ordered_vars_.count(id) && !unordered_vars_.count(id)) continue;
+    Constant const& chosen = entry.second[random_unsigned(entry.second.size())];
+    NodePtr var = var_ctn_.variables[id];
+    NodePtr eq(new EqualOpr(var, new Constant(chosen)));
     solver_->makeSuggestion(*eq);
   }
 
@@ -563,7 +610,7 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
         std::map<int, std::shared_ptr<BddSampler> >::iterator sampler = bdd_samplers_.find(level[i]);
         std::string str;
         if (sampler != bdd_samplers_.end() && sampler->second->sample(&str))
-          assumptions.push_back(new EqualOpr(vars[i], new Constant(readValue(v, str))));
+          assumptions.push_back(new EqualOpr(vars[i], new Constant(sampleConstant(v, str))));
         else
           assumptions.push_back(new EqualOpr(vars[i], new Constant(randomValue(v))));
       }

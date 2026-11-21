@@ -46,17 +46,104 @@ Constant to_constant(std::string const& str, unsigned bitsize, bool sign) {
   }
   return Constant(val, bitsize, sign);
 }
+
+struct VectorElementTypeVisitor : public NodeVisitor {
+  explicit VectorElementTypeVisitor(unsigned vector_id)
+      : vector_id_(vector_id), found_(false), bitsize_(1u), sign_(true) {}
+
+  bool find(std::vector<VectorConstraintPtr> const& constraints, unsigned& bitsize, bool& sign) {
+    for (VectorConstraintPtr const& vc : constraints) {
+      vc->expr()->visit(this);
+      if (found_) {
+        bitsize = bitsize_;
+        sign = sign_;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void visitNode(Node const&) {}
+  void visitTerminal(Terminal const&) {}
+  void visitUnaryExpr(UnaryExpression const& u) { u.child()->visit(this); }
+  void visitUnaryOpr(UnaryOperator const&) {}
+  void visitBinaryExpr(BinaryExpression const& b) {
+    b.lhs()->visit(this);
+    if (!found_) b.rhs()->visit(this);
+  }
+  void visitBinaryOpr(BinaryOperator const&) {}
+  void visitTernaryExpr(TernaryExpression const& t) {
+    t.a()->visit(this);
+    if (!found_) t.b()->visit(this);
+    if (!found_) t.c()->visit(this);
+  }
+  void visitPlaceholder(Placeholder const&) {}
+  void visitVariableExpr(VariableExpr const&) {}
+  void visitConstant(Constant const&) {}
+  void visitVectorExpr(VectorExpr const& v) {
+    if (v.id() == vector_id_) {
+      found_ = true;
+      bitsize_ = v.bitsize();
+      sign_ = v.sign();
+    }
+  }
+  void visitVectorReduction(VectorReduction const& r) {
+    if (r.id() == vector_id_) {
+      found_ = true;
+      bitsize_ = r.bitsize();
+      sign_ = r.sign();
+    }
+  }
+  void visitNotOpr(NotOpr const& n) { visitUnaryExpr(n); }
+  void visitNegOpr(NegOpr const& n) { visitUnaryExpr(n); }
+  void visitComplementOpr(ComplementOpr const& c) { visitUnaryExpr(c); }
+  void visitInside(Inside const& i) { visitUnaryExpr(i); }
+  void visitExtendExpr(ExtendExpression const& e) { visitUnaryExpr(e); }
+  void visitAndOpr(AndOpr const& a) { visitBinaryExpr(a); }
+  void visitOrOpr(const OrOpr& o) { visitBinaryExpr(o); }
+  void visitLogicalAndOpr(LogicalAndOpr const& la) { visitBinaryExpr(la); }
+  void visitLogicalOrOpr(LogicalOrOpr const& lo) { visitBinaryExpr(lo); }
+  void visitXorOpr(XorOpr const& x) { visitBinaryExpr(x); }
+  void visitEqualOpr(EqualOpr const& eq) { visitBinaryExpr(eq); }
+  void visitNotEqualOpr(NotEqualOpr const& neq) { visitBinaryExpr(neq); }
+  void visitLessOpr(LessOpr const& l) { visitBinaryExpr(l); }
+  void visitLessEqualOpr(LessEqualOpr const& le) { visitBinaryExpr(le); }
+  void visitGreaterOpr(GreaterOpr const& g) { visitBinaryExpr(g); }
+  void visitGreaterEqualOpr(GreaterEqualOpr const& ge) { visitBinaryExpr(ge); }
+  void visitPlusOpr(PlusOpr const& p) { visitBinaryExpr(p); }
+  void visitMinusOpr(MinusOpr const& m) { visitBinaryExpr(m); }
+  void visitMultipliesOpr(MultipliesOpr const& m) { visitBinaryExpr(m); }
+  void visitDevideOpr(DevideOpr const& d) { visitBinaryExpr(d); }
+  void visitModuloOpr(ModuloOpr const& m) { visitBinaryExpr(m); }
+  void visitShiftLeftOpr(ShiftLeftOpr const& shl) { visitBinaryExpr(shl); }
+  void visitShiftRightOpr(ShiftRightOpr const& shr) { visitBinaryExpr(shr); }
+  void visitVectorAccess(VectorAccess const& va) { visitBinaryExpr(va); }
+  void visitIfThenElse(IfThenElse const& ite) { visitTernaryExpr(ite); }
+  void visitForEach(ForEach const& fe) { visitBinaryExpr(fe); }
+  void visitUnique(Unique const& u) { visitUnaryExpr(u); }
+  void visitBitslice(Bitslice const& b) { visitUnaryExpr(b); }
+
+ private:
+  unsigned vector_id_;
+  bool found_;
+  unsigned bitsize_;
+  bool sign_;
+};
 }  // namespace
 
 VectorSolver::VectorSolver(int vector_id)
     : constraints_(),
       vector_id_(vector_id),
+      scalar_vars_(),
       solver_(FactoryMetaSMT::getNewInstance()),
       vec_elements_(),
       failed_with_solved_size_(false) {}
 
 void VectorSolver::addConstraint(VectorConstraintPtr vc) {
   constraints_.push_back(vc);
+  for (int id : vc->supportVars()) {
+    if (id != vector_id_) scalar_vars_.insert(id);
+  }
   elem_samplers_.clear();
   samplers_.clear();
 }
@@ -79,6 +166,49 @@ bool VectorSolver::solve(const VariableGenerator& var_gen) {
   }
   failed_with_solved_size_ = false;
   resetSolver(size);
+
+  if (!scalar_vars_.empty()) {
+    VariableContainer* vcon = variable_container();
+    int const size_var_id = static_cast<int>(vector->size_var().id());
+    for (int id : scalar_vars_) {
+      auto var_ite = vcon->variables.find(id);
+      if (var_ite == vcon->variables.end()) continue;
+      NodePtr var_node = var_ite->second;
+      if (id == size_var_id) {
+        solver_->makeAssertion(EqualOpr(
+            var_node, new Constant(size, bitsize_traits<unsigned int>::value, crave::is_signed<unsigned int>::value)));
+        continue;
+      }
+      bool matched_ref = false;
+      for (VariableContainer::ReadRefPair const& pair : vcon->read_references) {
+        if (pair.first == id) {
+          solver_->makeAssertion(*pair.second->expr());
+          matched_ref = true;
+          break;
+        }
+      }
+      if (matched_ref) continue;
+      for (VariableContainer::WriteRefPair const& pair : vcon->write_references) {
+        if (pair.first == id) {
+          solver_->makeAssertion(EqualOpr(var_node, new Constant(pair.second->value_as_constant())));
+          matched_ref = true;
+          break;
+        }
+      }
+      if (matched_ref) continue;
+      std::string str;
+      if (var_gen.read(id, str)) {
+        if (VariableExpr const* ve = dynamic_cast<VariableExpr const*>(var_node.get())) {
+          Constant c = ve->isBool() ? Constant(str == "true" || str == "1"
+                                                   ? true
+                                                   : (str == "false" || str == "0" ? false : random_bit()))
+                                    : to_constant(str, ve->bitsize(), ve->sign());
+          solver_->makeAssertion(EqualOpr(var_node, new Constant(c)));
+        }
+      }
+    }
+  }
+
   makeSuggestions();
   bool result = solver_->solve(false);
   if (!result) {
@@ -139,8 +269,22 @@ void VectorSolver::buildSolver(unsigned int const size) {
         if (entry.second) samplers_.insert(entry.second.get());
     }
     vec_elements_.resize(size);
-    for (unsigned int i = old_size; i < size; ++i) {
-      vec_elements_[i] = new VariableExpr(new_var_id(), 1u, true);
+    if (old_size < size) {
+      unsigned elem_bitsize = 1u;
+      bool elem_sign = true;
+      auto vec_ite = variable_container()->vector_variables.find(vector_id_);
+      if (vec_ite != variable_container()->vector_variables.end()) {
+        if (VectorExpr const* vec = dynamic_cast<VectorExpr const*>(vec_ite->second.get())) {
+          elem_bitsize = vec->bitsize();
+          elem_sign = vec->sign();
+        }
+      } else {
+        VectorElementTypeVisitor vetv(static_cast<unsigned>(vector_id_));
+        vetv.find(constraints_, elem_bitsize, elem_sign);
+      }
+      for (unsigned int i = old_size; i < size; ++i) {
+        vec_elements_[i] = new VariableExpr(new_var_id(), elem_bitsize, elem_sign);
+      }
     }
   }
 
