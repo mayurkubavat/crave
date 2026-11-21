@@ -84,6 +84,14 @@ if (CRAVE_ENABLE_EXPERIMENTAL AND TARGET SystemC::systemc)
   target_link_libraries(experimental_SystemC SystemC::systemc ${PROJECT_NAME})
 endif ()
 
+if (CRAVE_ENABLE_EXPERIMENTAL AND TARGET SystemC::systemc AND TARGET UVM::uvm-systemc AND
+    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../src/include/crave2uvm.h")
+  add_executable(crave2uvm_tests experimental/test_crave2uvm.cpp)
+  add_all_tests(crave2uvm_tests experimental/test_crave2uvm.cpp)
+  target_include_directories(crave2uvm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/include)
+  target_link_libraries(crave2uvm_tests UVM::uvm-systemc SystemC::systemc ${PROJECT_NAME})
+endif ()
+
 if (metaSMT_USE_Boolector)
   add_executable(use_Boolector core/use_Boolector.cpp)
   add_all_tests(use_Boolector core/use_Boolector.cpp)

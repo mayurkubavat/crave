@@ -52,11 +52,13 @@ namespace crave {
 
   void crv_constraint_base::recursive_build(Generator &gen) const {
     if (!active()) return;
-    unsigned cnt = 0;
-    if (!soft()) {
-      for (auto e : expr_list()) gen(fullname() + "#" + std::to_string(cnt++), e);
-    } else {
-      for (auto e : expr_list()) gen.soft(fullname() + "#" + std::to_string(cnt++), e);
+    expression_list const& elist = expr_list();
+    for (std::size_t i = 0; i < elist.size(); ++i) {
+      std::string const cname = fullname() + "#" + std::to_string(i);
+      if (soft() || elist.is_soft(i))
+        gen.soft(cname, elist[i]);
+      else
+        gen(cname, elist[i]);
     }
   }
 

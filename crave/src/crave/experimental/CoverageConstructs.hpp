@@ -34,6 +34,7 @@
 #include "../ir/UserExpression.hpp"
 #include "../utils/Evaluator.hpp"
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -73,7 +74,10 @@ class crv_coverpoint : public crv_object {
    * \param elist List of bin expressions. Each expression will create a new bin with minimum hit count equal to 1.
    */
   void add_simple_bins(expression_list elist) {
-    for (auto e : elist) simple_bins_.push_back(crv_bin(e));
+    for (std::size_t i = 0; i < elist.size(); ++i) {
+      if (elist.is_soft(i)) throw std::invalid_argument("crave::soft() cannot be used as a coverage bin");
+      simple_bins_.push_back(crv_bin(elist[i]));
+    }
   }
 
   /**

@@ -28,8 +28,10 @@
 #pragma once
 
 #include "../frontend/bitsize_traits.hpp"
+#include "../frontend/Operators.hpp"
 #include "../ir/UserExpression.hpp"
 
+#include <cstddef>
 #include <vector>
 
 namespace crave {
@@ -47,7 +49,7 @@ class expression_list {
    * \param exprs Comma seperated list of expressions
   */
   template <typename... Exprs>
-  expression_list(Exprs... exprs) : exprs_() {
+  expression_list(Exprs... exprs) : exprs_(), softs_() {
     add_exprs(exprs...);
   }
 
@@ -70,7 +72,18 @@ class expression_list {
   template <typename Expr>
   void add_expr(Expr expr) {
     exprs_.push_back(make_expression(expr));
+    softs_.push_back(false);
   }
+
+  template <typename Expr>
+  void add_expr(soft_expr<Expr> expr) {
+    exprs_.push_back(make_expression(expr.expr));
+    softs_.push_back(true);
+  }
+
+  std::size_t size() const { return exprs_.size(); }
+  expression const& operator[](std::size_t idx) const { return exprs_[idx]; }
+  bool is_soft(std::size_t idx) const { return softs_[idx]; }
 
   /**
    * \brief Get the begin iterator.
@@ -118,6 +131,7 @@ class expression_list {
   }
 
   container_type exprs_;
+  std::vector<bool> softs_;
 };
 
 /**

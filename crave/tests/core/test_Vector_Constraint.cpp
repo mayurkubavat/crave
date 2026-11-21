@@ -785,6 +785,70 @@ BOOST_AUTO_TEST_CASE(foreach_inside_subscript) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(vector_soft_last_wins_and_partial) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // 1. Conflicting foreach & reduction softs: last-added soft wins and compatible middle soft stays active
+    {
+      rand_vec<unsigned int> v(NULL);
+      Generator gen;
+      gen(v().size() == 4);
+      gen(foreach (v(), v()[_i] < 100u));
+      gen.soft(foreach (v(), v()[_i] == 10u));
+      gen.soft(v().sum() == 80u);
+      gen.soft(foreach (v(), v()[_i] == 20u));
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 4u);
+      for (unsigned i = 0; i < 4; ++i) BOOST_REQUIRE_EQUAL(v[i], 20u);
+    }
+
+    // 2. Conflicting unique soft vs higher-priority foreach soft + non-conflicting lower-priority foreach soft
+    {
+      rand_vec<unsigned int> v(NULL);
+      Generator gen;
+      gen(v().size() == 4);
+      gen(foreach (v(), v()[_i] < 10u));
+      gen.soft(foreach (v(), if_then(_i == 3u, v()[_i] == 7u)));
+      gen.soft(unique(v()));
+      gen.soft(foreach (v(), if_then(_i < 3u, v()[_i] == 1u)));
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 4u);
+      BOOST_REQUIRE_EQUAL(v[0], 1u);
+      BOOST_REQUIRE_EQUAL(v[1], 1u);
+      BOOST_REQUIRE_EQUAL(v[2], 1u);
+      BOOST_REQUIRE_EQUAL(v[3], 7u);
+    }
+
+    // 3. Dynamic reference-coupled vector softs across consecutive next() calls
+    {
+      rand_vec<unsigned int> v(NULL);
+      unsigned int target = 12;
+      Generator gen;
+      gen(v().size() == 3);
+      gen(foreach (v(), v()[_i] <= 10u));
+      gen.soft(v().sum() == 6u);
+      gen.soft(v().sum() == reference(target));
+
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 12u);
+
+      target = 50;  // exceeds max sum 30 -> higher soft drops, lower soft (sum == 6) activates
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 6u);
+
+      target = 18;  // compatible again -> re-activates
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 18u);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

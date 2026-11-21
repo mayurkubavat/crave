@@ -140,7 +140,9 @@ VectorSolver::VectorSolver(int vector_id)
       failed_with_solved_size_(false) {}
 
 void VectorSolver::addConstraint(VectorConstraintPtr vc) {
-  constraints_.push_back(vc);
+  auto ite = constraints_.begin();
+  while (ite != constraints_.end() && (*ite)->id() < vc->id()) ++ite;
+  constraints_.insert(ite, vc);
   for (int id : vc->supportVars()) {
     if (id != vector_id_) scalar_vars_.insert(id);
   }
@@ -211,10 +213,6 @@ bool VectorSolver::solve(const VariableGenerator& var_gen) {
 
   makeSuggestions();
   bool result = solver_->solve(false);
-  if (!result) {
-    makeSuggestions();
-    result = solver_->solve(true);
-  }
   if (result) {
     solver_->readVector(vec_elements_, vector);
     LOG(INFO) << "Done solving vector " << vector_id_;

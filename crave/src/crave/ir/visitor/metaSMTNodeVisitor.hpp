@@ -51,6 +51,8 @@ class metaSMTVisitor : public NodeVisitor {
   virtual void makeSuggestion(Node const&) = 0;
   virtual void makeAssumption(Node const&) = 0;
   virtual std::vector<unsigned int> analyseSofts() = 0;
+  virtual std::vector<unsigned int> resolveSofts() = 0;
+  virtual std::vector<unsigned int> const& getInactiveSofts() const = 0;
   virtual std::vector<std::vector<unsigned int> > analyseContradiction(std::map<unsigned int, NodePtr> const&) = 0;
   virtual bool solve(bool ignoreSofts = true) = 0;
   virtual bool read(Node const&, AssignResult&) = 0;

@@ -124,8 +124,13 @@ namespace crave
     // TODO Generator caching
     rand_with_gen_ = std::make_shared<Generator>();
     recursive_build(*rand_with_gen_);
-    unsigned cnt = 0;
-    for (auto e : list) (*rand_with_gen_)(fullname() + ".randomize_with#" + std::to_string(cnt++), e);
+    for (std::size_t i = 0; i < list.size(); ++i) {
+      std::string const cname = fullname() + ".randomize_with#" + std::to_string(i);
+      if (list.is_soft(i))
+        rand_with_gen_->soft(cname, list[i]);
+      else
+        (*rand_with_gen_)(cname, list[i]);
+    }
     last_gen_ = rand_with_gen_;
     if (!rand_with_gen_->next()) return false;
     recursive_post_randomize();

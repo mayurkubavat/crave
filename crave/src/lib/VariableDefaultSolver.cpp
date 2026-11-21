@@ -188,16 +188,10 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
     ordered_vars_.insert(ids.begin(), ids.end());
   }
 
-  bool has_randc = false;
-  for (std::pair<const int, NodePtr> const& pair : var_ctn_.variables)
-    if (randc_state(pair.first)) has_randc = true;
-
   for(ConstraintPtr c : constr_pttn_) {
     if (c->isCover()) continue;  // default solver ignores cover constraints
-    if (c->isSoft() && has_randc) {
-      // the soft constraints are decided after the values of the randc variables have been chosen
-      randc_softs_.push_back(c->expr());
-    } else if (c->isSoft()) {
+    if (c->isSoft()) {
+      soft_constraints_.push_back(c);
       solver_->makeSoftAssertion(*c->expr());
     } else {
       solver_->makeAssertion(*c->expr());
@@ -326,26 +320,46 @@ bool VariableDefaultSolver::solve() {
 
   // As in SystemVerilog, the values of the randc variables are chosen before the other variables are solved.
   std::vector<NodePtr> assumptions;
-  bool solved = randc.empty() && solve_levels_.empty() ? solveWith(assumptions, randc) : true;
-  for (RandcMap::value_type const& pair : randc) {
-    if (!solved) break;
-    solved = solveRandc(pair.first, *pair.second, assumptions, randc);
-  }
-
-  // As the randc variables are solved first, a soft constraint, which contradicts their values, is dropped.
-  if (solved && !randc_softs_.empty()) {
-    bool model = true;
-    for (NodePtr const& soft : randc_softs_) {
-      assumptions.push_back(soft);
-      model = solveWith(assumptions, randc);
-      if (!model) assumptions.pop_back();
+  bool solved = true;
+  if (randc.empty() && solve_levels_.empty()) {
+    solved = solveWith(assumptions, randc, false);
+  } else {
+    for (RandcMap::value_type const& pair : randc) {
+      if (!solved) break;
+      solved = solveRandc(pair.first, *pair.second, assumptions, randc);
     }
-    if (!model) solved = solveWith(assumptions, randc);
-  }
 
-  if (solved && !solve_levels_.empty()) solved = solveOrdered(assumptions, randc);
+    if (solved && !solve_levels_.empty()) {
+      if (!soft_constraints_.empty()) {
+        for (VariableContainer::ReadRefPair& pair : var_ctn_.read_references)
+          solver_->makeAssumption(*pair.second->expr());
+        for (NodePtr const& assumption : assumptions) solver_->makeAssumption(*assumption);
+        std::vector<unsigned int> inactive = solver_->resolveSofts();
+        updateInactiveSofts(inactive);
+        std::size_t inact_idx = 0;
+        for (std::size_t i = 0; i < soft_constraints_.size(); ++i) {
+          if (inact_idx < inactive.size() && inactive[inact_idx] == i) {
+            ++inact_idx;
+          } else {
+            assumptions.push_back(soft_constraints_[i]->expr());
+          }
+        }
+      } else {
+        inactive_softs_.clear();
+      }
+      solved = solveOrdered(assumptions, randc);
+    } else if (solved && !randc.empty() && !soft_constraints_.empty()) {
+      solved = solveWith(assumptions, randc, false);
+    }
+  }
 
   if (solved) {
+    if (solve_levels_.empty()) {
+      if (soft_constraints_.empty())
+        inactive_softs_.clear();
+      else
+        updateInactiveSofts(solver_->getInactiveSofts());
+    }
     has_solution_ = true;
     for(VariableContainer::WriteRefPair & pair : var_ctn_.write_references) {
       solver_->read(*var_ctn_.variables[pair.first], *pair.second);
@@ -353,11 +367,13 @@ bool VariableDefaultSolver::solve() {
     LOG(INFO) << "Done solving partition " << constr_pttn_;
     return true;
   }
+  inactive_softs_.clear();
   LOG(INFO) << "Failed due to conflict with read references";
   return false;
 }
 
-bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc) {
+bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc,
+                                      bool ignore_softs) {
   // the random values of the randc variables are given by their cycles
   for (auto const& entry : bdd_samplers_) {
     int id = entry.first;
@@ -404,7 +420,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
     }
   }
 
-  return solver_->solve();
+  return solver_->solve(ignore_softs);
 }
 
 // lists unused values of a randc variable, which satisfy the constraints, window by window, see solveRandc()
@@ -425,7 +441,7 @@ void VariableDefaultSolver::listWindows(NodePtr const& var, RandcState const& st
     while (listed.size() < randc_max_listed) {
       assumptions.push_back(in_window);
       if (!excluded.empty()) assumptions.push_back(new NotOpr(randcInside(var, excluded)));
-      bool const found = solveWith(assumptions, randc);
+      bool const found = solveWith(assumptions, randc, true);
       assumptions.resize(n);
       if (!found) break;
       std::string str;
@@ -484,7 +500,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       --n;
       uint64_t const value = values[n];
       assumptions.push_back(new EqualOpr(var, new Constant(randcValue(*v, value))));
-      if (solveWith(assumptions, randc)) {
+      if (solveWith(assumptions, randc, true)) {
         undo.value = value;
         undo.listed = std::find(state.listed.begin(), state.listed.end(), value) != state.listed.end();
         randc_undo_.push_back(undo);
@@ -531,7 +547,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
         values.assign(excluded.begin(), excluded.end());
       }
       assumptions.push_back(inside ? randcInside(var, values) : NodePtr(new NotOpr(randcInside(var, values))));
-      bool const found = solveWith(assumptions, randc);
+      bool const found = solveWith(assumptions, randc, true);
       assumptions.pop_back();
       if (!found) break;
       std::string str;
@@ -560,7 +576,7 @@ bool VariableDefaultSolver::solveOrdered(std::vector<NodePtr>& assumptions, Rand
   unordered_vars_.clear();
   for (std::size_t i = 0; i < solve_levels_.size(); ++i)
     if (!solveLevel(i, assumptions, randc)) return false;
-  return solveWith(assumptions, randc);
+  return solveWith(assumptions, randc, true);
 }
 
 bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& assumptions, RandcMap const& randc) {
@@ -774,20 +790,12 @@ void VariableDefaultSolver::analyseHards() {
   }
 }
 
-void VariableDefaultSolver::analyseSofts() {
-  std::vector<unsigned int> result = solver_->analyseSofts();
-  std::vector<unsigned int>::iterator ite = result.begin();
-  unsigned cnt = 0;
-
-  for(ConstraintPtr c : constr_pttn_) {
-    if (ite == result.end()) break;
-    if (c->isSoft()) {
-      if (*ite == cnt) {
-        ite++;
-        inactive_softs_.push_back(c->name());
-      }
-      cnt++;
-    }
+void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) {
+  inactive_softs_.clear();
+  for (unsigned int idx : inactive_indices) {
+    if (idx < soft_constraints_.size()) inactive_softs_.push_back(soft_constraints_[idx]->name());
   }
 }
+
+void VariableDefaultSolver::analyseSofts() { updateInactiveSofts(solver_->resolveSofts()); }
 }

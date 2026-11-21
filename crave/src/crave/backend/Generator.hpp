@@ -81,9 +81,19 @@ struct Generator {
   }
 
   template <typename Expr>
+  Generator& operator()(soft_expr<Expr> expr) {
+    return soft(expr.expr);
+  }
+
+  template <typename Expr>
   Generator& operator()(std::string constraint_name, Expr expr) {
     constr_mng_.makeConstraint(constraint_name, expr, &ctx_);
     return *this;
+  }
+
+  template <typename Expr>
+  Generator& operator()(std::string constraint_name, soft_expr<Expr> expr) {
+    return soft(constraint_name, expr.expr);
   }
 
   template <typename Expr>
@@ -93,9 +103,19 @@ struct Generator {
   }
 
   template <typename Expr>
+  Generator& soft(soft_expr<Expr> e) {
+    return soft(e.expr);
+  }
+
+  template <typename Expr>
   Generator& soft(std::string name, Expr e) {
     constr_mng_.makeConstraint(name, e, &ctx_, true);
     return *this;
+  }
+
+  template <typename Expr>
+  Generator& soft(std::string name, soft_expr<Expr> e) {
+    return soft(name, e.expr);
   }
 
   template <typename Expr>

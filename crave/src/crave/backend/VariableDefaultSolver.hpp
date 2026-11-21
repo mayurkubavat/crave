@@ -60,7 +60,8 @@ struct VariableDefaultSolver : VariableSolver {
   void analyseConstraints();
   void analyseHards();
   void analyseSofts();
-  bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc);
+  void updateInactiveSofts(std::vector<unsigned int> const& inactive_indices);
+  bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc, bool ignore_softs = false);
   bool solveRandc(int id, RandcState& state, std::vector<NodePtr>& assumptions, RandcMap const& randc);
   void listWindows(NodePtr const& var, RandcState const& state, std::vector<NodePtr>& assumptions,
                    RandcMap const& randc, std::vector<uint64_t>& listed);
@@ -85,7 +86,7 @@ struct VariableDefaultSolver : VariableSolver {
   std::vector<RandcUndo> randc_undo_;
   std::vector<VariableContainer::WriteRefPair> random_write_refs_;
   std::string signature_;
-  std::vector<NodePtr> randc_softs_;
+  std::vector<ConstraintPtr> soft_constraints_;
   std::vector<std::vector<int> > solve_levels_;  // the levels of the solve-before ordering in this partition
   std::set<int> ordered_vars_;                   // the variables in solve_levels_
   std::vector<std::vector<Constant> > first_level_values_;  // the values of the first level, which have a solution

@@ -41,7 +41,7 @@ namespace crave {
  * 
  * For details view crv_constraint_.
  */
-enum ConstraintType { hard, soft };
+enum class ConstraintType { hard, soft };
 
 /**
  * \ingroup newAPI
