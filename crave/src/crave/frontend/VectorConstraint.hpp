@@ -82,21 +82,24 @@ struct Vector : public Constraint<typename boost::proto::terminal<vector_tag<val
   typedef typename boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, NodePtr>::type
       reduction_type;
 
-  template <typename VecExpr>
+  template <typename VecExpr, VectorReduction::Kind Kind>
   struct vector_reduction_expr : public reduction_type {
-    vector_reduction_expr(reduction_type const& expr, VecExpr const& vec, VectorReduction::Kind kind)
-        : reduction_type(expr), vec_(boost::proto::deep_copy(vec)), kind_(kind) {}
+    static constexpr bool crave_is_bool_reduction =
+        std::is_same<value_type_, bool>::value && (Kind != VectorReduction::Sum);
+    static constexpr VectorReduction::Kind crave_reduction_kind = Kind;
+    using crave_elem_type = value_type_;
+
+    vector_reduction_expr(reduction_type const& expr, VecExpr const& vec)
+        : reduction_type(expr), vec_(boost::proto::deep_copy(vec)) {}
 
     template <typename Pred>
     auto with(Pred&& pred) const
-        -> decltype(make_vector_reduce_with_expr(std::declval<VecExpr const&>(),
-                                                std::declval<VectorReduction::Kind>(), std::forward<Pred>(pred))) {
-      return make_vector_reduce_with_expr(vec_, kind_, std::forward<Pred>(pred));
+        -> decltype(make_vector_reduce_with_expr<Kind>(std::declval<VecExpr const&>(), std::forward<Pred>(pred))) {
+      return make_vector_reduce_with_expr<Kind>(vec_, std::forward<Pred>(pred));
     }
 
    private:
     typename boost::proto::result_of::deep_copy<VecExpr const&>::type vec_;
-    VectorReduction::Kind kind_;
   };
 
   template <typename VecExpr, typename CapturedPred>
@@ -104,11 +107,11 @@ struct Vector : public Constraint<typename boost::proto::terminal<vector_tag<val
     vector_with_proxy(VecExpr const& vec, CapturedPred pred)
         : vec_(boost::proto::deep_copy(vec)), pred_(std::move(pred)) {}
 
-    auto sum() const { return make_vector_reduce_with_expr(vec_, VectorReduction::Sum, pred_); }
-    auto product() const { return make_vector_reduce_with_expr(vec_, VectorReduction::Product, pred_); }
-    auto and_() const { return make_vector_reduce_with_expr(vec_, VectorReduction::And, pred_); }
-    auto or_() const { return make_vector_reduce_with_expr(vec_, VectorReduction::Or, pred_); }
-    auto xor_() const { return make_vector_reduce_with_expr(vec_, VectorReduction::Xor, pred_); }
+    auto sum() const { return make_vector_reduce_with_expr<VectorReduction::Sum>(vec_, pred_); }
+    auto product() const { return make_vector_reduce_with_expr<VectorReduction::Product>(vec_, pred_); }
+    auto and_() const { return make_vector_reduce_with_expr<VectorReduction::And>(vec_, pred_); }
+    auto or_() const { return make_vector_reduce_with_expr<VectorReduction::Or>(vec_, pred_); }
+    auto xor_() const { return make_vector_reduce_with_expr<VectorReduction::Xor>(vec_, pred_); }
 
    private:
     typename boost::proto::result_of::deep_copy<VecExpr const&>::type vec_;
@@ -118,64 +121,66 @@ struct Vector : public Constraint<typename boost::proto::terminal<vector_tag<val
   /**
    * \brief The sum of the elements of the vector, to be used in constraints.
    */
-  vector_reduction_expr<Vector> sum() const { return vector_reduction_expr<Vector>(reduce(VectorReduction::Sum), *this, VectorReduction::Sum); }
+  vector_reduction_expr<Vector, VectorReduction::Sum> sum() const {
+    return vector_reduction_expr<Vector, VectorReduction::Sum>(reduce(VectorReduction::Sum), *this);
+  }
 
   /**
    * \brief The product of the elements of the vector, to be used in constraints, see sum().
    */
-  vector_reduction_expr<Vector> product() const {
-    return vector_reduction_expr<Vector>(reduce(VectorReduction::Product), *this, VectorReduction::Product);
+  vector_reduction_expr<Vector, VectorReduction::Product> product() const {
+    return vector_reduction_expr<Vector, VectorReduction::Product>(reduce(VectorReduction::Product), *this);
   }
 
   /**
    * \brief The bitwise AND of the elements of the vector, to be used in constraints, see sum().
    */
-  vector_reduction_expr<Vector> and_() const {
-    return vector_reduction_expr<Vector>(reduce(VectorReduction::And), *this, VectorReduction::And);
+  vector_reduction_expr<Vector, VectorReduction::And> and_() const {
+    return vector_reduction_expr<Vector, VectorReduction::And>(reduce(VectorReduction::And), *this);
   }
 
   /**
    * \brief The bitwise OR of the elements of the vector, to be used in constraints, see sum().
    */
-  vector_reduction_expr<Vector> or_() const {
-    return vector_reduction_expr<Vector>(reduce(VectorReduction::Or), *this, VectorReduction::Or);
+  vector_reduction_expr<Vector, VectorReduction::Or> or_() const {
+    return vector_reduction_expr<Vector, VectorReduction::Or>(reduce(VectorReduction::Or), *this);
   }
 
   /**
    * \brief The bitwise XOR of the elements of the vector, to be used in constraints, see sum().
    */
-  vector_reduction_expr<Vector> xor_() const {
-    return vector_reduction_expr<Vector>(reduce(VectorReduction::Xor), *this, VectorReduction::Xor);
+  vector_reduction_expr<Vector, VectorReduction::Xor> xor_() const {
+    return vector_reduction_expr<Vector, VectorReduction::Xor>(reduce(VectorReduction::Xor), *this);
   }
 
   template <typename Pred>
   auto sum_with(Pred&& pred) const
-      -> decltype(make_vector_reduce_with_expr(*this, VectorReduction::Sum, std::forward<Pred>(pred))) {
-    return make_vector_reduce_with_expr(*this, VectorReduction::Sum, std::forward<Pred>(pred));
+      -> decltype(make_vector_reduce_with_expr<VectorReduction::Sum>(*this, std::forward<Pred>(pred))) {
+    return make_vector_reduce_with_expr<VectorReduction::Sum>(*this, std::forward<Pred>(pred));
   }
 
   template <typename Pred>
   auto product_with(Pred&& pred) const
-      -> decltype(make_vector_reduce_with_expr(*this, VectorReduction::Product, std::forward<Pred>(pred))) {
-    return make_vector_reduce_with_expr(*this, VectorReduction::Product, std::forward<Pred>(pred));
+      -> decltype(make_vector_reduce_with_expr<VectorReduction::Product>(*this, std::forward<Pred>(pred))) {
+    return make_vector_reduce_with_expr<VectorReduction::Product>(*this, std::forward<Pred>(pred));
   }
 
   template <typename Pred>
   auto and_with(Pred&& pred) const
-      -> decltype(make_vector_reduce_with_expr(*this, VectorReduction::And, std::forward<Pred>(pred))) {
-    return make_vector_reduce_with_expr(*this, VectorReduction::And, std::forward<Pred>(pred));
+      -> decltype(make_vector_reduce_with_expr<VectorReduction::And>(*this, std::forward<Pred>(pred))) {
+    return make_vector_reduce_with_expr<VectorReduction::And>(*this, std::forward<Pred>(pred));
   }
 
   template <typename Pred>
   auto or_with(Pred&& pred) const
-      -> decltype(make_vector_reduce_with_expr(*this, VectorReduction::Or, std::forward<Pred>(pred))) {
-    return make_vector_reduce_with_expr(*this, VectorReduction::Or, std::forward<Pred>(pred));
+      -> decltype(make_vector_reduce_with_expr<VectorReduction::Or>(*this, std::forward<Pred>(pred))) {
+    return make_vector_reduce_with_expr<VectorReduction::Or>(*this, std::forward<Pred>(pred));
   }
 
   template <typename Pred>
   auto xor_with(Pred&& pred) const
-      -> decltype(make_vector_reduce_with_expr(*this, VectorReduction::Xor, std::forward<Pred>(pred))) {
-    return make_vector_reduce_with_expr(*this, VectorReduction::Xor, std::forward<Pred>(pred));
+      -> decltype(make_vector_reduce_with_expr<VectorReduction::Xor>(*this, std::forward<Pred>(pred))) {
+    return make_vector_reduce_with_expr<VectorReduction::Xor>(*this, std::forward<Pred>(pred));
   }
 
   template <typename Pred>

@@ -69,6 +69,7 @@ class crv_vector : public __rand_vec<T>, public crv_object {
    * \return true
    */
   bool randomize() override {
+    ScopedRngGuard rng_guard(&this->ensure_rng_());
     __rand_vec<T>::gen_values(default_rand_vec_size());
     return true;
   }
@@ -128,6 +129,12 @@ class crv_vector : public __rand_vec<T>, public crv_object {
   template <typename Pred>
   auto with(Pred&& pred) const {
     return (*this)().with(std::forward<Pred>(pred));
+  }
+
+ protected:
+  void collect_var_ids_for_randstate_(std::vector<unsigned>& out) const override {
+    out.push_back(static_cast<unsigned>(__rand_vec<T>::id()));
+    out.push_back(static_cast<unsigned>(__rand_vec<T>::size_var().id()));
   }
 };
 

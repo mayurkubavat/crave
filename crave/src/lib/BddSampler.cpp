@@ -224,22 +224,6 @@ void ShapeVisitor::visitBoundsCheckExpr(BoundsCheckExpr const& n) {
 }
 void ShapeVisitor::visitVectorReduceWith(VectorReduceWith const&) { okay_ = false; }
 
-// restores the state of a random number generator, also if an exception is thrown
-class GeneratorGuard {
- public:
-  explicit GeneratorGuard(std::mt19937* generator)
-      : lock_(RandomSeedManager::mutex()), generator_(generator), saved_(*generator) {}
-  ~GeneratorGuard() { *generator_ = saved_; }
-
-  GeneratorGuard(GeneratorGuard const&) = delete;
-  GeneratorGuard& operator=(GeneratorGuard const&) = delete;
-
- private:
-  std::unique_lock<std::recursive_mutex> lock_;
-  std::mt19937* generator_;
-  std::mt19937 saved_;
-};
-
 }  // namespace
 
 unsigned BddSampler::max_nodes = 100000;
@@ -309,7 +293,8 @@ std::shared_ptr<BddSampler> BddSampler::get(std::vector<NodePtr> const& constrai
         for (NodePtr c : simple_constraints) solver->makeAssertion(*c);
         // Checking for a solution picks one at random. The caller must get the same random numbers
         // afterwards, whether the sampler has to be built or exists already.
-        GeneratorGuard guard(rng.get());
+        std::mt19937 dummy_rng(0);
+        ScopedRngGuard guard(&dummy_rng);
         if (!solver->solve()) solver.reset();
       }
       catch (std::exception const& e) {

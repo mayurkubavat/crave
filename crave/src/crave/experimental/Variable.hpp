@@ -39,41 +39,18 @@
 namespace crave {
 
 /**
- * \ingroup newAPI
- * \brief Creates a distribution_tag to be used directly in constraints from a single weighted range.
- * Convenient function, which calls distribution::create.
- * 
- * \param range a weighted range.
- * \return A distribution_tag of a distribution to be used in constraints.
- */
-template <typename T>
-distribution_tag<T> make_distribution(weighted_range<T> const& range) {
-  return distribution<T>::create(range);
-}
-
-/**
- * \ingroup newAPI
- * \brief Creates a distribution_tag to be used directly in constraints from the given ranges.
- * 
- * Convenient function, which should be preferred to chaining calls of distribution::create and distribution::operator().
- * 
- * \param range the first range.
- * \param args the following ranges.
- * \return A distribution_tag of a distribution to be used in constraints.
- */
-template <typename T, typename... Args>
-distribution_tag<T> make_distribution(weighted_range<T> const& range, Args... args) {
-  return make_distribution(args...)(range);
-}
-
-/**
  * constructor
  * @param name name of the variable
  */
-#define CRV_VARIABLE_COMMON_CONSTRUCTORS(Typename) \
- public:                                           \
-  crv_variable(crv_object_name name = "var") {create_default_cstr ();}   \
-  crv_variable(const crv_variable& other) : crv_variable_base<Typename>(other) {}
+#define CRV_VARIABLE_COMMON_CONSTRUCTORS(Typename)                                \
+ public:                                                                          \
+  crv_variable(crv_object_name name = "var") { create_default_cstr(); }           \
+  crv_variable(const crv_variable& other)                                         \
+      : crv_variable_base<Typename>(other), c_var_uniform(other.c_var_uniform) {  \
+    this->attach_copied_child_(&c_var_uniform);                                   \
+    create_default_cstr();                                                        \
+    if (!other.c_var_uniform.active()) c_var_uniform.deactivate();                \
+  }
 
 /**
  * assignment operator
@@ -243,7 +220,8 @@ class crv_variable<T, typename std::enable_if<std::is_integral<T>::value>::type>
    */
   bool randomize() override {
     if (!this->rand_mode()) return true;
-    static distribution<T> dist;
+    ScopedRngGuard rng_guard(&this->ensure_rng_());
+    distribution<T> dist;
     this->value = dist.nextValue();
     return true;
   }
@@ -275,7 +253,8 @@ class crv_variable<bool> : public crv_var, public crv_variable_base<bool> {
    */
   bool randomize() override {
     if (!rand_mode()) return true;
-    static distribution<bool> dist;
+    ScopedRngGuard rng_guard(&this->ensure_rng_());
+    distribution<bool> dist;
     this->value = dist.nextValue();
     return true;
   }

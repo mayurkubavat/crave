@@ -25,6 +25,9 @@
 //****************************************************************************************
 
 #include "../crave/backend/Generator.hpp"
+#include "../crave/frontend/RandomBase.hpp"
+
+#include <mutex>
 
 namespace crave {
 
@@ -104,11 +107,14 @@ std::set<int> Generator::activeVarIds_() const {
     active.insert(p.first);
     active.insert(p.second);
   }
-  for (int vid : to_be_generated_vec_ids_) {
-    active.insert(vid);
-    auto vbm_it = vectorBaseMap.find(vid);
-    if (vbm_it != vectorBaseMap.end()) {
-      active.insert(static_cast<int>(vbm_it->second->size_var().id()));
+  if (!to_be_generated_vec_ids_.empty()) {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    for (int vid : to_be_generated_vec_ids_) {
+      active.insert(vid);
+      auto vbm_it = vectorBaseMap.find(vid);
+      if (vbm_it != vectorBaseMap.end()) {
+        active.insert(static_cast<int>(vbm_it->second->size_var().id()));
+      }
     }
   }
   return active;
@@ -192,7 +198,14 @@ bool Generator::next() {
     unsigned size;
     if (excluded.size() >= max_excluded_sizes || !vec_gen_.failedSize(&id, &size)) break;
     std::string const name = "vector_" + std::to_string(id) + "_size_not_" + std::to_string(size);
-    if (!constr_mng_.enableConstraint(name)) constr_mng_.makeConstraint(name, vectorBaseMap[id]->size_var() != size, &ctx_);
+    if (!constr_mng_.enableConstraint(name)) {
+      __rand_vec_base* vec = nullptr;
+      {
+        std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+        vec = vectorBaseMap[id];
+      }
+      constr_mng_.makeConstraint(name, vec->size_var() != size, &ctx_);
+    }
     excluded.push_back(name);
     resetConstraints(true);
     rebuild(true);
@@ -299,8 +312,14 @@ bool Generator::nextCov() {
     unsigned size;
     if (excluded.size() < max_excluded_sizes && vec_gen_.failedSize(&id, &size)) {
       std::string const name = "vector_" + std::to_string(id) + "_size_not_" + std::to_string(size);
-      if (!constr_mng_.enableConstraint(name))
-        constr_mng_.makeConstraint(name, vectorBaseMap[id]->size_var() != size, &ctx_);
+      if (!constr_mng_.enableConstraint(name)) {
+        __rand_vec_base* vec = nullptr;
+        {
+          std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+          vec = vectorBaseMap[id];
+        }
+        constr_mng_.makeConstraint(name, vec->size_var() != size, &ctx_);
+      }
       if (!same_component || last_coupled.empty()) {
         last_coupled = std::move(coupled);
         last_coupled_vecs = std::move(coupled_vecs);

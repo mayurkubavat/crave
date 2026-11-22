@@ -25,6 +25,7 @@
 //****************************************************************************************
 
 
+#include <atomic>
 #include <ctime>
 #include <mutex>
 #include <string>
@@ -43,13 +44,18 @@ VariableContainer* variable_container() {
   return variables;
 }
 
+std::recursive_mutex& variable_container_mutex() {
+  static std::recursive_mutex* vc_mutex = new std::recursive_mutex();
+  return *vc_mutex;
+}
+
 int new_var_id() {
-  static int var_ID = 0;
+  static std::atomic<int> var_ID{0};
   return ++var_ID;
 }
 
 int new_constraint_id() {
-  static int constraint_ID = 0;
+  static std::atomic<int> constraint_ID{0};
   return ++constraint_ID;
 }
 
@@ -63,13 +69,13 @@ item_placeholder _item;
 RandomSeedManager rng(static_cast<unsigned>(std::time(0)));
 
 std::function<bool(void)> random_bit = []() {
-  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-  return std::uniform_int_distribution<unsigned short>(0, 1)(*rng.get());
+  return with_active_or_global_rng(
+      [](std::mt19937& g) { return std::uniform_int_distribution<unsigned short>(0, 1)(g) != 0; });
 };
 
 std::function<unsigned(unsigned)> random_unsigned = [](unsigned i) {
-  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-  return std::uniform_int_distribution<>(0, i - 1)(*rng.get());
+  return with_active_or_global_rng(
+      [i](std::mt19937& g) { return static_cast<unsigned>(std::uniform_int_distribution<>(0, i - 1)(g)); });
 };
 
 // if called with zero seed -> use default seed std::time(0)

@@ -36,9 +36,10 @@ distribution_tag<bool> distribution<bool>::create(const double prob) {
 }
 
 bool distribution<bool>::nextValue() const {
-  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-  std::bernoulli_distribution dist(prob_);
-  return dist(*rng.get());
+  return with_active_or_global_rng([this](std::mt19937& g) {
+    std::bernoulli_distribution dist(prob_);
+    return dist(g);
+  });
 }
 
 std::vector<weighted_range<bool> > const& distribution<bool>::ranges() const {

@@ -38,6 +38,7 @@
 #include <stdexcept>
 #include <typeinfo>
 #include <random>
+#include <unordered_map>
 
 #include "BddSampler.hpp"
 #include "../crave/backend/SolveOrder.hpp"
@@ -49,12 +50,20 @@ extern RandomSeedManager rng;
 extern std::function<bool(void)> random_bit;
 
 namespace {
+unsigned canonicalId(std::unordered_map<unsigned, unsigned>& canon_ids, unsigned raw_id) {
+  auto it = canon_ids.find(raw_id);
+  if (it != canon_ids.end()) return it->second;
+  unsigned const next = static_cast<unsigned>(canon_ids.size());
+  canon_ids.emplace(raw_id, next);
+  return next;
+}
+
 // writes the structure of an expression, which identifies the constraints of a cycle of a randc variable
-void writeSignature(Node const& n, std::ostream& os) {
+void writeSignature(Node const& n, std::ostream& os, std::unordered_map<unsigned, unsigned>& canon_ids) {
   os << typeid(n).name();
-  if (VariableExpr const* v = dynamic_cast<VariableExpr const*>(&n)) os << '#' << v->id();
-  if (VectorExpr const* v = dynamic_cast<VectorExpr const*>(&n)) os << '#' << v->id();
-  if (Placeholder const* p = dynamic_cast<Placeholder const*>(&n)) os << '#' << p->id();
+  if (VariableExpr const* v = dynamic_cast<VariableExpr const*>(&n)) os << '#' << canonicalId(canon_ids, v->id());
+  if (VectorExpr const* v = dynamic_cast<VectorExpr const*>(&n)) os << '#' << canonicalId(canon_ids, v->id());
+  if (Placeholder const* p = dynamic_cast<Placeholder const*>(&n)) os << '#' << canonicalId(canon_ids, p->id());
   if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) os << ':' << t->bitsize() << (t->sign() ? 's' : 'u');
   if (Constant const* c = dynamic_cast<Constant const*>(&n)) os << '=' << c->value();
   if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) os << '+' << e->value();
@@ -66,17 +75,17 @@ void writeSignature(Node const& n, std::ostream& os) {
   }
   os << '(';
   if (UnaryExpression const* u = dynamic_cast<UnaryExpression const*>(&n)) {
-    writeSignature(*u->child(), os);
+    writeSignature(*u->child(), os, canon_ids);
   } else if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n)) {
-    writeSignature(*b->lhs(), os);
+    writeSignature(*b->lhs(), os, canon_ids);
     os << ',';
-    writeSignature(*b->rhs(), os);
+    writeSignature(*b->rhs(), os, canon_ids);
   } else if (TernaryExpression const* t = dynamic_cast<TernaryExpression const*>(&n)) {
-    writeSignature(*t->a(), os);
+    writeSignature(*t->a(), os, canon_ids);
     os << ',';
-    writeSignature(*t->b(), os);
+    writeSignature(*t->b(), os, canon_ids);
     os << ',';
-    writeSignature(*t->c(), os);
+    writeSignature(*t->c(), os, canon_ids);
   }
   os << ')';
 }
@@ -155,12 +164,11 @@ Constant keyValue(VariableExpr const& var, uint64_t key) {
 Constant randomValue(VariableExpr const& var) {
   if (var.isBool()) return Constant(random_unsigned(2) != 0);
   unsigned const width = var.bitsize();
-  uint64_t value = 0;
-  {
-    std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-    std::mt19937& gen = *rng.get();
-    for (unsigned bits = 0; bits < width; bits += 32) value = (value << 32) | gen();
-  }
+  uint64_t value = with_active_or_global_rng([width](std::mt19937& gen) {
+    uint64_t v = 0;
+    for (unsigned bits = 0; bits < width; bits += 32) v = (v << 32) | gen();
+    return v;
+  });
   if (width < 64) value &= (uint64_t(1) << width) - 1;
   return Constant(signExtend(var, value), width, var.sign());
 }
@@ -645,6 +653,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       listed.push_back(value);
     }
     if (listed.empty()) continue;
+    std::sort(listed.begin(), listed.end());
     state.complete = listed.size() < randc_max_listed;
     state.listed.swap(listed);
     if (tryValues(state.listed, randc_max_listed)) return true;
@@ -734,11 +743,10 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
     for (unsigned tries = 0; tries < solve_before_max_tries; ++tries) {
       for (std::size_t i = 0; i < vars.size(); ++i) {
         VariableExpr const& v = static_cast<VariableExpr const&>(*vars[i]);
-        uint64_t key = 0;
-        {
-          std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-          key = std::uniform_int_distribution<uint64_t>(bounds[i].first, bounds[i].second)(*rng.get());
-        }
+        uint64_t const lo = bounds[i].first;
+        uint64_t const hi = bounds[i].second;
+        uint64_t const key = with_active_or_global_rng(
+            [lo, hi](std::mt19937& g) { return std::uniform_int_distribution<uint64_t>(lo, hi)(g); });
         assumptions.push_back(new EqualOpr(vars[i], new Constant(keyValue(v, key))));
       }
       if (feasible(assumptions)) return true;
@@ -846,10 +854,11 @@ bool VariableDefaultSolver::feasible(std::vector<NodePtr> const& assumptions) {
 std::string const& VariableDefaultSolver::signature() {
   if (signature_.empty()) {
     std::ostringstream os;
+    std::unordered_map<unsigned, unsigned> canon_ids;
     for (ConstraintPtr c : constr_pttn_) {
       if (c->isCover()) continue;
       os << (c->isSoft() ? "soft " : "");
-      writeSignature(*c->expr(), os);
+      writeSignature(*c->expr(), os, canon_ids);
       os << ';';
     }
     signature_ = os.str();

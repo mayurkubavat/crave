@@ -63,3 +63,31 @@ class RandomSeedManager {
   std::mt19937 default_rng_;
   unsigned int seed_;
 };
+
+namespace crave {
+extern RandomSeedManager rng;
+
+std::mt19937* active_rng();
+void set_active_rng(std::mt19937* g);
+
+class ScopedRngGuard {
+ public:
+  explicit ScopedRngGuard(std::mt19937* g) : prev_(active_rng()) { set_active_rng(g); }
+  ~ScopedRngGuard() { set_active_rng(prev_); }
+
+  ScopedRngGuard(ScopedRngGuard const&) = delete;
+  ScopedRngGuard& operator=(ScopedRngGuard const&) = delete;
+
+ private:
+  std::mt19937* prev_;
+};
+
+template <typename Fn>
+auto with_active_or_global_rng(Fn&& fn) -> decltype(fn(*rng.get())) {
+  if (std::mt19937* local = active_rng()) {
+    return fn(*local);
+  }
+  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+  return fn(*rng.get());
+}
+}  // namespace crave

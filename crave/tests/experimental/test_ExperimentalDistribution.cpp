@@ -72,9 +72,20 @@ struct s_crv_variable_dist_t2 : public crv_sequence_item {
 
 BOOST_AUTO_TEST_CASE(crv_variable_dist_t2) {
   s_crv_variable_dist_t2 item("item");
-  BOOST_REQUIRE_THROW(
-      item.con = {dist(item.v(), make_distribution(range<int>(0, 10), range<int>(50, 75), range<int>(30, 51)))},
-      std::runtime_error);
+  item.con = {dist(item.v(), make_distribution(range<int>(0, 10), range<int>(50, 75), range<int>(30, 51)))};
+  int const total = 20000;
+  int overlap_hits = 0;
+  int non_overlap_high_hits = 0;
+  for (int i = 0; i < total; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    int const val = item.v;
+    BOOST_REQUIRE((0 <= val && val <= 10) || (30 <= val && val <= 75));
+    if (val == 50 || val == 51) ++overlap_hits;
+    if (52 <= val && val <= 75) ++non_overlap_high_hits;
+  }
+  double const overlap_avg = overlap_hits / 2.0;
+  double const non_overlap_avg = non_overlap_high_hits / 24.0;
+  BOOST_REQUIRE_GT(overlap_avg, non_overlap_avg * 1.4);
 }
 
 struct s_crv_variable_dist_t3 : public crv_sequence_item {
@@ -328,6 +339,70 @@ BOOST_AUTO_TEST_CASE(constrained_variable_user_dist_randomize_with) {
     BOOST_REQUIRE_GT(values[v], total / 10);
     BOOST_REQUIRE_LT(values[v], total * 3 / 10);
   }
+}
+
+BOOST_AUTO_TEST_CASE(crv_dist_per_value_per_range_overlap_and_zero_weight) {
+  struct BackendGuard {
+    BackendGuard() : old_sv(sv_signedness()) {}
+    ~BackendGuard() {
+      set_solver_backend("auto");
+      set_sv_signedness(old_sv);
+    }
+    bool old_sv;
+  } guard;
+
+  struct DistItem : public crv_sequence_item {
+    DistItem(crv_object_name = "ditem") {}
+    crv_variable<int> x{"x"};
+    crv_constraint c_dist{"c_dist",
+                          dist(x(), make_distribution(dist_per_value(0, 5, 2), dist_per_range(4, 7, 4),
+                                                      dist_per_value(10, 0), dist_per_range(20, 25, 0)))};
+  };
+
+  for (char const* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+    for (bool sv : {false, true}) {
+      set_sv_signedness(sv);
+      DistItem item("ditem");
+      for (int i = 0; i < 60; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE(0 <= item.x && item.x <= 7);
+      }
+      // Weight-0 values cannot be forced by randomize_with
+      BOOST_REQUIRE(!item.randomize_with(item.x() == 10));
+      BOOST_REQUIRE(!item.randomize_with(item.x() == 22));
+    }
+  }
+
+  // All-zero crv_constraint: active -> UNSAT (false, no throw); deactivated -> SAT; if_then(false, ...) -> SAT
+  struct AllZeroItem : public crv_sequence_item {
+    AllZeroItem(crv_object_name = "az") {}
+    crv_variable<int> x{"x"};
+    crv_constraint c_az{"c_az", dist(x(), make_distribution(dist_per_value(1, 5, 0)))};
+  };
+  AllZeroItem az("az");
+  BOOST_REQUIRE_NO_THROW(BOOST_REQUIRE(!az.randomize()));
+  az.c_az.deactivate();
+  BOOST_REQUIRE(az.randomize());
+
+  struct PlainItem : public crv_sequence_item {
+    PlainItem(crv_object_name = "p") {}
+    crv_variable<int> x{"x"};
+  };
+  PlainItem pi("pi");
+  BOOST_REQUIRE(pi.randomize_with(if_then(false, dist(pi.x(), make_distribution(dist_per_value(1, 5, 0))))));
+
+  // RandWithCache distinguishes := vs :/ and zero-weight vs active, and caches repeats
+  BOOST_REQUIRE(pi.randomize_with(dist(pi.x(), make_distribution(dist_per_value(1, 4, 5)))));
+  BOOST_REQUIRE(pi.x >= 1 && pi.x <= 4);
+  BOOST_REQUIRE_EQUAL(pi.randomize_with_cache_misses(), 2u);
+  BOOST_REQUIRE(pi.randomize_with(dist(pi.x(), make_distribution(dist_per_value(1, 4, 5)))));
+  BOOST_REQUIRE_EQUAL(pi.randomize_with_cache_hits(), 1u);
+  BOOST_REQUIRE(pi.randomize_with(dist(pi.x(), make_distribution(dist_per_range(1, 4, 5)))));
+  BOOST_REQUIRE_EQUAL(pi.randomize_with_cache_misses(), 3u);
+  BOOST_REQUIRE(!pi.randomize_with(dist(pi.x(), make_distribution(dist_per_range(1, 4, 0)))));
+  BOOST_REQUIRE_EQUAL(pi.randomize_with_cache_misses(), 4u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

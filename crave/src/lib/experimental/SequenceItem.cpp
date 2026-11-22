@@ -26,6 +26,7 @@
 //****************************************************************************************
 
 #include "../../crave/experimental/SequenceItem.hpp"
+#include "../../crave/RandomSeedManager.hpp"
 #include "../../crave/backend/FactoryMetaSMT.hpp"
 #include "../../crave/backend/Generator.hpp"
 #include "../../crave/backend/VariableDefaultSolver.hpp"
@@ -37,6 +38,7 @@
 #include <cassert>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -466,14 +468,17 @@ void populateOwnedVarContainer(Generator& gen,
   }
 
   std::vector<int> extra_ids;
-  for (int id : needed_ids) {
-    auto vbm_it = vectorBaseMap.find(id);
-    if (vbm_it != vectorBaseMap.end()) {
-      extra_ids.push_back(static_cast<int>(vbm_it->second->size_var().id()));
-    }
-    auto dmap_it = global->dist_ref_to_var_map.find(id);
-    if (dmap_it != global->dist_ref_to_var_map.end()) {
-      extra_ids.push_back(dmap_it->second);
+  {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    for (int id : needed_ids) {
+      auto vbm_it = vectorBaseMap.find(id);
+      if (vbm_it != vectorBaseMap.end()) {
+        extra_ids.push_back(static_cast<int>(vbm_it->second->size_var().id()));
+      }
+      auto dmap_it = global->dist_ref_to_var_map.find(id);
+      if (dmap_it != global->dist_ref_to_var_map.end()) {
+        extra_ids.push_back(dmap_it->second);
+      }
     }
   }
   needed_ids.insert(extra_ids.begin(), extra_ids.end());
@@ -682,7 +687,7 @@ void crv_sequence_item::crosscheck_constraints() {
   // same variable, so c_var_uniform must never be permanently deactivated.
 }
 
-void crv_sequence_item::clear_rand_with_cache_() {
+void crv_sequence_item::clear_rand_with_cache_() const {
   if (rand_with_cache_) rand_with_cache_->clear();
 }
 
@@ -714,9 +719,12 @@ Generator& crv_sequence_item::ensure_generator_() {
     crosscheck_constraints();
     prune_completed_goals_();
     if (!built_) {
-      gen_ = std::make_shared<Generator>();
+      std::lock_guard<std::recursive_mutex> vc_lock(variable_container_mutex());
+      auto owned_vcon = std::unique_ptr<VariableContainer>(new VariableContainer());
+      gen_ = std::make_shared<Generator>(std::move(owned_vcon));
       recursive_build(*gen_);
       apply_goals_(*gen_);
+      populateOwnedVarContainer(*gen_, {}, {}, {}, {});
       built_ = true;
     }
     last_gen_ = gen_;
@@ -734,6 +742,7 @@ std::vector<std::string> crv_sequence_item::inactive_soft_constraints() {
 
 bool crv_sequence_item::randomize() {
   assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
+  ScopedRngGuard rng_guard(&ensure_rng_());
   recursive_pre_randomize();
   crosscheck_constraints();
   prune_completed_goals_();
@@ -745,9 +754,12 @@ bool crv_sequence_item::randomize() {
   }
 
   if (!built_) {
-    gen_ = std::make_shared<Generator>();
+    std::lock_guard<std::recursive_mutex> vc_lock(variable_container_mutex());
+    auto owned_vcon = std::unique_ptr<VariableContainer>(new VariableContainer());
+    gen_ = std::make_shared<Generator>(std::move(owned_vcon));
     recursive_build(*gen_);
     apply_goals_(*gen_);
+    populateOwnedVarContainer(*gen_, {}, {}, {}, {});
     built_ = true;
   }
   last_gen_ = gen_;
@@ -756,9 +768,12 @@ bool crv_sequence_item::randomize() {
   if (ok && !refreshed && !was_covered && gen_->isCovered() && !goals_.empty()) {
     refresh_goals_();
     if (!goals_.empty()) {
-      gen_ = std::make_shared<Generator>();
+      std::lock_guard<std::recursive_mutex> vc_lock(variable_container_mutex());
+      auto owned_vcon = std::unique_ptr<VariableContainer>(new VariableContainer());
+      gen_ = std::make_shared<Generator>(std::move(owned_vcon));
       recursive_build(*gen_);
       apply_goals_(*gen_);
+      populateOwnedVarContainer(*gen_, {}, {}, {}, {});
       built_ = true;
       last_gen_ = gen_;
       ok = gen_->nextCov();
@@ -891,6 +906,14 @@ void crv_sequence_item::goal(crv_covergroup& group) {
   }
 }
 
+void crv_sequence_item::on_rng_state_changed_() const {
+  built_ = false;
+  gen_.reset();
+  rand_with_gen_.reset();
+  last_gen_.reset();
+  clear_rand_with_cache_();
+}
+
 void crv_sequence_item::request_rebuild() {
   if (prune_covered_goals_()) ++goal_epoch_;
   built_ = false;
@@ -912,6 +935,7 @@ bool crv_sequence_item::randomize_with_expr_list_impl_(
     std::vector<detail::InlineReadCapture> const& inline_reads,
     std::vector<detail::InlineDistCapture> const& inline_dists) {
   assert(!cloned_ && "cloned crv_sequence_item cannot be randomized");
+  ScopedRngGuard rng_guard(&ensure_rng_());
   recursive_pre_randomize();
   crosscheck_constraints();
   prune_completed_goals_();
@@ -983,24 +1007,27 @@ bool crv_sequence_item::randomize_with_expr_list_impl_(
       slot_dist_implicit.push_back(dc.is_implicit);
     }
 
-    auto owned_vcon = std::unique_ptr<VariableContainer>(new VariableContainer());
-    new_entry->gen = std::make_shared<Generator>(std::move(owned_vcon));
-    recursive_build(*new_entry->gen);
-    apply_goals_(*new_entry->gen);
+    {
+      std::lock_guard<std::recursive_mutex> vc_lock(variable_container_mutex());
+      auto owned_vcon = std::unique_ptr<VariableContainer>(new VariableContainer());
+      new_entry->gen = std::make_shared<Generator>(std::move(owned_vcon));
+      recursive_build(*new_entry->gen);
+      apply_goals_(*new_entry->gen);
 
-    NodeCloneRemapVisitor cloner(remap);
-    for (std::size_t i = 0; i < list.size(); ++i) {
-      std::string const cname = fullname() + ".randomize_with#" + std::to_string(i);
-      NodePtr raw = boost::proto::value(list[i]);
-      NodePtr remapped = remap.empty() ? raw : cloner.clone(raw);
-      expression remapped_expr = boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(remapped);
-      if (list.is_soft(i))
-        new_entry->gen->soft(cname, remapped_expr);
-      else
-        (*new_entry->gen)(cname, remapped_expr);
+      NodeCloneRemapVisitor cloner(remap);
+      for (std::size_t i = 0; i < list.size(); ++i) {
+        std::string const cname = fullname() + ".randomize_with#" + std::to_string(i);
+        NodePtr raw = boost::proto::value(list[i]);
+        NodePtr remapped = remap.empty() ? raw : cloner.clone(raw);
+        expression remapped_expr = boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(remapped);
+        if (list.is_soft(i))
+          new_entry->gen->soft(cname, remapped_expr);
+        else
+          (*new_entry->gen)(cname, remapped_expr);
+      }
+
+      populateOwnedVarContainer(*new_entry->gen, slot_reads, slot_dists, slot_dist_targets, slot_dist_implicit);
     }
-
-    populateOwnedVarContainer(*new_entry->gen, slot_reads, slot_dists, slot_dist_targets, slot_dist_implicit);
     return new_entry;
   };
 

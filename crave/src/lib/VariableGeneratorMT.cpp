@@ -26,8 +26,12 @@
 
 #include "../crave/backend/VariableGeneratorMT.hpp"
 #include "../crave/backend/VariableDefaultSolver.hpp"
+#include "../crave/RandomSeedManager.hpp"
+#include <cstdint>
 #include <mutex>
+#include <random>
 #include <thread>
+#include <vector>
 
 namespace crave {
 VariableGeneratorMT::VariableGeneratorMT(VariableContainer const& vcon) : VariableGenerator(vcon) {}
@@ -61,11 +65,28 @@ bool VariableGeneratorMT::solve() {
   refreshRandc();
   clearOverrides();
   result_.store(true);
+  std::vector<uint32_t> worker_seeds;
+  bool const has_active = active_rng() != nullptr;
+  if (has_active) {
+    worker_seeds.reserve(solvers_.size());
+    std::mt19937* parent_rng = active_rng();
+    for (unsigned i = 0; i < solvers_.size(); ++i) {
+      worker_seeds.push_back((*parent_rng)());
+    }
+  }
   std::vector<std::thread> threads;
   threads.reserve(solvers_.size());
   for (unsigned i = 0; i < solvers_.size(); i++) {
     if (!result_.load()) break;
-    threads.emplace_back([i, this]() { this->solve(this->solvers_.at(i)); });
+    threads.emplace_back([i, this, has_active, &worker_seeds]() {
+      if (has_active) {
+        std::mt19937 worker_rng(worker_seeds[i]);
+        ScopedRngGuard guard(&worker_rng);
+        this->solve(this->solvers_.at(i));
+      } else {
+        this->solve(this->solvers_.at(i));
+      }
+    });
   }
   for (std::thread& thread : threads) thread.join();
   if (!result_.load()) {
@@ -80,14 +101,29 @@ bool VariableGeneratorMT::nextCov(std::set<std::string> const& skip_covers, std:
   clearOverrides();
   if (hit_names) hit_names->clear();
   result_.store(true);
+  std::vector<uint32_t> worker_seeds;
+  bool const has_active = active_rng() != nullptr;
+  if (has_active) {
+    worker_seeds.reserve(solvers_.size());
+    std::mt19937* parent_rng = active_rng();
+    for (unsigned i = 0; i < solvers_.size(); ++i) {
+      worker_seeds.push_back((*parent_rng)());
+    }
+  }
   std::vector<std::string> hits(solvers_.size());
   std::vector<std::thread> threads;
   threads.reserve(solvers_.size());
   for (unsigned i = 0; i < solvers_.size(); i++) {
     if (!result_.load()) break;
-    threads.emplace_back([i, this, &skip_covers, &hits]() {
+    threads.emplace_back([i, this, &skip_covers, &hits, has_active, &worker_seeds]() {
       if (!result_.load()) return;
-      if (!this->solvers_.at(i)->solveCover(skip_covers, &hits[i])) result_.store(false);
+      if (has_active) {
+        std::mt19937 worker_rng(worker_seeds[i]);
+        ScopedRngGuard guard(&worker_rng);
+        if (!this->solvers_.at(i)->solveCover(skip_covers, &hits[i])) result_.store(false);
+      } else {
+        if (!this->solvers_.at(i)->solveCover(skip_covers, &hits[i])) result_.store(false);
+      }
     });
   }
   for (std::thread& thread : threads) thread.join();

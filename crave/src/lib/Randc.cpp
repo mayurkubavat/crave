@@ -64,4 +64,35 @@ std::shared_ptr<RandcState> randc_state(int id) {
   return ite == randc_states().end() ? std::shared_ptr<RandcState>() : ite->second;
 }
 
+bool snapshot_randc_state(int id, RandcState& out) {
+  std::lock_guard<std::mutex> lock(randc_mutex);
+  std::map<int, std::shared_ptr<RandcState> >::const_iterator ite = randc_states().find(id);
+  if (ite == randc_states().end() || !ite->second) return false;
+  out = *ite->second;
+  return true;
+}
+
+void restore_randc_state(int id, bool active, RandcState const& state) {
+  std::lock_guard<std::mutex> lock(randc_mutex);
+  if (!active) {
+    if (randc_states().erase(id)) ++epoch;
+    return;
+  }
+  std::shared_ptr<RandcState>& dst = randc_states()[id];
+  if (!dst) {
+    dst = std::make_shared<RandcState>(state);
+    ++epoch;
+  } else {
+    *dst = state;
+  }
+}
+
+void reset_randc_state(int id) {
+  std::lock_guard<std::mutex> lock(randc_mutex);
+  std::map<int, std::shared_ptr<RandcState> >::iterator ite = randc_states().find(id);
+  if (ite != randc_states().end() && ite->second) {
+    *ite->second = RandcState();
+  }
+}
+
 }  // namespace crave

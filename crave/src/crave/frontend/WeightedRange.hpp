@@ -30,11 +30,14 @@
 #include <boost/proto/core.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include "bitsize_traits.hpp"
 
 namespace crave {
+
+enum class dist_weight_kind : uint8_t { per_range = 0, per_value = 1 };
 
 /**
  * \ingroup oldAPI
@@ -48,13 +51,32 @@ namespace crave {
 template <typename T>
 struct weighted_range {
   /**
-   * \brief Defines a new weighted range.
+   * \brief Defines a new weighted range (per-range total weight, IEEE 1800 :/ semantics).
    * 
    * \param l Left value of the range (inclusive)
    * \param r Right value of the range (inclusive)
    * \param w Weight of the range
    */
-  weighted_range(T l, T r, uint64_t w) : left_(l), right_(r), weight_(w), accumWeight_(0) {}
+  weighted_range(T l, T r, uint64_t w)
+      : left_(l), right_(r), weight_(w), accumWeight_(0), kind_(dist_weight_kind::per_range), raw_weight_(w) {}
+
+  weighted_range(T l, T r, uint64_t w, dist_weight_kind kind)
+      : left_(l),
+        right_(r),
+        weight_(kind == dist_weight_kind::per_value ? saturated_total_weight(l, r, w) : w),
+        accumWeight_(0),
+        kind_(kind),
+        raw_weight_(w) {}
+
+  static uint64_t saturated_total_weight(T l, T r, uint64_t w) {
+    __int128 const lv = static_cast<__int128>(distribution_value_type<T>::value(l));
+    __int128 const rv = static_cast<__int128>(distribution_value_type<T>::value(r));
+    if (lv > rv || w == 0) return 0;
+    unsigned __int128 const card = static_cast<unsigned __int128>(rv - lv) + 1u;
+    unsigned __int128 const prod = card * static_cast<unsigned __int128>(w);
+    return prod > std::numeric_limits<uint64_t>::max() ? std::numeric_limits<uint64_t>::max()
+                                                       : static_cast<uint64_t>(prod);
+  }
 
   /**
    * \brief Compares a weighted range to another range.
@@ -87,15 +109,16 @@ struct weighted_range {
     auto const r = distribution_value_type<T>::value(right_);
     auto const ol = distribution_value_type<T>::value(other.left_);
     auto const or_ = distribution_value_type<T>::value(other.right_);
-    if (l < ol) return r >= ol;
-    if (l > ol) return l <= or_;
-    return false;
+    if (l > r || ol > or_) return false;
+    return l <= or_ && ol <= r;
   }
 
   T left_;
   T right_;
   uint64_t weight_;
   uint64_t accumWeight_;
+  dist_weight_kind kind_;
+  uint64_t raw_weight_;
 };
 
 namespace detail {
@@ -131,19 +154,21 @@ struct range<T, void> : weighted_range<T> {
    * \param l Left value of the range (inclusive)
    * \param r Right value of the range (inclusive)
    */
-  range(T l, T r) : weighted_range<T>(l, r, weight(l, r)) {}
+  range(T l, T r) : weighted_range<T>(l, r, 1, dist_weight_kind::per_value) {}
 
   T const& lo() const { return this->left_; }
   T const& hi() const { return this->right_; }
 
- private:
-  // the number of values, computed in the unsigned type of the arithmetic of the values to avoid an overflow
-  static uint64_t weight(T l, T r) {
-    typedef decltype(distribution_value_type<T>::value(r) + 1) value_type;
-    typedef typename std::make_unsigned<value_type>::type unsigned_type;
-    return static_cast<unsigned_type>(static_cast<unsigned_type>(distribution_value_type<T>::value(r)) -
-                                      static_cast<unsigned_type>(distribution_value_type<T>::value(l)) + 1u);
+  weighted_range<T> per_value(uint64_t w) const {
+    return weighted_range<T>(this->left_, this->right_, w, dist_weight_kind::per_value);
   }
+
+  weighted_range<T> per_range(uint64_t w) const {
+    return weighted_range<T>(this->left_, this->right_, w, dist_weight_kind::per_range);
+  }
+
+ private:
+  static uint64_t weight(T l, T r) { return weighted_range<T>::saturated_total_weight(l, r, 1); }
 };
 
 /**
@@ -194,6 +219,38 @@ struct weighted_value : weighted_range<T> {
    * \param v The value.
    * \param w The weight.
    */
-  weighted_value(T v, uint64_t w) : weighted_range<T>(v, v, w) {}
+  weighted_value(T v, uint64_t w) : weighted_range<T>(v, v, w, dist_weight_kind::per_value) {}
 };
+
+template <typename T>
+struct weighted_range_per_value : weighted_range<T> {
+  weighted_range_per_value(T l, T r, uint64_t w)
+      : weighted_range<T>(l, r, w, dist_weight_kind::per_value) {}
+};
+
+template <typename T>
+struct weighted_range_per_range : weighted_range<T> {
+  weighted_range_per_range(T l, T r, uint64_t w)
+      : weighted_range<T>(l, r, w, dist_weight_kind::per_range) {}
+};
+
+template <typename T>
+inline weighted_range<T> dist_per_value(T const& l, T const& r, uint64_t w) {
+  return weighted_range<T>(l, r, w, dist_weight_kind::per_value);
+}
+
+template <typename T>
+inline weighted_range<T> dist_per_value(T const& v, uint64_t w) {
+  return weighted_value<T>(v, w);
+}
+
+template <typename T>
+inline weighted_range<T> dist_per_range(T const& l, T const& r, uint64_t w) {
+  return weighted_range<T>(l, r, w, dist_weight_kind::per_range);
+}
+
+template <typename T>
+inline weighted_range<T> dist_per_range(T const& v, uint64_t w) {
+  return weighted_value<T>(v, w);
+}
 }  // namespace crave

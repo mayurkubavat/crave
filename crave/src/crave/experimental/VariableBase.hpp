@@ -84,7 +84,7 @@ struct crv_variable_base_ : public crv_object {
    * \brief Get whether the randomization of this variable is enabled.
    * \return true if this variable is randomized, false otherwise.
    */
-  bool rand_mode() const { return rand_mode_; }
+  bool rand_mode() const override { return rand_mode_; }
 
   /**
    * \brief Get whether this variable is a cyclic random variable, see crv_variable_base<T>::randc(bool).
@@ -220,6 +220,33 @@ class crv_variable_base : public crv_variable_base_ {
 
  protected:
   expression state_expr() const override { return make_expression(var == ref); }
+
+  bool has_randc_state_for_randstate_() const override { return randc_ && rand_mode_; }
+  bool supports_randc_for_randstate_() const override { return bitsize_traits<T>::value <= randc_max_bitsize; }
+  void collect_var_ids_for_randstate_(std::vector<unsigned>& out) const override {
+    out.push_back(static_cast<unsigned>(var.id()));
+  }
+  bool capture_randc_state_(RandcState& out) const override {
+    return randc_ && rand_mode_ && snapshot_randc_state(var.id(), out);
+  }
+  void restore_randc_state_(bool has_state, RandcState const& state) override {
+    if (has_state) {
+      if (!randc_) {
+        if (bitsize_traits<T>::value > randc_max_bitsize) {
+          throw std::runtime_error("A randc variable must not have more than " +
+                                   std::to_string(randc_max_bitsize) + " bits.");
+        }
+        randc_ = true;
+        request_rebuild();
+      }
+      restore_randc_state(var.id(), rand_mode_, state);
+    } else if (randc_) {
+      reset_randc_state(var.id());
+    }
+  }
+  void reset_randc_state_() override {
+    if (randc_) reset_randc_state(var.id());
+  }
 
   crv_variable_base() : var(&value), ref(value), value(), bound_var() {}
   crv_variable_base(const crv_variable_base& other)

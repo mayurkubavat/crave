@@ -68,6 +68,12 @@ bool sv_signedness();
 template <typename T, unsigned N>
 class crv_array;
 
+template <typename Item, unsigned N, typename Pred>
+struct obj_array_foreach_tag;
+
+template <typename Item, unsigned N, typename Pred, VectorReduction::Kind Kind>
+struct obj_array_reduce_tag;
+
 class __rand_vec_base;
 
 namespace detail {
@@ -204,67 +210,75 @@ struct lambda_node_proxy {
   Context* ctx;
 };
 
+struct bool_lambda_node_proxy : lambda_node_proxy {};
+
 template <>
 struct is_inside_wrapper<lambda_node_proxy> : std::true_type {};
 
 template <>
+struct is_inside_wrapper<bool_lambda_node_proxy> : std::true_type {};
+
+template <>
 struct is_lambda_node_proxy<lambda_node_proxy> : std::true_type {};
+
+template <>
+struct is_lambda_node_proxy<bool_lambda_node_proxy> : std::true_type {};
 
 template <typename T, typename std::enable_if<boost::proto::is_expr<uncvref_t<T> >::value, int>::type = 0>
 inline NodePtr eval_proxy_operand(T const& expr, Context* ctx);
 
 template <typename T,
           typename std::enable_if<!boost::proto::is_expr<uncvref_t<T> >::value &&
-                                      !std::is_same<uncvref_t<T>, lambda_node_proxy>::value,
+                                      !is_lambda_node_proxy<uncvref_t<T> >::value,
                                   int>::type = 0>
 inline NodePtr eval_proxy_operand(T const& val, Context* ctx);
 
 inline NodePtr eval_proxy_operand(lambda_node_proxy const& p, Context*) { return p.node; }
 
-#define CRAVE_PROXY_BIN_OP(OP, NODE)                                                                          \
+#define CRAVE_PROXY_BIN_OP(RET, OP, NODE)                                                                     \
   template <typename Rhs,                                                                                     \
             typename std::enable_if<!boost::proto::is_expr<uncvref_t<Rhs> >::value, int>::type = 0>           \
-  inline lambda_node_proxy operator OP(lambda_node_proxy const& lhs, Rhs const& rhs) {                        \
-    return lambda_node_proxy{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                  \
+  inline RET operator OP(lambda_node_proxy const& lhs, Rhs const& rhs) {                                      \
+    return RET{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                                \
   }                                                                                                           \
   template <typename Lhs,                                                                                     \
             typename std::enable_if<!boost::proto::is_expr<uncvref_t<Lhs> >::value &&                         \
-                                        !std::is_same<uncvref_t<Lhs>, lambda_node_proxy>::value,              \
+                                        !is_lambda_node_proxy<uncvref_t<Lhs> >::value,                        \
                                     int>::type = 0>                                                           \
-  inline lambda_node_proxy operator OP(Lhs const& lhs, lambda_node_proxy const& rhs) {                        \
-    return lambda_node_proxy{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                  \
+  inline RET operator OP(Lhs const& lhs, lambda_node_proxy const& rhs) {                                      \
+    return RET{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                                \
   }                                                                                                           \
   template <typename E>                                                                                       \
-  inline lambda_node_proxy operator OP(lambda_node_proxy const& lhs, Constraint<E> const& rhs) {              \
-    return lambda_node_proxy{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                  \
+  inline RET operator OP(lambda_node_proxy const& lhs, Constraint<E> const& rhs) {                            \
+    return RET{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                                \
   }                                                                                                           \
   template <typename E>                                                                                       \
-  inline lambda_node_proxy operator OP(Constraint<E> const& lhs, lambda_node_proxy const& rhs) {              \
-    return lambda_node_proxy{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                  \
+  inline RET operator OP(Constraint<E> const& lhs, lambda_node_proxy const& rhs) {                            \
+    return RET{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                                \
   }
 
-CRAVE_PROXY_BIN_OP(==, EqualOpr)
-CRAVE_PROXY_BIN_OP(!=, NotEqualOpr)
-CRAVE_PROXY_BIN_OP(<, LessOpr)
-CRAVE_PROXY_BIN_OP(<=, LessEqualOpr)
-CRAVE_PROXY_BIN_OP(>, GreaterOpr)
-CRAVE_PROXY_BIN_OP(>=, GreaterEqualOpr)
-CRAVE_PROXY_BIN_OP(&&, LogicalAndOpr)
-CRAVE_PROXY_BIN_OP(||, LogicalOrOpr)
-CRAVE_PROXY_BIN_OP(+, PlusOpr)
-CRAVE_PROXY_BIN_OP(-, MinusOpr)
-CRAVE_PROXY_BIN_OP(*, MultipliesOpr)
-CRAVE_PROXY_BIN_OP(/, DevideOpr)
-CRAVE_PROXY_BIN_OP(%, ModuloOpr)
-CRAVE_PROXY_BIN_OP(&, AndOpr)
-CRAVE_PROXY_BIN_OP(|, OrOpr)
-CRAVE_PROXY_BIN_OP(^, XorOpr)
-CRAVE_PROXY_BIN_OP(<<, ShiftLeftOpr)
-CRAVE_PROXY_BIN_OP(>>, ShiftRightOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, ==, EqualOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, !=, NotEqualOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, <, LessOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, <=, LessEqualOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, >, GreaterOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, >=, GreaterEqualOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, &&, LogicalAndOpr)
+CRAVE_PROXY_BIN_OP(bool_lambda_node_proxy, ||, LogicalOrOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, +, PlusOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, -, MinusOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, *, MultipliesOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, /, DevideOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, %, ModuloOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, &, AndOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, |, OrOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, ^, XorOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, <<, ShiftLeftOpr)
+CRAVE_PROXY_BIN_OP(lambda_node_proxy, >>, ShiftRightOpr)
 #undef CRAVE_PROXY_BIN_OP
 
-inline lambda_node_proxy operator!(lambda_node_proxy const& arg) {
-  return lambda_node_proxy{new NotOpr(arg.node), arg.ctx};
+inline bool_lambda_node_proxy operator!(lambda_node_proxy const& arg) {
+  return bool_lambda_node_proxy{new NotOpr(arg.node), arg.ctx};
 }
 inline lambda_node_proxy operator~(lambda_node_proxy const& arg) {
   return lambda_node_proxy{new ComplementOpr(arg.node), arg.ctx};
@@ -369,6 +383,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   }
 
   result_type operator()(boost::proto::tag::terminal, detail::lambda_node_proxy const& p) { return p.node; }
+  result_type operator()(boost::proto::tag::terminal, detail::bool_lambda_node_proxy const& p) { return p.node; }
 
   result_type operator()(boost::proto::tag::terminal, result_type const& r) { return r; }
 
@@ -592,7 +607,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   result_type eval_inside_arg(T const& expr) {
     return boost::proto::eval(expr, *this);
   }
-  template <typename T, typename std::enable_if<!boost::proto::is_expr<T>::value, int>::type = 0>
+  template <typename T,
+            typename std::enable_if<!boost::proto::is_expr<T>::value &&
+                                        !detail::is_lambda_node_proxy<T>::value,
+                                    int>::type = 0>
   result_type eval_inside_arg(T const& val) {
     return new_value<T>(val);
   }
@@ -841,6 +859,47 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
         lower_inside_tuple(lhs_node, tag.items, std::make_index_sequence<sizeof...(Items)>{}));
   }
 
+  template <typename DistInt, typename DistValue>
+  result_type build_dist_constraint(int var_id, result_type var_node, distribution<DistValue> const& dist,
+                                    bool track_implicit) {
+    unsigned width = bitsize_traits<DistInt>::value;
+    bool sign = crave::is_signed<DistInt>::value;
+
+    unsigned id = new_var_id();
+    result_type tmp_var = new_var(id, width, sign);
+    std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
+    dist_references_.push_back(std::make_pair(id, ref_expr));
+    if (track_implicit && dist.isImplicit())
+      implicit_dist_references_.insert(id);
+    else
+      user_dist_references_.insert(id);
+
+    result_type var_equal_tmp(new EqualOpr(var_node, tmp_var));
+    dist_ref_to_var_map[id] = var_id;
+
+    if (dist.isAllZero()) {
+      return new LogicalAndOpr(var_equal_tmp, new Constant(false));
+    }
+
+    result_type in_ranges;
+    for (weighted_range<DistValue> const& r : dist.ranges()) {
+      result_type in_range;
+      if (r.left_ == r.right_) {
+        in_range = new EqualOpr(tmp_var, new Constant(r.left_, width, sign));
+      } else {
+        result_type left(new Constant(r.left_, width, sign));
+        result_type right(new Constant(r.right_, width, sign));
+        result_type left_cond(new LessEqualOpr(left, tmp_var));
+        result_type right_cond(new LessEqualOpr(tmp_var, right));
+        in_range = new LogicalAndOpr(left_cond, right_cond);
+      }
+      result_type tmp(in_ranges != 0 ? new LogicalOrOpr(in_ranges, in_range) : in_range);
+      in_ranges = tmp;
+    }
+
+    return in_ranges != 0 ? new LogicalAndOpr(var_equal_tmp, in_ranges) : var_equal_tmp;
+  }
+
   template <typename Integer, typename DistInt>
   result_type operator()(
       boost::proto::tag::function,
@@ -848,34 +907,9 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       WriteReference<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
     typedef typename distribution_value_type<DistInt>::type DistValue;
     distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
-    unsigned width = bitsize_traits<DistInt>::value;
-    bool sign = crave::is_signed<DistInt>::value;
-
-    unsigned id = new_var_id();
-    result_type tmp_var = new_var(id, width, sign);
-    std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
-    dist_references_.push_back(std::make_pair(id, ref_expr));
-    if (dist.isImplicit())
-      implicit_dist_references_.insert(id);
-    else
-      user_dist_references_.insert(id);
-
-    result_type in_ranges;
-    for(weighted_range<DistValue> const & r : dist.ranges()) {
-      result_type left(new Constant(r.left_, width, sign));
-      result_type right(new Constant(r.right_, width, sign));
-      result_type left_cond(new LessEqualOpr(left, tmp_var));
-      result_type right_cond(new LessEqualOpr(tmp_var, right));
-      result_type in_range(new LogicalAndOpr(left_cond, right_cond));
-      result_type tmp(in_ranges != 0 ? new LogicalOrOpr(in_ranges, in_range) : in_range);
-      in_ranges = tmp;
-    }
-
-    result_type var_equal_tmp(new EqualOpr(boost::proto::eval(var_term, *this), tmp_var));
-    dist_ref_to_var_map[id] = var_term.id();
-    return dist.ranges().size() > 0 ? new LogicalAndOpr(var_equal_tmp, in_ranges) : var_equal_tmp;
+    return build_dist_constraint<DistInt>(var_term.id(), boost::proto::eval(var_term, *this), dist, true);
   }
-  
+
   template <typename Integer, typename DistInt>
   result_type operator()(
       boost::proto::tag::function,
@@ -883,29 +917,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       Variable<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
     typedef typename distribution_value_type<DistInt>::type DistValue;
     distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
-    unsigned width = bitsize_traits<DistInt>::value;
-    bool sign = crave::is_signed<DistInt>::value;
-
-    unsigned id = new_var_id();
-    result_type tmp_var = new_var(id, width, sign);
-    std::shared_ptr<crave::ReferenceExpression> ref_expr(new DistReferenceExpr<DistInt>(dist, tmp_var));
-    dist_references_.push_back(std::make_pair(id, ref_expr));
-    user_dist_references_.insert(id);
-
-    result_type in_ranges;
-    for(weighted_range<DistValue> const & r : dist.ranges()) {
-      result_type left(new Constant(r.left_, width, sign));
-      result_type right(new Constant(r.right_, width, sign));
-      result_type left_cond(new LessEqualOpr(left, tmp_var));
-      result_type right_cond(new LessEqualOpr(tmp_var, right));
-      result_type in_range(new LogicalAndOpr(left_cond, right_cond));
-      result_type tmp(in_ranges != 0 ? new LogicalOrOpr(in_ranges, in_range) : in_range);
-      in_ranges = tmp;
-    }
-
-    result_type var_equal_tmp(new EqualOpr(boost::proto::eval(var_term, *this), tmp_var));
-    dist_ref_to_var_map[id] = var_term.id();
-    return dist.ranges().size() > 0 ? new LogicalAndOpr(var_equal_tmp, in_ranges) : var_equal_tmp;
+    return build_dist_constraint<DistInt>(var_term.id(), boost::proto::eval(var_term, *this), dist, false);
   }
 
   template <typename Expr1, typename Expr2>
@@ -969,8 +981,8 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     return new BoundsCheckExpr(acc, all_bounds ? all_bounds : result_type(new Constant(true)));
   }
 
-  template <typename VecExpr, typename Pred>
-  result_type operator()(boost::proto::tag::terminal, vector_reduce_with_tag<VecExpr, Pred> const& tag) {
+  template <typename VecExpr, typename Pred, VectorReduction::Kind Kind>
+  result_type operator()(boost::proto::tag::terminal, vector_reduce_with_tag<VecExpr, Pred, Kind> const& tag) {
     result_type vec_node = boost::proto::eval(tag.vec, *this);
     int const ph_id = new_var_id();
     NodePtr item_node(new VectorAccess(vec_node, new Placeholder(ph_id)));
@@ -980,11 +992,21 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       pred_node = boost::proto::eval(tag.pred, *this);
     }
     VectorExpr const& ve = static_cast<VectorExpr const&>(*vec_node);
-    return new VectorReduceWith(static_cast<unsigned>(ve.id()), ve.bitsize(), ve.sign(), tag.kind, pred_node, ph_id);
+    return new VectorReduceWith(static_cast<unsigned>(ve.id()), ve.bitsize(), ve.sign(), Kind, pred_node, ph_id);
   }
 
-  template <typename T, unsigned N, typename Pred>
-  result_type operator()(boost::proto::tag::terminal, array_reduce_with_tag<T, N, Pred> const& tag) {
+  template <typename Item, unsigned N, typename Pred>
+  result_type operator()(boost::proto::tag::terminal, obj_array_foreach_tag<Item, N, Pred> const& tag) {
+    return tag.arr->eval_foreach_node(*this, tag.pred);
+  }
+
+  template <typename Item, unsigned N, typename Pred, VectorReduction::Kind Kind>
+  result_type operator()(boost::proto::tag::terminal, obj_array_reduce_tag<Item, N, Pred, Kind> const& tag) {
+    return tag.arr->eval_reduce_node(*this, Kind, tag.pred);
+  }
+
+  template <typename T, unsigned N, typename Pred, VectorReduction::Kind Kind>
+  result_type operator()(boost::proto::tag::terminal, array_reduce_with_tag<T, N, Pred, Kind> const& tag) {
     ensure_array_registered(*tag.arr);
     unsigned const sym_id = static_cast<unsigned>(tag.arr->sym_id());
     NodePtr arr_vec(new VectorExpr(sym_id, bitsize_traits<T>::value, crave::is_signed<T>::value));
@@ -1008,14 +1030,14 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       }
       if (!replacer.okay()) continue;
       NodePtr elem = replacer.result();
-      if (tag.kind == VectorReduction::Sum && pred_is_bool) {
+      if (Kind == VectorReduction::Sum && pred_is_bool) {
         elem = new IfThenElse(elem, new Constant(1, 32, false), new Constant(0, 32, false));
         result = result ? NodePtr(new PlusOpr(result, elem)) : elem;
       } else if (pred_is_bool) {
         if (!result) {
           result = elem;
         } else {
-          switch (tag.kind) {
+          switch (Kind) {
             case VectorReduction::Product:
             case VectorReduction::And:
               result = new LogicalAndOpr(result, elem);
@@ -1032,7 +1054,7 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
         if (!result) {
           result = elem;
         } else {
-          switch (tag.kind) {
+          switch (Kind) {
             case VectorReduction::Sum:
               result = new PlusOpr(result, elem);
               break;
@@ -1053,16 +1075,16 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       }
     }
     if (!result) {
-      if (tag.kind == VectorReduction::Sum && pred_is_bool) {
+      if (Kind == VectorReduction::Sum && pred_is_bool) {
         result = new Constant(0, 32, false);
       } else if (pred_is_bool) {
-        result = new Constant(tag.kind == VectorReduction::Product || tag.kind == VectorReduction::And);
+        result = new Constant(Kind == VectorReduction::Product || Kind == VectorReduction::And);
       } else {
         bool const sv_rules = sv_signedness();
         unsigned const w = expr_width_ir_node(*pred_node, sv_rules);
         bool const s = expr_signed_ir_node(*pred_node, sv_rules);
         uint64_t const ones = s || w >= 64 ? ~uint64_t(0) : (uint64_t(1) << w) - 1;
-        switch (tag.kind) {
+        switch (Kind) {
           case VectorReduction::Product:
             result = new Constant(1, w, s);
             break;
@@ -1319,7 +1341,7 @@ inline NodePtr eval_proxy_operand(T const& expr, Context* ctx) {
 
 template <typename T,
           typename std::enable_if<!boost::proto::is_expr<uncvref_t<T> >::value &&
-                                      !std::is_same<uncvref_t<T>, lambda_node_proxy>::value,
+                                      !is_lambda_node_proxy<uncvref_t<T> >::value,
                                   int>::type>
 inline NodePtr eval_proxy_operand(T const& val, Context*) {
   return Context::new_value(val);

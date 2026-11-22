@@ -74,8 +74,22 @@ BOOST_AUTO_TEST_CASE(variable_dist_t1) {
 BOOST_AUTO_TEST_CASE(variable_dist_t2) {
   Variable<int> v;
   Generator gen;
-  BOOST_REQUIRE_THROW(gen(dist(v, distribution<int>::create(range<int>(0, 10))(range<int>(50, 75))(range<int>(30, 51)))),
-                    std::runtime_error);
+  gen(dist(v, distribution<int>::create(range<int>(0, 10))(range<int>(50, 75))(range<int>(30, 51))));
+  std::map<int, int> counts;
+  int const total = 20000;
+  int overlap_hits = 0;
+  int non_overlap_high_hits = 0;
+  for (int i = 0; i < total; ++i) {
+    BOOST_REQUIRE(gen.next());
+    int const val = gen[v];
+    BOOST_REQUIRE((0 <= val && val <= 10) || (30 <= val && val <= 75));
+    ++counts[val];
+    if (val == 50 || val == 51) ++overlap_hits;
+    if (52 <= val && val <= 75) ++non_overlap_high_hits;
+  }
+  double const overlap_avg = overlap_hits / 2.0;
+  double const non_overlap_avg = non_overlap_high_hits / 24.0;
+  BOOST_REQUIRE_GT(overlap_avg, non_overlap_avg * 1.4);
 }
 
 BOOST_AUTO_TEST_CASE(variable_dist_t3) {
@@ -220,6 +234,143 @@ BOOST_AUTO_TEST_CASE(many_objects_share_samplers) {
     BOOST_REQUIRE_LE(objects.back()->addr, 0xffff);
   }
   BOOST_REQUIRE_EQUAL(BddSampler::count(), count);
+}
+
+BOOST_AUTO_TEST_CASE(weighted_range_overlap_and_weight_fixes) {
+  BOOST_REQUIRE(weighted_range<int>(1, 5, 10).overlap(weighted_range<int>(1, 5, 20)));
+  BOOST_REQUIRE(weighted_range<int>(1, 5, 10).overlap(weighted_range<int>(1, 1, 20)));
+  BOOST_REQUIRE(weighted_range<int>(1, 5, 10).overlap(weighted_range<int>(5, 8, 20)));
+  BOOST_REQUIRE(!weighted_range<int>(1, 5, 10).overlap(weighted_range<int>(6, 8, 20)));
+  BOOST_REQUIRE(!weighted_range<int>(10, 5, 10).overlap(weighted_range<int>(6, 8, 20)));
+
+  BOOST_REQUIRE_EQUAL(range<unsigned>(0u, 4294967295u).weight_, 4294967296ULL);
+  BOOST_REQUIRE_EQUAL(range<int>(-2147483647 - 1, 2147483647).weight_, 4294967296ULL);
+  BOOST_REQUIRE_EQUAL(range<int>(10, 5).weight_, 0ULL);
+
+  distribution<int64_t> d64(range<int64_t>(std::numeric_limits<int64_t>::min(),
+                                           std::numeric_limits<int64_t>::max()));
+  d64(weighted_value<int64_t>(0, 1));
+  BOOST_REQUIRE(!d64.isAllZero());
+  BOOST_REQUIRE(!d64.ranges().empty());
+  (void)d64.nextValue();
+}
+
+BOOST_AUTO_TEST_CASE(dist_per_value_vs_per_range_and_truncation) {
+  struct BackendGuard {
+    BackendGuard() : old_sv(sv_signedness()) {}
+    ~BackendGuard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(old_sv);
+    }
+    bool old_sv;
+  } guard;
+
+  for (char const* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+    for (bool sv : {false, true}) {
+      set_sv_signedness(sv);
+
+      // [0,3] := 10 (total 40) vs [10,13] :/ 10 (total 10) -> ~4:1 ratio
+      Variable<int> v;
+      Generator gen;
+      gen(dist(v, make_distribution(dist_per_value(0, 3, 10), dist_per_range(10, 13, 10))));
+      int low_cnt = 0, high_cnt = 0;
+      for (int i = 0; i < 5000; ++i) {
+        BOOST_REQUIRE(gen.next());
+        int val = gen[v];
+        BOOST_REQUIRE((0 <= val && val <= 3) || (10 <= val && val <= 13));
+        if (val <= 3) ++low_cnt;
+        else ++high_cnt;
+      }
+      BOOST_REQUIRE_GT(low_cnt, high_cnt * 2);
+
+      // [0,9] :/ 1 must not truncate 1/10 to 0
+      Variable<int> v2;
+      Generator gen2;
+      gen2(dist(v2, make_distribution(range<int>(0, 9).per_range(1), dist_per_value(20, 1))));
+      std::set<int> low_seen;
+      for (int i = 0; i < 400; ++i) {
+        BOOST_REQUIRE(gen2.next());
+        int val = gen2[v2];
+        BOOST_REQUIRE((0 <= val && val <= 9) || val == 20);
+        if (val <= 9) low_seen.insert(val);
+      }
+      BOOST_REQUIRE_EQUAL(low_seen.size(), 10u);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(dist_overlapping_weight_summation) {
+  // Mixed := and :/ with overlap: [0,5] := 2, [4,7] :/ 4 -> per-value 0..3:2, 4..5:3, 6..7:1
+  Variable<int> v;
+  Generator gen;
+  gen(dist(v, make_distribution(dist_per_value(0, 5, 2), dist_per_range(4, 7, 4))));
+  std::map<int, int> counts;
+  for (int i = 0; i < 12000; ++i) {
+    BOOST_REQUIRE(gen.next());
+    int val = gen[v];
+    BOOST_REQUIRE(0 <= val && val <= 7);
+    ++counts[val];
+  }
+  double avg_mid = (counts[4] + counts[5]) / 2.0;
+  double avg_high = (counts[6] + counts[7]) / 2.0;
+  BOOST_REQUIRE_GT(avg_mid, avg_high * 2.0);
+
+  // Non-integer-divisible overlap + duplicate + containment + abutting
+  distribution<int> d_mix(dist_per_range(0, 2, 1));
+  d_mix(dist_per_range(1, 3, 2));
+  d_mix(dist_per_value(0, 3, 2));
+  d_mix(dist_per_value(0, 3, 4));
+  d_mix(range<int>(5, 9));
+  BOOST_REQUIRE_EQUAL(d_mix.ranges().size(), 2u);
+  BOOST_REQUIRE_EQUAL(d_mix.ranges()[0].left_, 0);
+  BOOST_REQUIRE_EQUAL(d_mix.ranges()[0].right_, 3);
+  BOOST_REQUIRE_EQUAL(d_mix.ranges()[1].left_, 5);
+  BOOST_REQUIRE_EQUAL(d_mix.ranges()[1].right_, 9);
+}
+
+BOOST_AUTO_TEST_CASE(dist_zero_weight_exclusion_and_all_zero) {
+  // Weight-0 singleton and range excluded from both sampling and hard constraints
+  {
+    Variable<int> v;
+    Generator gen;
+    gen(dist(v, make_distribution(dist_per_value(0, 0), dist_per_value(1, 1), dist_per_value(2, 1))))(v == 0);
+    BOOST_REQUIRE(!gen.next());
+  }
+  {
+    Variable<int> v;
+    Generator gen;
+    gen(dist(v, make_distribution(dist_per_value(0, 0), dist_per_value(1, 1), dist_per_value(2, 10))))(v != 2);
+    for (int i = 0; i < 20; ++i) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[v], 1);
+    }
+  }
+  // Overlapping weight-0 + positive weight
+  {
+    Variable<int> v;
+    Generator gen;
+    gen(dist(v, make_distribution(dist_per_value(0, 10, 0), dist_per_value(4, 6, 5))));
+    for (int i = 0; i < 50; ++i) {
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE(4 <= gen[v] && gen[v] <= 6);
+    }
+  }
+  // All-zero distributions make gen.next() return false without throwing; direct nextValue() throws
+  for (auto const& tag : {make_distribution(weighted_value<int>(5, 0)),
+                          make_distribution(dist_per_value(1, 5, 0)),
+                          make_distribution(dist_per_range(1, 5, 0)),
+                          make_distribution(range<int>(10, 5))}) {
+    distribution<int> raw = boost::proto::value(tag);
+    BOOST_REQUIRE(raw.isAllZero());
+    BOOST_REQUIRE_THROW(raw.nextValue(), std::runtime_error);
+
+    Variable<int> v;
+    Generator gen;
+    gen(dist(v, tag));
+    BOOST_REQUIRE(!gen.next());
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

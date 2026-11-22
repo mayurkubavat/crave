@@ -32,6 +32,7 @@
 #include "Coverage.hpp"
 #include "Expression.hpp"
 #include "Object.hpp"
+#include "RandSequence.hpp"
 #include "Randomize.hpp"
 #include "SequenceItem.hpp"
 #include "Variable.hpp"
@@ -84,7 +85,12 @@ class crv_variable<T, typename std::enable_if<is_better_enum<T>::value>::type> :
   CRV_VARIABLE_ASSIGNMENT_INTERFACE(T);
 
  public:
-  crv_variable(const crv_variable& other) : crv_variable_base<int>(other) {}
+  crv_variable(const crv_variable& other)
+      : crv_variable_base<int>(other), enum_internal(other.enum_internal) {
+    this->attach_copied_child_(&enum_internal);
+    enum_internal = {inside(var, std::vector<int>(T::_values().begin(), T::_values().end()))};
+    if (!other.enum_internal.active()) enum_internal.deactivate();
+  }
   crv_variable(crv_object_name name = "var") {
     enum_internal = {inside(var, std::vector<int>(T::_values().begin(), T::_values().end()))};
   }
@@ -105,7 +111,12 @@ class crv_variable<T, typename std::enable_if<simple_enum_wrapper<T>::defined>::
   CRV_VARIABLE_ASSIGNMENT_INTERFACE(T);
 
  public:
-  crv_variable(const crv_variable& other) : crv_variable_base<int>(other) {}
+  crv_variable(const crv_variable& other)
+      : crv_variable_base<int>(other), enum_internal(other.enum_internal) {
+    this->attach_copied_child_(&enum_internal);
+    enum_internal = {inside(var, simple_enum_wrapper<T>().values())};
+    if (!other.enum_internal.active()) enum_internal.deactivate();
+  }
   crv_variable(crv_object_name name = "var") { enum_internal = {inside(var, simple_enum_wrapper<T>().values())}; }
 
  private:

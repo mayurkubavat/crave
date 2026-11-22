@@ -50,12 +50,7 @@ unsigned int RandomSeedManager::get_seed() {
   return seed_;
 }
 
-#ifndef WITH_SYSTEMC
-
-std::mt19937* RandomSeedManager::get() { return &default_rng_; }
-
-#else
-
+#ifdef WITH_SYSTEMC
 #include <systemc>
 std::mt19937* RandomSeedManager::get() {
 	std::lock_guard<std::recursive_mutex> lock(mutex());
@@ -72,4 +67,17 @@ std::mt19937* RandomSeedManager::get() {
 	return rnd;
 }
 
+#else
+
+std::mt19937* RandomSeedManager::get() { return &default_rng_; }
+
 #endif
+
+namespace crave {
+namespace {
+thread_local std::mt19937* tls_active_rng = nullptr;
+}  // namespace
+
+std::mt19937* active_rng() { return tls_active_rng; }
+void set_active_rng(std::mt19937* g) { tls_active_rng = g; }
+}  // namespace crave

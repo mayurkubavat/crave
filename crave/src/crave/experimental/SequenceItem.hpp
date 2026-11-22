@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -58,7 +59,8 @@ struct InlineDistCapture {
 class InlineContainerGuard {
  public:
   InlineContainerGuard()
-      : vcon_(variable_container()),
+      : lock_(variable_container_mutex()),
+        vcon_(variable_container()),
         reads_0_(vcon_->read_references.size()),
         dists_0_(vcon_->dist_references.size()),
         rolled_back_(false) {}
@@ -101,9 +103,11 @@ class InlineContainerGuard {
       vcon_->user_dist_references.erase(id);
     }
     vcon_->dist_references.resize(dists_0_);
+    if (lock_.owns_lock()) lock_.unlock();
   }
 
  private:
+  std::unique_lock<std::recursive_mutex> lock_;
   VariableContainer* vcon_;
   std::size_t reads_0_;
   std::size_t dists_0_;
@@ -207,27 +211,28 @@ class crv_sequence_item : public crv_object {
   void detach_all_goals_();
 
   void request_rebuild() override;
+  void on_rng_state_changed_() const override;
   bool prune_covered_goals_();
   void prune_completed_goals_();
   void refresh_goals_();
   Generator& ensure_generator_();
   void apply_goals_(Generator& target);
-  void clear_rand_with_cache_();
+  void clear_rand_with_cache_() const;
 
   bool randomize_with_expr_list(expression_list const&);
   bool randomize_with_expr_list_impl_(expression_list const& list,
                                       std::vector<detail::InlineReadCapture> const& inline_reads,
                                       std::vector<detail::InlineDistCapture> const& inline_dists);
 
-  std::shared_ptr<Generator> gen_;
-  std::shared_ptr<Generator> rand_with_gen_;
-  std::shared_ptr<Generator> last_gen_;
-  bool built_;
+  mutable std::shared_ptr<Generator> gen_;
+  mutable std::shared_ptr<Generator> rand_with_gen_;
+  mutable std::shared_ptr<Generator> last_gen_;
+  mutable bool built_;
   bool cloned_;
   std::vector<SavedGoal> goals_;
   std::size_t goal_epoch_;
   std::uint64_t next_goal_uid_;
-  std::shared_ptr<RandWithCache> rand_with_cache_;
+  mutable std::shared_ptr<RandWithCache> rand_with_cache_;
   std::size_t rand_with_cache_hits_;
   std::size_t rand_with_cache_misses_;
 };

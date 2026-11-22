@@ -108,8 +108,7 @@ class CUDD_Solver : public metaSMT::solver::CUDD_Distributed {
  protected:
   // use the random number generator of CRAVE, so that the solutions only depend on the global seed
   double uniform01() override {
-    std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
-    return std::uniform_real_distribution<double>(0, 1)(*crave::rng.get());
+    return with_active_or_global_rng([](std::mt19937& g) { return std::uniform_real_distribution<double>(0, 1)(g); });
   }
 };
 

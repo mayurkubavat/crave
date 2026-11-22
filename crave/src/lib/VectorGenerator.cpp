@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -270,7 +271,11 @@ bool VectorSolver::solve(VariableGenerator& var_gen, VariableContainer* vcon) {
   }
   LOG(INFO) << "Solve constraints of vector " << vector_id_ << " [" << cstr_name_list << "]";
 
-  __rand_vec_base* vector = vectorBaseMap[vector_id_];
+  __rand_vec_base* vector = nullptr;
+  {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    vector = vectorBaseMap[vector_id_];
+  }
 
   unsigned int size = default_rand_vec_size();
   bool const solved_size = var_gen.read(vector->size_var(), &size);
@@ -503,9 +508,12 @@ std::set<std::string> VectorGenerator::coupledCovers(std::vector<ConstraintParti
 
   int const failed_vec_id = failed_->id();
   std::set<int> coupled_vars = failed_->scalarVars();
-  auto vbm_it = vectorBaseMap.find(failed_vec_id);
-  if (vbm_it != vectorBaseMap.end()) {
-    coupled_vars.insert(static_cast<int>(vbm_it->second->size_var().id()));
+  {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    auto vbm_it = vectorBaseMap.find(failed_vec_id);
+    if (vbm_it != vectorBaseMap.end()) {
+      coupled_vars.insert(static_cast<int>(vbm_it->second->size_var().id()));
+    }
   }
 
   std::set<int> included_vecs;
@@ -542,6 +550,7 @@ std::set<std::string> VectorGenerator::coupledCovers(std::vector<ConstraintParti
         }
       }
       if (!intersects) {
+        std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
         auto kv_vbm = vectorBaseMap.find(kv.first);
         if (kv_vbm != vectorBaseMap.end() &&
             coupled_vars.count(static_cast<int>(kv_vbm->second->size_var().id()))) {
@@ -551,6 +560,7 @@ std::set<std::string> VectorGenerator::coupledCovers(std::vector<ConstraintParti
       if (intersects) {
         included_vecs.insert(kv.first);
         coupled_vars.insert(svars.begin(), svars.end());
+        std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
         auto kv_vbm = vectorBaseMap.find(kv.first);
         if (kv_vbm != vectorBaseMap.end()) {
           coupled_vars.insert(static_cast<int>(kv_vbm->second->size_var().id()));
@@ -660,7 +670,11 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
   std::map<int, VectorSolver::VectorElements> joint_elems;
   for (int vid : included_vecs) {
     VectorSolver& vs = vector_solvers_.at(vid);
-    __rand_vec_base* vector = vectorBaseMap[vid];
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[vid];
+    }
     unsigned int sz = default_rand_vec_size();
     if (vid == failed_vec_id) {
       sz = vs.lastSize();
@@ -932,7 +946,12 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
   }
 
   for (auto const& kv : joint_elems) {
-    joint_solver->readVector(kv.second, vectorBaseMap[kv.first]);
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[kv.first];
+    }
+    joint_solver->readVector(kv.second, vector);
     solved_vecs.insert(kv.first);
   }
 
@@ -978,7 +997,11 @@ bool VectorGenerator::solve(VariableGenerator& var_gen, const std::set<int>& vec
   for(int id : vec_ids) {
     if (vector_solvers_.find(id) != vector_solvers_.end()) continue;
     // unconstrained vector
-    __rand_vec_base* vector = vectorBaseMap[id];
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[id];
+    }
     LOG(INFO) << "Generate unconstrained vector " << id;
     unsigned int size = default_rand_vec_size();
     if (!var_gen.read(vector->size_var(), &size)) {

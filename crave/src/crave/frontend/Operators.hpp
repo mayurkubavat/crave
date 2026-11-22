@@ -111,25 +111,24 @@ capture_pred_t<Pred> capture_predicate(Pred&& p) {
 }
 }  // namespace detail
 
-template <typename VecExpr, typename Pred>
+template <typename VecExpr, typename Pred, VectorReduction::Kind Kind>
 struct vector_reduce_with_tag {
-  vector_reduce_with_tag(VecExpr v, VectorReduction::Kind k, Pred p)
-      : vec(std::move(v)), kind(k), pred(std::move(p)) {}
+  static constexpr VectorReduction::Kind kind = Kind;
+  vector_reduce_with_tag(VecExpr v, Pred p) : vec(std::move(v)), pred(std::move(p)) {}
   VecExpr vec;
-  VectorReduction::Kind kind;
   Pred pred;
 };
 
-template <typename VecExpr, typename Pred>
+template <VectorReduction::Kind Kind, typename VecExpr, typename Pred>
 typename boost::proto::result_of::make_expr<
     boost::proto::tag::terminal, Constraint_Domain,
     vector_reduce_with_tag<typename boost::proto::result_of::deep_copy<VecExpr const&>::type,
-                           detail::capture_pred_t<Pred> > >::type
-make_vector_reduce_with_expr(VecExpr const& vec, VectorReduction::Kind kind, Pred&& pred) {
+                           detail::capture_pred_t<Pred>, Kind> >::type
+make_vector_reduce_with_expr(VecExpr const& vec, Pred&& pred) {
   typedef vector_reduce_with_tag<typename boost::proto::result_of::deep_copy<VecExpr const&>::type,
-                                 detail::capture_pred_t<Pred> >
+                                 detail::capture_pred_t<Pred>, Kind>
       tag_t;
-  tag_t tag(boost::proto::deep_copy(vec), kind, detail::capture_predicate(std::forward<Pred>(pred)));
+  tag_t tag(boost::proto::deep_copy(vec), detail::capture_predicate(std::forward<Pred>(pred)));
   return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
 }
 
@@ -622,12 +621,11 @@ struct array_access_expr
   array_access_expr const& operator()() const { return *this; }
 };
 
-template <typename T, unsigned N, typename Pred>
+template <typename T, unsigned N, typename Pred, VectorReduction::Kind Kind>
 struct array_reduce_with_tag {
-  array_reduce_with_tag(crv_array<T, N> const* a, VectorReduction::Kind k, Pred p)
-      : arr(a), kind(k), pred(std::move(p)) {}
+  static constexpr VectorReduction::Kind kind = Kind;
+  array_reduce_with_tag(crv_array<T, N> const* a, Pred p) : arr(a), pred(std::move(p)) {}
   crv_array<T, N> const* arr;
-  VectorReduction::Kind kind;
   Pred pred;
 };
 
@@ -638,13 +636,13 @@ struct array_foreach_tag {
   Pred pred;
 };
 
-template <typename T, unsigned N, typename Pred>
+template <VectorReduction::Kind Kind, typename T, unsigned N, typename Pred>
 typename boost::proto::result_of::make_expr<
     boost::proto::tag::terminal, Constraint_Domain,
-    array_reduce_with_tag<T, N, detail::capture_pred_t<Pred> > >::type
-make_array_reduce_with_expr(crv_array<T, N> const& arr, VectorReduction::Kind kind, Pred&& pred) {
-  typedef array_reduce_with_tag<T, N, detail::capture_pred_t<Pred> > tag_t;
-  tag_t tag(&arr, kind, detail::capture_predicate(std::forward<Pred>(pred)));
+    array_reduce_with_tag<T, N, detail::capture_pred_t<Pred>, Kind> >::type
+make_array_reduce_with_expr(crv_array<T, N> const& arr, Pred&& pred) {
+  typedef array_reduce_with_tag<T, N, detail::capture_pred_t<Pred>, Kind> tag_t;
+  tag_t tag(&arr, detail::capture_predicate(std::forward<Pred>(pred)));
   return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
 }
 

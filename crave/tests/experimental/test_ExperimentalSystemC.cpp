@@ -515,6 +515,53 @@ BOOST_AUTO_TEST_CASE(sc_uint3_dist_constraint_mode_randc_and_uniform) {
   }
 }
 
+template <typename ScT>
+void verify_sysc_dist_d2() {
+  sc_item<ScT> item("sc_d2");
+  item.con = {dist(item.x(), make_distribution(dist_per_value(ScT(1), ScT(4), 3),
+                                               dist_per_range(ScT(3), ScT(6), 4),
+                                               dist_per_value(ScT(10), 0)))};
+  for (int i = 0; i < 40; ++i) {
+    BOOST_REQUIRE(item.randomize());
+    auto v = distribution_value_type<ScT>::value(item.x.get());
+    BOOST_REQUIRE(v >= 1 && v <= 6);
+  }
+  BOOST_REQUIRE(!item.randomize_with(item.x() == ScT(10)));
+
+  sc_item<ScT> az("sc_az");
+  az.con = {dist(az.x(), make_distribution(dist_per_value(ScT(1), ScT(4), 0)))};
+  BOOST_REQUIRE_NO_THROW(BOOST_REQUIRE(!az.randomize()));
+}
+
+BOOST_AUTO_TEST_CASE(sc_dist_per_value_overlap_zero_weight_and_srandom) {
+  verify_sysc_dist_d2<sc_int<8> >();
+  verify_sysc_dist_d2<sc_uint<8> >();
+  verify_sysc_dist_d2<sc_bigint<16> >();
+  verify_sysc_dist_d2<sc_biguint<16> >();
+  verify_sysc_dist_d2<sc_bv<8> >();
+
+  // D1 srandom repeatability for SystemC crv_variable<sc_uint<8>> and crv_sequence_item
+  sc_item<sc_uint<8> > a("a"), b("b");
+  a.con = {a.x() <= sc_uint<8>(200)};
+  b.con = {b.x() <= sc_uint<8>(200)};
+  a.srandom(4321u);
+  b.srandom(4321u);
+  for (int i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(a.randomize());
+    BOOST_REQUIRE(b.randomize());
+    BOOST_REQUIRE_EQUAL(a.x.get().to_uint(), b.x.get().to_uint());
+  }
+
+  crv_variable<sc_uint<8> > va("va"), vb("vb");
+  va.srandom(987u);
+  vb.srandom(987u);
+  for (int i = 0; i < 10; ++i) {
+    BOOST_REQUIRE(va.randomize());
+    BOOST_REQUIRE(vb.randomize());
+    BOOST_REQUIRE_EQUAL(va.get().to_uint(), vb.get().to_uint());
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab
