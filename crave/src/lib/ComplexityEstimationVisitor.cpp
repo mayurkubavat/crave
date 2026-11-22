@@ -166,6 +166,8 @@ void ComplexityEstimationVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { 
 
 void ComplexityEstimationVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitSimpleBinExpr(lo); }
 
+void ComplexityEstimationVisitor::visitLogicalIffOpr(const LogicalIffOpr& liff) { visitSimpleBinExpr(liff); }
+
 void ComplexityEstimationVisitor::visitXorOpr(const XorOpr& x) { visitSimpleBinExpr(x); }
 
 void ComplexityEstimationVisitor::visitEqualOpr(const EqualOpr& eq) { visitSimpleBinExpr(eq); }
@@ -253,6 +255,22 @@ void ComplexityEstimationVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
 
 void ComplexityEstimationVisitor::visitVectorContains(const VectorContains&) {
   throw std::runtime_error("VectorContains is not allowed in ComplexityEstimationVisitor.");
+}
+
+void ComplexityEstimationVisitor::visitOneHotExpr(const OneHotExpr& o) { visitSimpleUnaryExpr(o); }
+
+void ComplexityEstimationVisitor::visitOneHot0Expr(const OneHot0Expr& o) { visitSimpleUnaryExpr(o); }
+
+void ComplexityEstimationVisitor::visitCountOnesExpr(const CountOnesExpr& o) { visitSimpleUnaryExpr(o); }
+
+void ComplexityEstimationVisitor::visitClog2Expr(const Clog2Expr& o) { visitSimpleUnaryExpr(o); }
+
+void ComplexityEstimationVisitor::visitSelfDeterminedExpr(const SelfDeterminedExpr& s) { visitSimpleUnaryExpr(s); }
+
+void ComplexityEstimationVisitor::visitBoundsCheckExpr(const BoundsCheckExpr& b) { visitSimpleBinExpr(b); }
+
+void ComplexityEstimationVisitor::visitVectorReduceWith(const VectorReduceWith&) {
+  throw std::runtime_error("VectorReduceWith is not allowed in ComplexityEstimationVisitor.");
 }
 
 }  // end namespace crave

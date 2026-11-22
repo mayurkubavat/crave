@@ -47,6 +47,7 @@ class TernaryExpression;
 class NotOpr;
 class LogicalAndOpr;
 class LogicalOrOpr;
+class LogicalIffOpr;
 
 // comparison
 class EqualOpr;
@@ -79,12 +80,19 @@ class IfThenElse;
 class RangeExpr;
 class TolPlusMinusExpr;
 class TolPlusPctExpr;
+class OneHotExpr;
+class OneHot0Expr;
+class CountOnesExpr;
+class Clog2Expr;
+class SelfDeterminedExpr;
+class BoundsCheckExpr;
 
 // vector
 class VectorAccess;
 class ForEach;
 class Unique;
 class VectorContains;
+class VectorReduceWith;
 
 class NodeVisitor {
  protected:
@@ -114,6 +122,7 @@ class NodeVisitor {
   virtual void visitOrOpr(OrOpr const&) = 0;
   virtual void visitLogicalAndOpr(LogicalAndOpr const&) = 0;
   virtual void visitLogicalOrOpr(LogicalOrOpr const&) = 0;
+  virtual void visitLogicalIffOpr(LogicalIffOpr const&) = 0;
   virtual void visitXorOpr(XorOpr const&) = 0;
   virtual void visitEqualOpr(EqualOpr const&) = 0;
   virtual void visitNotEqualOpr(NotEqualOpr const&) = 0;
@@ -137,6 +146,13 @@ class NodeVisitor {
   virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
   virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
   virtual void visitVectorContains(VectorContains const&);
+  virtual void visitOneHotExpr(OneHotExpr const&) = 0;
+  virtual void visitOneHot0Expr(OneHot0Expr const&) = 0;
+  virtual void visitCountOnesExpr(CountOnesExpr const&) = 0;
+  virtual void visitClog2Expr(Clog2Expr const&) = 0;
+  virtual void visitSelfDeterminedExpr(SelfDeterminedExpr const&) = 0;
+  virtual void visitBoundsCheckExpr(BoundsCheckExpr const&) = 0;
+  virtual void visitVectorReduceWith(VectorReduceWith const&) = 0;
 };
 
 unsigned int placeholder_bitsize();

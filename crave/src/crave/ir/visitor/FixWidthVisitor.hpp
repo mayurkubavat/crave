@@ -69,6 +69,7 @@ class FixWidthVisitor : NodeVisitor {
   virtual void visitOrOpr(OrOpr const&);
   virtual void visitLogicalAndOpr(LogicalAndOpr const&);
   virtual void visitLogicalOrOpr(LogicalOrOpr const&);
+  virtual void visitLogicalIffOpr(LogicalIffOpr const&);
   virtual void visitXorOpr(XorOpr const&);
   virtual void visitEqualOpr(EqualOpr const&);
   virtual void visitNotEqualOpr(NotEqualOpr const&);
@@ -92,9 +93,23 @@ class FixWidthVisitor : NodeVisitor {
   virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
   virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
   virtual void visitVectorContains(VectorContains const&);
+  virtual void visitOneHotExpr(OneHotExpr const&);
+  virtual void visitOneHot0Expr(OneHot0Expr const&);
+  virtual void visitCountOnesExpr(CountOnesExpr const&);
+  virtual void visitClog2Expr(Clog2Expr const&);
+  virtual void visitSelfDeterminedExpr(SelfDeterminedExpr const&);
+  virtual void visitBoundsCheckExpr(BoundsCheckExpr const&);
+  virtual void visitVectorReduceWith(VectorReduceWith const&);
+  void push(stack_entry const&, result_type const& guard = result_type());
+  void pop(stack_entry&, result_type& guard);
+  void pop2(stack_entry&, result_type&, stack_entry&, result_type&);
+  void pop3(stack_entry&, result_type&, stack_entry&, result_type&, stack_entry&, result_type&);
   void pop(stack_entry&);
   void pop2(stack_entry&, stack_entry&);
   void pop3(stack_entry&, stack_entry&, stack_entry&);
+  void evalBinExpr(BinaryExpression const&, stack_entry&, result_type&, stack_entry&, result_type&, bool);
+  void evalTernExpr(TernaryExpression const&, stack_entry&, result_type&, stack_entry&, result_type&, stack_entry&,
+                    result_type&);
   void evalBinExpr(BinaryExpression const&, stack_entry&, stack_entry&, bool);
   void evalTernExpr(TernaryExpression const&, stack_entry&, stack_entry&, stack_entry&);
 
@@ -126,6 +141,7 @@ class FixWidthVisitor : NodeVisitor {
 
  private:
   std::stack<stack_entry> exprStack_;
+  std::stack<result_type> boundsStack_;
   bool sv_signedness_;
 };
 

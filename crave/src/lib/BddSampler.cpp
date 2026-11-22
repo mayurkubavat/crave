@@ -29,6 +29,7 @@
 #include "../crave/backend/FactoryMetaSMT.hpp"
 #include "../crave/backend/VariableDefaultSolver.hpp"
 #include "../crave/ir/visitor/ComplexityEstimationVisitor.hpp"
+#include "../crave/ir/visitor/FixWidthVisitor.hpp"
 #include "../crave/ir/visitor/NodeVisitor.hpp"
 #include "../crave/RandomSeedManager.hpp"
 #include "../crave/utils/Logging.hpp"
@@ -58,6 +59,7 @@ class ShapeVisitor : public NodeVisitor {
   std::set<int> const& vars() const { return vars_; }
   NodePtr var() const { return var_; }
   bool okay() const { return okay_; }
+  bool hasBoundsCheck() const { return has_bounds_check_; }
 
   void visitNode(Node const& n) override;
   void visitTerminal(Terminal const& n) override;
@@ -79,6 +81,7 @@ class ShapeVisitor : public NodeVisitor {
   void visitOrOpr(OrOpr const& n) override;
   void visitLogicalAndOpr(LogicalAndOpr const& n) override;
   void visitLogicalOrOpr(LogicalOrOpr const& n) override;
+  void visitLogicalIffOpr(LogicalIffOpr const& n) override;
   void visitXorOpr(XorOpr const& n) override;
   void visitEqualOpr(EqualOpr const& n) override;
   void visitNotEqualOpr(NotEqualOpr const& n) override;
@@ -102,6 +105,13 @@ class ShapeVisitor : public NodeVisitor {
   void visitTolPlusMinusExpr(TolPlusMinusExpr const& n) override;
   void visitTolPlusPctExpr(TolPlusPctExpr const& n) override;
   void visitVectorContains(VectorContains const& n) override;
+  void visitOneHotExpr(OneHotExpr const& n) override;
+  void visitOneHot0Expr(OneHot0Expr const& n) override;
+  void visitCountOnesExpr(CountOnesExpr const& n) override;
+  void visitClog2Expr(Clog2Expr const& n) override;
+  void visitSelfDeterminedExpr(SelfDeterminedExpr const& n) override;
+  void visitBoundsCheckExpr(BoundsCheckExpr const& n) override;
+  void visitVectorReduceWith(VectorReduceWith const& n) override;
 
  private:
   template <typename T>
@@ -137,6 +147,7 @@ class ShapeVisitor : public NodeVisitor {
   std::set<int> vars_;
   NodePtr var_;
   bool okay_ = true;
+  bool has_bounds_check_ = false;
 };
 
 void ShapeVisitor::visitNode(Node const&) { okay_ = false; }
@@ -179,6 +190,7 @@ void ShapeVisitor::visitAndOpr(AndOpr const& n) { binary(n); }
 void ShapeVisitor::visitOrOpr(OrOpr const& n) { binary(n); }
 void ShapeVisitor::visitLogicalAndOpr(LogicalAndOpr const& n) { binary(n); }
 void ShapeVisitor::visitLogicalOrOpr(LogicalOrOpr const& n) { binary(n); }
+void ShapeVisitor::visitLogicalIffOpr(LogicalIffOpr const& n) { binary(n); }
 void ShapeVisitor::visitXorOpr(XorOpr const& n) { binary(n); }
 void ShapeVisitor::visitEqualOpr(EqualOpr const& n) { binary(n); }
 void ShapeVisitor::visitNotEqualOpr(NotEqualOpr const& n) { binary(n); }
@@ -201,6 +213,16 @@ void ShapeVisitor::visitRangeExpr(RangeExpr const& n) { ternary(n); }
 void ShapeVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const& n) { ternary(n); }
 void ShapeVisitor::visitTolPlusPctExpr(TolPlusPctExpr const& n) { ternary(n); }
 void ShapeVisitor::visitVectorContains(VectorContains const&) { okay_ = false; }
+void ShapeVisitor::visitOneHotExpr(OneHotExpr const& n) { unary(n); }
+void ShapeVisitor::visitOneHot0Expr(OneHot0Expr const& n) { unary(n); }
+void ShapeVisitor::visitCountOnesExpr(CountOnesExpr const& n) { unary(n); }
+void ShapeVisitor::visitClog2Expr(Clog2Expr const& n) { unary(n); }
+void ShapeVisitor::visitSelfDeterminedExpr(SelfDeterminedExpr const& n) { unary(n); }
+void ShapeVisitor::visitBoundsCheckExpr(BoundsCheckExpr const& n) {
+  has_bounds_check_ = true;
+  binary(n);
+}
+void ShapeVisitor::visitVectorReduceWith(VectorReduceWith const&) { okay_ = false; }
 
 // restores the state of a random number generator, also if an exception is thrown
 class GeneratorGuard {
@@ -240,6 +262,24 @@ std::shared_ptr<BddSampler> BddSampler::get(std::vector<NodePtr> const& constrai
     simple_constraints.push_back(c);
   }
   if (simple_constraints.empty() || !visitor.okay() || visitor.vars().size() != 1) return nullptr;
+  NodePtr target_var = visitor.var();
+  if (visitor.hasBoundsCheck()) {
+    ShapeVisitor lowered_visitor;
+    std::vector<std::string> lowered_shapes;
+    std::vector<NodePtr> lowered_constraints;
+    for (NodePtr c : simple_constraints) {
+      FixWidthVisitor fwv;
+      NodePtr lowered = fwv.fixWidth(*c);
+      unsigned complexity = ComplexityEstimationVisitor().getComplexityEstimation(*lowered);
+      if (complexity == 0 || complexity >= VariableDefaultSolver::complexity_limit_for_bdd) continue;
+      lowered_shapes.push_back(lowered_visitor.shape(*lowered));
+      lowered_constraints.push_back(lowered);
+    }
+    if (lowered_constraints.empty() || !lowered_visitor.okay() || lowered_visitor.vars().size() != 1) return nullptr;
+    shapes.swap(lowered_shapes);
+    simple_constraints.swap(lowered_constraints);
+    target_var = lowered_visitor.var();
+  }
 
   std::sort(shapes.begin(), shapes.end());
   std::string key;
@@ -284,7 +324,7 @@ std::shared_ptr<BddSampler> BddSampler::get(std::vector<NodePtr> const& constrai
 
     sampler.reset(new BddSampler());
     sampler->solver_ = solver;
-    sampler->var_ = visitor.var();
+    sampler->var_ = target_var;
 
     // forget the samplers, which are not in use anymore
     for (auto ite = samplers_.begin(); ite != samplers_.end();) {

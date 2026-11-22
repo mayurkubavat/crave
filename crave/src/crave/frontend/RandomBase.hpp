@@ -117,6 +117,34 @@ class __rand_vec_base1 : public __rand_vec_base {
    */
   T1& operator[](const int& idx) const { return (T1&)real_vec[idx]; }
 
+ protected:
+  template <typename IdxExpr>
+  auto make_vec_access(IdxExpr const& idx, std::true_type) const
+      -> decltype(boost::proto::deep_copy(std::declval<Vector<T1> const&>()[boost::proto::make_expr<
+          boost::proto::tag::terminal, Constraint_Domain>(idx)])) {
+    return boost::proto::deep_copy(
+        sym_vec[boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(idx)]);
+  }
+
+  template <typename IdxExpr>
+  auto make_vec_access(IdxExpr const& idx, std::false_type) const -> decltype(std::declval<Vector<T1> const&>()[idx]) {
+    return sym_vec[idx];
+  }
+
+ public:
+  template <typename IdxExpr,
+            typename std::enable_if<
+                boost::proto::is_expr<typename std::decay<IdxExpr>::type>::value ||
+                    detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value,
+                int>::type = 0>
+  auto operator[](IdxExpr const& idx) const
+      -> decltype(make_vec_access(
+          idx, std::integral_constant<bool,
+                                      detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value>{})) {
+    return make_vec_access(
+        idx, std::integral_constant<bool, detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value>{});
+  }
+
   /**
    * \brief Pushes a value into the real vector.
    * 

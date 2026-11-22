@@ -28,6 +28,7 @@
 
 #include <boost/intrusive_ptr.hpp>
 
+#include <algorithm>
 #include <ostream>
 #include <set>
 
@@ -143,8 +144,16 @@ class VectorReduction : public Terminal {
  public:
   enum Kind { Sum, Product, And, Or, Xor };
 
-  VectorReduction(unsigned int id, unsigned int bs, bool s, Kind k) : Terminal(bs, s), id_(id), kind_(k) {}
-  VectorReduction(VectorReduction const& r) : Terminal(r.bitsize(), r.sign()), id_(r.id()), kind_(r.kind()) {}
+  VectorReduction(unsigned int id, unsigned int bs, bool s, Kind k)
+      : Terminal(bs, s), elem_bitsize_(bs), elem_sign_(s), id_(id), kind_(k) {}
+  VectorReduction(unsigned int id, unsigned int res_bs, bool res_s, Kind k, unsigned int elem_bs, bool elem_s)
+      : Terminal(res_bs, res_s), elem_bitsize_(elem_bs), elem_sign_(elem_s), id_(id), kind_(k) {}
+  VectorReduction(VectorReduction const& r)
+      : Terminal(r.bitsize(), r.sign()),
+        elem_bitsize_(r.elemBitsize()),
+        elem_sign_(r.elemSign()),
+        id_(r.id()),
+        kind_(r.kind()) {}
 
   void visit(NodeVisitor* v) const { v->visitVectorReduction(*this); }
 
@@ -155,7 +164,13 @@ class VectorReduction : public Terminal {
 
   Kind kind() const { return kind_; }
 
+  unsigned int elemBitsize() const { return elem_bitsize_; }
+  bool elemSign() const { return elem_sign_; }
+  bool elemIsBool() const { return elem_bitsize_ == 1 && elem_sign_; }
+
  private:
+  unsigned int elem_bitsize_;
+  bool elem_sign_;
   unsigned int id_;
   Kind kind_;
 };
@@ -293,6 +308,14 @@ class LogicalOrOpr : public BinaryOperator {
   LogicalOrOpr(LogicalOrOpr const& o) : BinaryOperator(o) {}
 
   void visit(NodeVisitor* v) const { v->visitLogicalOrOpr(*this); }
+};
+
+class LogicalIffOpr : public BinaryOperator {
+ public:
+  LogicalIffOpr(NodePtr lhs, NodePtr rhs) : BinaryOperator(lhs, rhs) {}
+  LogicalIffOpr(LogicalIffOpr const& o) : BinaryOperator(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitLogicalIffOpr(*this); }
 };
 
 class XorOpr : public BinaryOperator {
@@ -538,5 +561,257 @@ inline void NodeVisitor::visitRangeExpr(RangeExpr const& r) { visitTernaryExpr(r
 inline void NodeVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const& t) { visitTernaryExpr(t); }
 inline void NodeVisitor::visitTolPlusPctExpr(TolPlusPctExpr const& t) { visitTernaryExpr(t); }
 inline void NodeVisitor::visitVectorContains(VectorContains const& vc) { visitUnaryExpr(vc); }
+
+class OneHotExpr : public UnaryExpression {
+ public:
+  explicit OneHotExpr(NodePtr c) : UnaryExpression(c) {}
+  OneHotExpr(OneHotExpr const& o) : UnaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitOneHotExpr(*this); }
+};
+
+class OneHot0Expr : public UnaryExpression {
+ public:
+  explicit OneHot0Expr(NodePtr c) : UnaryExpression(c) {}
+  OneHot0Expr(OneHot0Expr const& o) : UnaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitOneHot0Expr(*this); }
+};
+
+class CountOnesExpr : public UnaryExpression {
+ public:
+  explicit CountOnesExpr(NodePtr c) : UnaryExpression(c) {}
+  CountOnesExpr(CountOnesExpr const& o) : UnaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitCountOnesExpr(*this); }
+};
+
+class Clog2Expr : public UnaryExpression {
+ public:
+  explicit Clog2Expr(NodePtr c) : UnaryExpression(c) {}
+  Clog2Expr(Clog2Expr const& o) : UnaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitClog2Expr(*this); }
+};
+
+class SelfDeterminedExpr : public UnaryExpression {
+ public:
+  explicit SelfDeterminedExpr(NodePtr c) : UnaryExpression(c) {}
+  SelfDeterminedExpr(SelfDeterminedExpr const& o) : UnaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitSelfDeterminedExpr(*this); }
+};
+
+class BoundsCheckExpr : public BinaryExpression {
+ public:
+  BoundsCheckExpr(NodePtr expr, NodePtr guard) : BinaryExpression(expr, guard) {}
+  BoundsCheckExpr(BoundsCheckExpr const& o) : BinaryExpression(o) {}
+
+  void visit(NodeVisitor* v) const { v->visitBoundsCheckExpr(*this); }
+};
+
+class VectorReduceWith : public UnaryExpression {
+ public:
+  VectorReduceWith(unsigned int vec_id, unsigned int elem_bs, bool elem_s, VectorReduction::Kind k, NodePtr pred,
+                   int placeholder_id = -1)
+      : UnaryExpression(pred),
+        vec_id_(vec_id),
+        elem_bitsize_(elem_bs),
+        elem_sign_(elem_s),
+        kind_(k),
+        placeholder_id_(placeholder_id) {}
+  VectorReduceWith(VectorReduceWith const& r)
+      : UnaryExpression(r),
+        vec_id_(r.vec_id_),
+        elem_bitsize_(r.elem_bitsize_),
+        elem_sign_(r.elem_sign_),
+        kind_(r.kind_),
+        placeholder_id_(r.placeholder_id_) {}
+
+  void visit(NodeVisitor* v) const { v->visitVectorReduceWith(*this); }
+
+  unsigned int vec_id() const { return vec_id_; }
+  unsigned int elemBitsize() const { return elem_bitsize_; }
+  bool elemSign() const { return elem_sign_; }
+  bool elemIsBool() const { return elem_bitsize_ == 1 && elem_sign_; }
+  VectorReduction::Kind kind() const { return kind_; }
+  int placeholder_id() const { return placeholder_id_; }
+
+ private:
+  unsigned int vec_id_;
+  unsigned int elem_bitsize_;
+  bool elem_sign_;
+  VectorReduction::Kind kind_;
+  int placeholder_id_;
+};
+
+inline bool is_boolean_ir_node(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->isBool();
+  if (dynamic_cast<NotOpr const*>(&n) || dynamic_cast<LogicalAndOpr const*>(&n) ||
+      dynamic_cast<LogicalOrOpr const*>(&n) || dynamic_cast<LogicalIffOpr const*>(&n) ||
+      dynamic_cast<EqualOpr const*>(&n) || dynamic_cast<NotEqualOpr const*>(&n) ||
+      dynamic_cast<LessOpr const*>(&n) || dynamic_cast<LessEqualOpr const*>(&n) ||
+      dynamic_cast<GreaterOpr const*>(&n) || dynamic_cast<GreaterEqualOpr const*>(&n) ||
+      dynamic_cast<Inside const*>(&n) || dynamic_cast<RangeExpr const*>(&n) ||
+      dynamic_cast<TolPlusMinusExpr const*>(&n) || dynamic_cast<TolPlusPctExpr const*>(&n) ||
+      dynamic_cast<VectorContains const*>(&n) || dynamic_cast<ForEach const*>(&n) ||
+      dynamic_cast<Unique const*>(&n) || dynamic_cast<OneHotExpr const*>(&n) ||
+      dynamic_cast<OneHot0Expr const*>(&n))
+    return true;
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
+    return is_boolean_ir_node(*ite->b()) && is_boolean_ir_node(*ite->c());
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return is_boolean_ir_node(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n))
+    return is_boolean_ir_node(*bce->lhs());
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n))
+    return is_boolean_ir_node(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return vrw->kind() != VectorReduction::Sum && is_boolean_ir_node(*vrw->child());
+  return false;
+}
+
+inline unsigned ir_node_width(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->bitsize();
+  if (dynamic_cast<Placeholder const*>(&n)) return placeholder_bitsize();
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return ir_node_width(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n)) return ir_node_width(*bce->lhs());
+  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&n)) return static_cast<unsigned>(b->r() - b->l() + 1);
+  if (dynamic_cast<CountOnesExpr const*>(&n) || dynamic_cast<Clog2Expr const*>(&n)) return 32u;
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n))
+    return ir_node_width(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && is_boolean_ir_node(*vrw->child())) ? 32u
+                                                                                       : ir_node_width(*vrw->child());
+  if (is_boolean_ir_node(n)) return 1u;
+  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n))
+    return ir_node_width(*e->child()) + e->value();
+  if (dynamic_cast<NegOpr const*>(&n) || dynamic_cast<ComplementOpr const*>(&n))
+    return ir_node_width(*static_cast<UnaryExpression const&>(n).child());
+  if (dynamic_cast<ShiftLeftOpr const*>(&n) || dynamic_cast<ShiftRightOpr const*>(&n))
+    return ir_node_width(*static_cast<BinaryExpression const&>(n).lhs());
+  if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n))
+    return std::max(ir_node_width(*b->lhs()), ir_node_width(*b->rhs()));
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
+    return std::max(ir_node_width(*ite->b()), ir_node_width(*ite->c()));
+  return 1u;
+}
+
+inline bool ir_node_signed(Node const& n) {
+  if (dynamic_cast<Bitslice const*>(&n) || dynamic_cast<CountOnesExpr const*>(&n) ||
+      dynamic_cast<Clog2Expr const*>(&n) || is_boolean_ir_node(n))
+    return false;
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return ir_node_signed(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n)) return ir_node_signed(*bce->lhs());
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n))
+    return ir_node_signed(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && is_boolean_ir_node(*vrw->child())) ? false
+                                                                                       : ir_node_signed(*vrw->child());
+  if (dynamic_cast<ExtendExpression const*>(&n) || dynamic_cast<NegOpr const*>(&n) ||
+      dynamic_cast<ComplementOpr const*>(&n))
+    return ir_node_signed(*static_cast<UnaryExpression const&>(n).child());
+  if (dynamic_cast<ShiftLeftOpr const*>(&n) || dynamic_cast<ShiftRightOpr const*>(&n))
+    return ir_node_signed(*static_cast<BinaryExpression const&>(n).lhs());
+  if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n))
+    return ir_node_signed(*b->lhs()) && ir_node_signed(*b->rhs());
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
+    return ir_node_signed(*ite->b()) && ir_node_signed(*ite->c());
+  return false;
+}
+
+inline bool solver_signed_ir_node(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
+  if (dynamic_cast<Bitslice const*>(&n) || dynamic_cast<CountOnesExpr const*>(&n) ||
+      dynamic_cast<Clog2Expr const*>(&n))
+    return false;
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return solver_signed_ir_node(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n))
+    return solver_signed_ir_node(*bce->lhs());
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n))
+    return solver_signed_ir_node(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && is_boolean_ir_node(*vrw->child()))
+               ? false
+               : solver_signed_ir_node(*vrw->child());
+  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n))
+    return solver_signed_ir_node(*e->child());
+  if (NegOpr const* o = dynamic_cast<NegOpr const*>(&n))
+    return is_boolean_ir_node(*o->child()) ? true : solver_signed_ir_node(*o->child());
+  if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&n))
+    return is_boolean_ir_node(*o->child()) ? true : solver_signed_ir_node(*o->child());
+  if (ShiftLeftOpr const* o = dynamic_cast<ShiftLeftOpr const*>(&n))
+    return is_boolean_ir_node(*o->lhs()) ? true : solver_signed_ir_node(*o->lhs());
+  if (ShiftRightOpr const* o = dynamic_cast<ShiftRightOpr const*>(&n))
+    return is_boolean_ir_node(*o->lhs()) ? true : solver_signed_ir_node(*o->lhs());
+  if (dynamic_cast<PlusOpr const*>(&n) || dynamic_cast<MinusOpr const*>(&n) ||
+      dynamic_cast<MultipliesOpr const*>(&n) || dynamic_cast<DevideOpr const*>(&n) ||
+      dynamic_cast<ModuloOpr const*>(&n) || dynamic_cast<AndOpr const*>(&n) ||
+      dynamic_cast<OrOpr const*>(&n) || dynamic_cast<XorOpr const*>(&n)) {
+    BinaryExpression const& b = static_cast<BinaryExpression const&>(n);
+    if (is_boolean_ir_node(*b.lhs()) || is_boolean_ir_node(*b.rhs())) return true;
+    return solver_signed_ir_node(*b.lhs()) || solver_signed_ir_node(*b.rhs());
+  }
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) {
+    if (is_boolean_ir_node(*ite->b()) && is_boolean_ir_node(*ite->c())) return false;
+    if (is_boolean_ir_node(*ite->b()) != is_boolean_ir_node(*ite->c())) return true;
+    return solver_signed_ir_node(*ite->b()) || solver_signed_ir_node(*ite->c());
+  }
+  return false;
+}
+
+inline unsigned expr_width_ir_node(Node const& n, bool sv_rules) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->bitsize();
+  if (dynamic_cast<Placeholder const*>(&n)) return placeholder_bitsize();
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return expr_width_ir_node(*va->lhs(), sv_rules);
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n))
+    return expr_width_ir_node(*bce->lhs(), sv_rules);
+  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&n)) return static_cast<unsigned>(b->r() - b->l() + 1);
+  if (dynamic_cast<CountOnesExpr const*>(&n) || dynamic_cast<Clog2Expr const*>(&n)) return 32u;
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n))
+    return expr_width_ir_node(*sde->child(), sv_rules);
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && is_boolean_ir_node(*vrw->child()))
+               ? 32u
+               : expr_width_ir_node(*vrw->child(), sv_rules);
+  if (is_boolean_ir_node(n)) return 1u;
+  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) {
+    unsigned const cw = expr_width_ir_node(*e->child(), sv_rules);
+    return sv_rules ? cw : (cw + e->value());
+  }
+  auto promoted_width = [sv_rules](Node const& child) -> unsigned {
+    if (is_boolean_ir_node(child)) return sv_rules ? 1u : static_cast<unsigned>(sizeof(int) * 8);
+    return expr_width_ir_node(child, sv_rules);
+  };
+  if (UnaryExpression const* u = dynamic_cast<UnaryExpression const*>(&n)) {
+    if (dynamic_cast<NegOpr const*>(&n) || dynamic_cast<ComplementOpr const*>(&n)) {
+      return promoted_width(*u->child());
+    }
+  }
+  if (dynamic_cast<ShiftLeftOpr const*>(&n) || dynamic_cast<ShiftRightOpr const*>(&n)) {
+    BinaryExpression const& b = static_cast<BinaryExpression const&>(n);
+    return sv_rules ? promoted_width(*b.lhs())
+                    : std::max(promoted_width(*b.lhs()), promoted_width(*b.rhs()));
+  }
+  if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n)) {
+    unsigned const lw = promoted_width(*b->lhs());
+    unsigned const rw = promoted_width(*b->rhs());
+    unsigned w = std::max(lw, rw);
+    if (!sv_rules && dynamic_cast<DevideOpr const*>(&n)) {
+      bool const ls = is_boolean_ir_node(*b->lhs()) ? true : solver_signed_ir_node(*b->lhs());
+      bool const rs = is_boolean_ir_node(*b->rhs()) ? true : solver_signed_ir_node(*b->rhs());
+      if (ls != rs) w += 1u;
+    }
+    return w;
+  }
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) {
+    return std::max(promoted_width(*ite->b()), promoted_width(*ite->c()));
+  }
+  return 1u;
+}
+
+inline bool expr_signed_ir_node(Node const& n, bool sv_rules) {
+  return sv_rules ? ir_node_signed(n) : solver_signed_ir_node(n);
+}
 
 }  // end namespace crave

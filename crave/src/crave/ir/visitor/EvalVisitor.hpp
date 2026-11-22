@@ -37,7 +37,12 @@
 namespace crave {
 
 class EvalVisitor : NodeVisitor {
-  typedef std::pair<Constant, bool> stack_entry;
+  struct StackEntry {
+    Constant value;
+    bool valid;
+    bool guard;
+  };
+  typedef StackEntry stack_entry;
 
  public:
   typedef std::map<unsigned int, Constant> eval_map;
@@ -72,6 +77,7 @@ class EvalVisitor : NodeVisitor {
   virtual void visitOrOpr(OrOpr const&);
   virtual void visitLogicalAndOpr(LogicalAndOpr const&);
   virtual void visitLogicalOrOpr(LogicalOrOpr const&);
+  virtual void visitLogicalIffOpr(LogicalIffOpr const&);
   virtual void visitXorOpr(XorOpr const&);
   virtual void visitEqualOpr(EqualOpr const&);
   virtual void visitNotEqualOpr(NotEqualOpr const&);
@@ -95,6 +101,13 @@ class EvalVisitor : NodeVisitor {
   virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
   virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
   virtual void visitVectorContains(VectorContains const&);
+  virtual void visitOneHotExpr(OneHotExpr const&);
+  virtual void visitOneHot0Expr(OneHot0Expr const&);
+  virtual void visitCountOnesExpr(CountOnesExpr const&);
+  virtual void visitClog2Expr(Clog2Expr const&);
+  virtual void visitSelfDeterminedExpr(SelfDeterminedExpr const&);
+  virtual void visitBoundsCheckExpr(BoundsCheckExpr const&);
+  virtual void visitVectorReduceWith(VectorReduceWith const&);
   void pop(stack_entry&);
   void pop2(stack_entry&, stack_entry&);
   void pop3(stack_entry&, stack_entry&, stack_entry&);
@@ -108,12 +121,25 @@ class EvalVisitor : NodeVisitor {
   Constant result() const { return result_; }
 
   bool evaluate(Node const& expr) {
+    while (!exprStack_.empty()) exprStack_.pop();
     expr.visit(this);
     stack_entry entry;
     pop(entry);
 
-    result_ = entry.first;
-    return entry.second;
+    if (!entry.valid) {
+      result_ = Constant();
+      return false;
+    }
+    if (!entry.guard) {
+      if (is_boolean_ir_node(expr)) {
+        result_ = Constant(false);
+        return true;
+      }
+      result_ = Constant();
+      return false;
+    }
+    result_ = entry.value;
+    return true;
   }
 
  private:

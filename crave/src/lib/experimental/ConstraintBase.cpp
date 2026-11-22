@@ -38,6 +38,7 @@ namespace crave {
     if (!active_) {
       active_ = true;
       request_rebuild();
+      notify_constraint_mode_changed_();
     }
   }
 
@@ -45,10 +46,20 @@ namespace crave {
     if (active_) {
       active_ = false;
       request_rebuild();
+      notify_constraint_mode_changed_();
     }
   }
 
   bool crv_constraint_base::active() const { return active_; }
+
+  void crv_constraint_base::constraint_mode(bool on) {
+    if (on)
+      activate();
+    else
+      deactivate();
+  }
+
+  bool crv_constraint_base::constraint_mode() const { return active(); }
 
   void crv_constraint_base::recursive_build(Generator &gen) const {
     if (!active()) return;

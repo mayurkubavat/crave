@@ -35,21 +35,7 @@
 namespace crave {
 
 namespace {
-bool isBoolean(Node const& n) {
-  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->isBool();
-  if (dynamic_cast<NotOpr const*>(&n) || dynamic_cast<LogicalAndOpr const*>(&n) ||
-      dynamic_cast<LogicalOrOpr const*>(&n) || dynamic_cast<EqualOpr const*>(&n) ||
-      dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
-      dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
-      dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
-      dynamic_cast<RangeExpr const*>(&n) || dynamic_cast<TolPlusMinusExpr const*>(&n) ||
-      dynamic_cast<TolPlusPctExpr const*>(&n) || dynamic_cast<VectorContains const*>(&n) ||
-      dynamic_cast<ForEach const*>(&n) || dynamic_cast<Unique const*>(&n))
-    return true;
-  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return isBoolean(*ite->b());
-  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return isBoolean(*va->lhs());
-  return false;
-}
+bool isBoolean(Node const& n) { return is_boolean_ir_node(n); }
 
 template <typename T>
 bool is(Node const& n) {
@@ -62,6 +48,10 @@ bool svSigned(Node const& n) {
   if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
   if (is<Bitslice>(n)) return false;
   if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return svSigned(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n)) return svSigned(*bce->lhs());
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n)) return svSigned(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && isBoolean(*vrw->child())) ? false : svSigned(*vrw->child());
   if (is<ExtendExpression>(n) || is<NegOpr>(n) || is<ComplementOpr>(n))
     return svSigned(*static_cast<UnaryExpression const&>(n).child());
   if (is<ShiftLeftOpr>(n) || is<ShiftRightOpr>(n)) return svSigned(*static_cast<BinaryExpression const&>(n).lhs());
@@ -103,7 +93,12 @@ unsigned svWidth(Node const& n) {
   if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->bitsize();
   if (is<Placeholder>(n)) return placeholder_bitsize();
   if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return svWidth(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n)) return svWidth(*bce->lhs());
   if (Bitslice const* b = dynamic_cast<Bitslice const*>(&n)) return b->r() - b->l() + 1;
+  if (is<CountOnesExpr>(n) || is<Clog2Expr>(n)) return 32u;
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n)) return svWidth(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && isBoolean(*vrw->child())) ? 32u : svWidth(*vrw->child());
   if (isBoolean(n)) return 1;
   if (is<ExtendExpression>(n) || is<NegOpr>(n) || is<ComplementOpr>(n))
     return svWidth(*static_cast<UnaryExpression const&>(n).child());
@@ -207,6 +202,37 @@ NodeRef svInteger(NodeRef const& n, unsigned width, bool sign) {
   if (is<XorOpr>(node)) return svBinary<XorOpr>(node, width, sign);
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
     return new IfThenElse(svBoolean(ite->a()), svInteger(ite->b(), width, sign), svInteger(ite->c(), width, sign));
+  if (CountOnesExpr const* o = dynamic_cast<CountOnesExpr const*>(&node)) {
+    NodeRef c = isBoolean(*o->child()) ? svBoolean(o->child()) : svSelf(o->child());
+    return svExtend(new CountOnesExpr(c), 32u, width);
+  }
+  if (Clog2Expr const* o = dynamic_cast<Clog2Expr const*>(&node)) {
+    NodeRef c = isBoolean(*o->child()) ? svBoolean(o->child()) : svSelf(o->child());
+    return svExtend(new Clog2Expr(c), 32u, width);
+  }
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&node)) {
+    unsigned const own = svWidth(*sde);
+    NodeRef operand = isBoolean(*sde->child()) ? svBoolean(sde->child()) : svSelf(sde->child());
+    if (!sign && svSigned(*sde)) operand = new Bitslice(operand, own - 1, 0);
+    return svExtend(operand, own, width);
+  }
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&node)) {
+    return new BoundsCheckExpr(svInteger(bce->lhs(), width, sign), svBoolean(bce->rhs()));
+  }
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&node)) {
+    NodeRef fixed_child;
+    if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(vrw->child().get())) {
+      NodeRef fe = isBoolean(*bce->lhs()) ? svBoolean(bce->lhs()) : svSelf(bce->lhs());
+      fixed_child = new BoundsCheckExpr(fe, svBoolean(bce->rhs()));
+    } else {
+      fixed_child = isBoolean(*vrw->child()) ? svBoolean(vrw->child()) : svSelf(vrw->child());
+    }
+    NodeRef operand = new VectorReduceWith(vrw->vec_id(), vrw->elemBitsize(), vrw->elemSign(), vrw->kind(), fixed_child,
+                                           vrw->placeholder_id());
+    unsigned const own = svWidth(*vrw);
+    if (!sign && svSigned(*vrw)) operand = new Bitslice(operand, own - 1, 0);
+    return svExtend(operand, own, width);
+  }
   return n;
 }
 
@@ -221,6 +247,27 @@ NodeRef svBoolean(NodeRef const& n) {
     return new LogicalAndOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
   if (LogicalOrOpr const* o = dynamic_cast<LogicalOrOpr const*>(&node))
     return new LogicalOrOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
+  if (LogicalIffOpr const* o = dynamic_cast<LogicalIffOpr const*>(&node))
+    return new LogicalIffOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
+  if (OneHotExpr const* o = dynamic_cast<OneHotExpr const*>(&node))
+    return new OneHotExpr(isBoolean(*o->child()) ? svBoolean(o->child()) : svSelf(o->child()));
+  if (OneHot0Expr const* o = dynamic_cast<OneHot0Expr const*>(&node))
+    return new OneHot0Expr(isBoolean(*o->child()) ? svBoolean(o->child()) : svSelf(o->child()));
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&node))
+    return isBoolean(*sde->child()) ? NodeRef(new SelfDeterminedExpr(svBoolean(sde->child()))) : n;
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&node))
+    return new BoundsCheckExpr(svBoolean(bce->lhs()), svBoolean(bce->rhs()));
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&node)) {
+    NodeRef fixed_child;
+    if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(vrw->child().get())) {
+      NodeRef fe = isBoolean(*bce->lhs()) ? svBoolean(bce->lhs()) : svSelf(bce->lhs());
+      fixed_child = new BoundsCheckExpr(fe, svBoolean(bce->rhs()));
+    } else {
+      fixed_child = isBoolean(*vrw->child()) ? svBoolean(vrw->child()) : svSelf(vrw->child());
+    }
+    return new VectorReduceWith(vrw->vec_id(), vrw->elemBitsize(), vrw->elemSign(), vrw->kind(), fixed_child,
+                                vrw->placeholder_id());
+  }
   if (is<EqualOpr>(node)) return svCompare<EqualOpr>(node);
   if (is<NotEqualOpr>(node)) return svCompare<NotEqualOpr>(node);
   if (is<LessOpr>(node)) return svCompare<LessOpr>(node);
@@ -267,53 +314,120 @@ NodeRef svBoolean(NodeRef const& n) {
 }
 }  // namespace
 
-FixWidthVisitor::FixWidthVisitor() : NodeVisitor(), exprStack_(), sv_signedness_(sv_signedness()) {}
+namespace {
+NodeRef bgAnd(NodeRef const& a, NodeRef const& b) {
+  if (!a) return b;
+  if (!b) return a;
+  return new LogicalAndOpr(a, b);
+}
+
+NodeRef bgImplies(NodeRef const& cond, NodeRef const& g) {
+  if (!g) return NodeRef();
+  return new IfThenElse(cond, g, new Constant(true));
+}
+
+NodeRef bgOr(NodeRef const& cond, NodeRef const& g) {
+  if (!g) return NodeRef();
+  return new IfThenElse(cond, new Constant(true), g);
+}
+
+NodeRef bgIte(NodeRef const& cond, NodeRef const& t_g, NodeRef const& e_g) {
+  if (!t_g && !e_g) return NodeRef();
+  NodeRef t_node = t_g ? t_g : NodeRef(new Constant(true));
+  NodeRef e_node = e_g ? e_g : NodeRef(new Constant(true));
+  return new IfThenElse(cond, t_node, e_node);
+}
+}  // namespace
+
+FixWidthVisitor::FixWidthVisitor() : NodeVisitor(), exprStack_(), boundsStack_(), sv_signedness_(sv_signedness()) {}
 
 FixWidthVisitor::result_type FixWidthVisitor::fixWidth(Node const& expr) {
   expr.visit(this);
   stack_entry entry;
-  pop(entry);
+  result_type guard;
+  pop(entry, guard);
   // As in C++, a constraint, which is an integer expression, stands for its comparison with zero.
   result_type result = toBoolean(entry);
+  if (guard) result = new LogicalAndOpr(guard, result);
   return sv_signedness_ ? svBoolean(result) : result;
 }
 
 FixWidthVisitor::result_type FixWidthVisitor::fixWidthExpr(Node const& expr) {
   expr.visit(this);
   stack_entry entry;
-  pop(entry);
+  result_type guard;
+  pop(entry, guard);
+  if (guard) {
+    if (isBoolean(*entry.first))
+      entry.first = new LogicalAndOpr(guard, entry.first);
+    else
+      entry.first = new BoundsCheckExpr(entry.first, guard);
+  }
   if (!sv_signedness_) return entry.first;
   return isBoolean(*entry.first) ? svBoolean(entry.first) : svSelf(entry.first);
 }
 
-void FixWidthVisitor::pop(stack_entry& fst) {
-  assert(exprStack_.size() >= 1);
+void FixWidthVisitor::push(stack_entry const& entry, result_type const& guard) {
+  exprStack_.push(entry);
+  boundsStack_.push(guard);
+}
+
+void FixWidthVisitor::pop(stack_entry& fst, result_type& guard) {
+  assert(exprStack_.size() >= 1 && boundsStack_.size() >= 1);
   fst = exprStack_.top();
   exprStack_.pop();
+  guard = boundsStack_.top();
+  boundsStack_.pop();
+}
+
+void FixWidthVisitor::pop2(stack_entry& fst, result_type& fg, stack_entry& snd, result_type& sg) {
+  assert(exprStack_.size() >= 2 && boundsStack_.size() >= 2);
+  fst = exprStack_.top();
+  exprStack_.pop();
+  fg = boundsStack_.top();
+  boundsStack_.pop();
+  snd = exprStack_.top();
+  exprStack_.pop();
+  sg = boundsStack_.top();
+  boundsStack_.pop();
+}
+
+void FixWidthVisitor::pop3(stack_entry& fst, result_type& fg, stack_entry& snd, result_type& sg, stack_entry& trd,
+                           result_type& tg) {
+  assert(exprStack_.size() >= 3 && boundsStack_.size() >= 3);
+  fst = exprStack_.top();
+  exprStack_.pop();
+  fg = boundsStack_.top();
+  boundsStack_.pop();
+  snd = exprStack_.top();
+  exprStack_.pop();
+  sg = boundsStack_.top();
+  boundsStack_.pop();
+  trd = exprStack_.top();
+  exprStack_.pop();
+  tg = boundsStack_.top();
+  boundsStack_.pop();
+}
+
+void FixWidthVisitor::pop(stack_entry& fst) {
+  result_type dummy;
+  pop(fst, dummy);
 }
 
 void FixWidthVisitor::pop2(stack_entry& fst, stack_entry& snd) {
-  assert(exprStack_.size() >= 2);
-  fst = exprStack_.top();
-  exprStack_.pop();
-  snd = exprStack_.top();
-  exprStack_.pop();
+  result_type d1, d2;
+  pop2(fst, d1, snd, d2);
 }
 
 void FixWidthVisitor::pop3(stack_entry& fst, stack_entry& snd, stack_entry& trd) {
-  assert(exprStack_.size() >= 3);
-  fst = exprStack_.top();
-  exprStack_.pop();
-  snd = exprStack_.top();
-  exprStack_.pop();
-  trd = exprStack_.top();
-  exprStack_.pop();
+  result_type d1, d2, d3;
+  pop3(fst, d1, snd, d2, trd, d3);
 }
 
-void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst, stack_entry& snd,
-                                  bool fixWidth = true) {
+void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst, result_type& fg, stack_entry& snd,
+                                  result_type& sg, bool fixWidth = true) {
   visitBinaryExpr(bin);
-  pop2(snd, fst);
+  pop2(snd, sg, fst, fg);
   if (!fixWidth) return;
   // As in C++, a boolean operand of an operation with an integer operand is promoted to an integer.
   if (isBoolean(*fst.first) != isBoolean(*snd.first)) {
@@ -331,10 +445,22 @@ void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst,
   }
 }
 
+void FixWidthVisitor::evalTernExpr(TernaryExpression const& tern, stack_entry& fst, result_type& fg, stack_entry& snd,
+                                   result_type& sg, stack_entry& trd, result_type& tg) {
+  visitTernaryExpr(tern);
+  pop3(trd, tg, snd, sg, fst, fg);
+}
+
+void FixWidthVisitor::evalBinExpr(BinaryExpression const& bin, stack_entry& fst, stack_entry& snd,
+                                  bool fixWidth = true) {
+  result_type d1, d2;
+  evalBinExpr(bin, fst, d1, snd, d2, fixWidth);
+}
+
 void FixWidthVisitor::evalTernExpr(TernaryExpression const& tern, stack_entry& fst, stack_entry& snd,
                                    stack_entry& trd) {
-  visitTernaryExpr(tern);
-  pop3(trd, snd, fst);
+  result_type d1, d2, d3;
+  evalTernExpr(tern, fst, d1, snd, d2, trd, d3);
 }
 
 void FixWidthVisitor::visitNode(const Node&) {}
@@ -361,19 +487,21 @@ void FixWidthVisitor::visitTernaryExpr(const TernaryExpression& t) {
 template <typename T>
 void FixWidthVisitor::visitNumberResultBinExpr(const T& object) {
   stack_entry lhs, rhs;
-  evalBinExpr(object, lhs, rhs);
+  result_type lg, rg;
+  evalBinExpr(object, lhs, lg, rhs, rg);
   // As in C++, the boolean operands of an arithmetic or bitwise operator are promoted to integers.
   promoteToInteger(lhs);
   promoteToInteger(rhs);
-  exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), lhs.second));
+  push(std::make_pair(new T(lhs.first, rhs.first), lhs.second), bgAnd(lg, rg));
 }
 
 template <typename T>
 void FixWidthVisitor::visitNumberResultUnaryExpr(const T& object) {
   visitUnaryExpr(object);
   stack_entry e;
-  pop(e);
-  exprStack_.push(std::make_pair(new T(e.first), e.second));
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new T(e.first), e.second), eg);
 }
 
 // As in C++, a boolean operand of an arithmetic or bitwise unary operator is promoted to an integer.
@@ -381,26 +509,29 @@ template <typename T>
 void FixWidthVisitor::visitPromotedUnaryExpr(const T& object) {
   visitUnaryExpr(object);
   stack_entry e;
-  pop(e);
+  result_type eg;
+  pop(e, eg);
   promoteToInteger(e);
-  exprStack_.push(std::make_pair(new T(e.first), e.second));
+  push(std::make_pair(new T(e.first), e.second), eg);
 }
 
 template <typename T>
 void FixWidthVisitor::visitBooleanResultBinExpr(const T& object) {
   stack_entry lhs, rhs;
-  evalBinExpr(object, lhs, rhs);
-  exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
+  result_type lg, rg;
+  evalBinExpr(object, lhs, lg, rhs, rg);
+  push(std::make_pair(new T(lhs.first, rhs.first), 1), bgAnd(lg, rg));
 }
 
 // As in C++, the boolean operands of a relational operator are promoted to integers, e.g. false < true holds.
 template <typename T>
 void FixWidthVisitor::visitRelationalBinExpr(const T& object) {
   stack_entry lhs, rhs;
-  evalBinExpr(object, lhs, rhs);
+  result_type lg, rg;
+  evalBinExpr(object, lhs, lg, rhs, rg);
   promoteToInteger(lhs);
   promoteToInteger(rhs);
-  exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), 1));
+  push(std::make_pair(new T(lhs.first, rhs.first), 1), bgAnd(lg, rg));
 }
 
 // As in C++, an integer operand of a logical operator stands for its comparison with zero.
@@ -423,35 +554,37 @@ void FixWidthVisitor::promoteToInteger(stack_entry& e) {
 template <typename T>
 void FixWidthVisitor::visitLogicalBinExpr(const T& object) {
   stack_entry lhs, rhs;
-  evalBinExpr(object, lhs, rhs, false);
-  exprStack_.push(std::make_pair(new T(toBoolean(lhs), toBoolean(rhs)), 1));
+  result_type lg, rg;
+  evalBinExpr(object, lhs, lg, rhs, rg, false);
+  push(std::make_pair(new T(toBoolean(lhs), toBoolean(rhs)), 1), bgAnd(lg, rg));
 }
 
 void FixWidthVisitor::visitPlaceholder(const Placeholder& pl) {
-  exprStack_.push(std::make_pair(new Placeholder(pl), placeholder_bitsize()));
+  push(std::make_pair(new Placeholder(pl), placeholder_bitsize()));
 }
 
 void FixWidthVisitor::visitVariableExpr(const VariableExpr& v) {
-  exprStack_.push(std::make_pair(new VariableExpr(v), v.bitsize()));
+  push(std::make_pair(new VariableExpr(v), v.bitsize()));
 }
 
 void FixWidthVisitor::visitConstant(const Constant& c) {
-  exprStack_.push(std::make_pair(new Constant(c), c.bitsize()));
+  push(std::make_pair(new Constant(c), c.bitsize()));
 }
 
 void FixWidthVisitor::visitVectorExpr(const VectorExpr& v) {
-  exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
+  push(std::make_pair(new VectorExpr(v), v.bitsize()));
 }
 
 void FixWidthVisitor::visitVectorReduction(const VectorReduction& r) {
-  exprStack_.push(std::make_pair(new VectorReduction(r), r.bitsize()));
+  push(std::make_pair(new VectorReduction(r), r.bitsize()));
 }
 
 void FixWidthVisitor::visitNotOpr(const NotOpr& n) {
   visitUnaryExpr(n);
   stack_entry e;
-  pop(e);
-  exprStack_.push(std::make_pair(new NotOpr(toBoolean(e)), 1));
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new NotOpr(toBoolean(e)), 1), eg);
 }
 
 void FixWidthVisitor::visitNegOpr(const NegOpr& n) { visitPromotedUnaryExpr(n); }
@@ -462,27 +595,45 @@ void FixWidthVisitor::visitInside(const Inside& i) {
   visitUnaryExpr(i);
 
   stack_entry e;
-  pop(e);
+  result_type eg;
+  pop(e, eg);
 
-  exprStack_.push(std::make_pair(new Inside(e.first, i.collection()), 1));
+  push(std::make_pair(new Inside(e.first, i.collection()), 1), eg);
 }
 
 void FixWidthVisitor::visitExtendExpr(const ExtendExpression& e) {
   visitUnaryExpr(e);
 
   stack_entry entry;
-  pop(entry);
+  result_type eg;
+  pop(entry, eg);
 
-  exprStack_.push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second + e.value()));
+  push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second + e.value()), eg);
 }
 
 void FixWidthVisitor::visitAndOpr(const AndOpr& a) { visitNumberResultBinExpr(a); }
 
 void FixWidthVisitor::visitOrOpr(const OrOpr& o) { visitNumberResultBinExpr(o); }
 
-void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitLogicalBinExpr(la); }
+void FixWidthVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) {
+  stack_entry lhs, rhs;
+  result_type lg, rg;
+  evalBinExpr(la, lhs, lg, rhs, rg, false);
+  result_type lb = toBoolean(lhs);
+  result_type rb = toBoolean(rhs);
+  push(std::make_pair(new LogicalAndOpr(lb, rb), 1), bgAnd(lg, bgImplies(lb, rg)));
+}
 
-void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitLogicalBinExpr(lo); }
+void FixWidthVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) {
+  stack_entry lhs, rhs;
+  result_type lg, rg;
+  evalBinExpr(lo, lhs, lg, rhs, rg, false);
+  result_type lb = toBoolean(lhs);
+  result_type rb = toBoolean(rhs);
+  push(std::make_pair(new LogicalOrOpr(lb, rb), 1), bgAnd(lg, bgOr(lb, rg)));
+}
+
+void FixWidthVisitor::visitLogicalIffOpr(const LogicalIffOpr& liff) { visitLogicalBinExpr(liff); }
 
 void FixWidthVisitor::visitXorOpr(const XorOpr& x) { visitNumberResultBinExpr(x); }
 
@@ -511,6 +662,10 @@ bool solverSigned(Node const& n) {
   if (dynamic_cast<Bitslice const*>(&n)) return false;
   // an element of a vector has the type of the vector
   if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return solverSigned(*va->lhs());
+  if (BoundsCheckExpr const* bce = dynamic_cast<BoundsCheckExpr const*>(&n)) return solverSigned(*bce->lhs());
+  if (SelfDeterminedExpr const* sde = dynamic_cast<SelfDeterminedExpr const*>(&n)) return solverSigned(*sde->child());
+  if (VectorReduceWith const* vrw = dynamic_cast<VectorReduceWith const*>(&n))
+    return (vrw->kind() == VectorReduction::Sum && isBoolean(*vrw->child())) ? false : solverSigned(*vrw->child());
   if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) return solverSigned(*e->child());
   if (NegOpr const* o = dynamic_cast<NegOpr const*>(&n)) return solverSigned(*o->child());
   if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&n)) return solverSigned(*o->child());
@@ -534,13 +689,14 @@ bool solverSigned(Node const& n) {
 void FixWidthVisitor::visitDevideOpr(const DevideOpr& d) {
   visitNumberResultBinExpr(d);
   stack_entry e;
-  pop(e);
+  result_type eg;
+  pop(e, eg);
   DevideOpr const& q = static_cast<DevideOpr const&>(*e.first);
   if (solverSigned(*q.lhs()) != solverSigned(*q.rhs())) {
     e.first = new DevideOpr(new ExtendExpression(q.lhs(), 1), new ExtendExpression(q.rhs(), 1));
     e.second += 1;
   }
-  exprStack_.push(e);
+  push(e, eg);
 }
 
 void FixWidthVisitor::visitModuloOpr(const ModuloOpr& m) { visitNumberResultBinExpr(m); }
@@ -551,31 +707,37 @@ void FixWidthVisitor::visitShiftRightOpr(const ShiftRightOpr& shr) { visitNumber
 
 void FixWidthVisitor::visitVectorAccess(const VectorAccess& va) {
   stack_entry lhs, rhs;
-  evalBinExpr(va, lhs, rhs, false);
-  exprStack_.push(std::make_pair(new VectorAccess(lhs.first, rhs.first), lhs.second));
+  result_type lg, rg;
+  evalBinExpr(va, lhs, lg, rhs, rg, false);
+  push(std::make_pair(new VectorAccess(lhs.first, rhs.first), lhs.second), bgAnd(lg, rg));
 }
 
 void FixWidthVisitor::visitForEach(const ForEach& fe) {
   stack_entry lhs, rhs;
-  evalBinExpr(fe, lhs, rhs, false);
-  exprStack_.push(std::make_pair(new ForEach(lhs.first, rhs.first), 1));
+  result_type lg, rg;
+  evalBinExpr(fe, lhs, lg, rhs, rg, false);
+  result_type body = toBoolean(rhs);
+  if (rg) body = new LogicalAndOpr(rg, body);
+  push(std::make_pair(new ForEach(lhs.first, body), 1), lg);
 }
 
 void FixWidthVisitor::visitUnique(const Unique& u) { visitNumberResultUnaryExpr(u); }
 
 void FixWidthVisitor::visitIfThenElse(const IfThenElse& ite) {
   stack_entry a, b, c;
-  evalTernExpr(ite, a, b, c);
+  result_type ag, bg, cg;
+  evalTernExpr(ite, a, ag, b, bg, c, cg);
 
   // As in C++, an integer condition stands for its comparison with zero.
   result_type cond = toBoolean(a);
+  result_type guard = bgAnd(ag, bgIte(cond, bg, cg));
   // If one branch is a boolean and the other an integer, the boolean is promoted to an integer.
   if (isBoolean(*b.first) != isBoolean(*c.first)) {
     promoteToInteger(b);
     promoteToInteger(c);
   }
   if (isBoolean(*b.first)) {
-    exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), 1));
+    push(std::make_pair(new IfThenElse(cond, b.first, c.first), 1), guard);
     return;
   }
   if (b.second < c.second) {
@@ -585,52 +747,57 @@ void FixWidthVisitor::visitIfThenElse(const IfThenElse& ite) {
     c.first = result_type(new ExtendExpression(c.first.get(), b.second - c.second));
     c.second = b.second;
   }
-  exprStack_.push(std::make_pair(new IfThenElse(cond, b.first, c.first), b.second));
+  push(std::make_pair(new IfThenElse(cond, b.first, c.first), b.second), guard);
 }
 
 void FixWidthVisitor::visitBitslice(const Bitslice& b) {
   visitUnaryExpr(b);
 
   stack_entry e;
-  pop(e);
+  result_type eg;
+  pop(e, eg);
 
-  exprStack_.push(std::make_pair(new Bitslice(e.first, b.r(), b.l()), b.r() - b.l() + 1));
+  push(std::make_pair(new Bitslice(e.first, b.r(), b.l()), b.r() - b.l() + 1), eg);
 }
 
 void FixWidthVisitor::visitRangeExpr(const RangeExpr& r) {
   stack_entry a, b, c;
-  evalTernExpr(r, a, b, c);
+  result_type ag, bg, cg;
+  evalTernExpr(r, a, ag, b, bg, c, cg);
   promoteToInteger(a);
   promoteToInteger(b);
   promoteToInteger(c);
-  exprStack_.push(std::make_pair(new RangeExpr(a.first, b.first, c.first), 1));
+  push(std::make_pair(new RangeExpr(a.first, b.first, c.first), 1), bgAnd(ag, bgAnd(bg, cg)));
 }
 
 void FixWidthVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
   stack_entry a, b, c;
-  evalTernExpr(t, a, b, c);
+  result_type ag, bg, cg;
+  evalTernExpr(t, a, ag, b, bg, c, cg);
   promoteToInteger(a);
   promoteToInteger(b);
   promoteToInteger(c);
-  exprStack_.push(std::make_pair(new TolPlusMinusExpr(a.first, b.first, c.first), 1));
+  push(std::make_pair(new TolPlusMinusExpr(a.first, b.first, c.first), 1), bgAnd(ag, bgAnd(bg, cg)));
 }
 
 void FixWidthVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
   stack_entry a, b, c;
-  evalTernExpr(t, a, b, c);
+  result_type ag, bg, cg;
+  evalTernExpr(t, a, ag, b, bg, c, cg);
   promoteToInteger(a);
   promoteToInteger(b);
   promoteToInteger(c);
-  exprStack_.push(std::make_pair(new TolPlusPctExpr(a.first, b.first, c.first), 1));
+  push(std::make_pair(new TolPlusPctExpr(a.first, b.first, c.first), 1), bgAnd(ag, bgAnd(bg, cg)));
 }
 
 void FixWidthVisitor::visitVectorContains(const VectorContains& vc) {
   visitUnaryExpr(vc);
   stack_entry e;
-  pop(e);
+  result_type eg;
+  pop(e, eg);
   bool const elem_is_bool = (vc.elem_bitsize() == 1 && vc.elem_sign());
   if (elem_is_bool && isBoolean(*e.first)) {
-    exprStack_.push(std::make_pair(new VectorContains(e.first, vc.vec_id(), 1, true, 1, true), 1));
+    push(std::make_pair(new VectorContains(e.first, vc.vec_id(), 1, true, 1, true), 1), eg);
     return;
   }
   promoteToInteger(e);
@@ -641,7 +808,74 @@ void FixWidthVisitor::visitVectorContains(const VectorContains& vc) {
   if (static_cast<unsigned>(e.second) < cw) {
     child = NodeRef(new ExtendExpression(child, cw - static_cast<unsigned>(e.second)));
   }
-  exprStack_.push(std::make_pair(new VectorContains(child, vc.vec_id(), vc.elem_bitsize(), vc.elem_sign(), cw, es), 1));
+  push(std::make_pair(new VectorContains(child, vc.vec_id(), vc.elem_bitsize(), vc.elem_sign(), cw, es), 1), eg);
+}
+
+void FixWidthVisitor::visitOneHotExpr(const OneHotExpr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new OneHotExpr(e.first), 1), eg);
+}
+
+void FixWidthVisitor::visitOneHot0Expr(const OneHot0Expr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new OneHot0Expr(e.first), 1), eg);
+}
+
+void FixWidthVisitor::visitCountOnesExpr(const CountOnesExpr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new CountOnesExpr(e.first), 32), eg);
+}
+
+void FixWidthVisitor::visitClog2Expr(const Clog2Expr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new Clog2Expr(e.first), 32), eg);
+}
+
+void FixWidthVisitor::visitSelfDeterminedExpr(const SelfDeterminedExpr& s) {
+  visitUnaryExpr(s);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  push(std::make_pair(new SelfDeterminedExpr(e.first), e.second), eg);
+}
+
+void FixWidthVisitor::visitBoundsCheckExpr(const BoundsCheckExpr& b) {
+  b.lhs()->visit(this);
+  stack_entry expr_entry;
+  result_type expr_guard;
+  pop(expr_entry, expr_guard);
+
+  b.rhs()->visit(this);
+  stack_entry guard_entry;
+  result_type guard_guard;
+  pop(guard_entry, guard_guard);
+
+  result_type combined = bgAnd(expr_guard, bgAnd(toBoolean(guard_entry), guard_guard));
+  push(expr_entry, combined);
+}
+
+void FixWidthVisitor::visitVectorReduceWith(const VectorReduceWith& vrw) {
+  visitUnaryExpr(vrw);
+  stack_entry e;
+  result_type eg;
+  pop(e, eg);
+  int const w = (vrw.kind() == VectorReduction::Sum && isBoolean(*e.first)) ? 32 : e.second;
+  result_type child = eg ? result_type(new BoundsCheckExpr(e.first, eg)) : e.first;
+  push(std::make_pair(new VectorReduceWith(vrw.vec_id(), vrw.elemBitsize(), vrw.elemSign(), vrw.kind(), child,
+                                           vrw.placeholder_id()),
+                      w));
 }
 
 }  // end namespace crave

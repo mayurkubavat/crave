@@ -205,6 +205,7 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   std::set<int> vars_with_dist;
   std::set<int> vars_with_user_dist;
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     assert(var_ctn_.dist_ref_to_var_map.find(pair.first) != var_ctn_.dist_ref_to_var_map.end());
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     vars_with_dist.insert(var_id);
@@ -259,6 +260,7 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   // A distribution of the user or a BDD sampler replaces the default distribution of a variable.
   // Without them, e.g. if the constraints are too complex for a BDD, it stays in effect.
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) continue;
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id) || inside_samplers_.count(var_id))
@@ -309,6 +311,7 @@ bool VariableDefaultSolver::solve() {
   }
   // As in SystemVerilog, a randc variable must not have a distribution.
   for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (!var_ctn_.user_dist_references.count(pair.first)) continue;
     if (randc.count(var_ctn_.dist_ref_to_var_map.at(pair.first)))
       throw std::runtime_error("A randc variable must not have a distribution.");
@@ -401,6 +404,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   }
 
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (replaced_dist_refs_.count(pair.first)) continue;
     int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     if (randc.count(var_id) || (ordered_vars_.count(var_id) && !unordered_vars_.count(var_id))) continue;
@@ -599,6 +603,7 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
   // a variable with a distribution by dist() takes the values of its distribution
   std::vector<std::shared_ptr<ReferenceExpression> > dists(level.size());
   for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (!var_ctn_.user_dist_references.count(pair.first)) continue;
     int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     std::vector<int>::const_iterator ite = std::find(level.begin(), level.end(), var_id);

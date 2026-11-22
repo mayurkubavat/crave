@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <stack>
 #include <vector>
@@ -38,8 +39,33 @@ namespace crave {
 
 class ReplaceVisitor : public NodeVisitor {
  public:
-  explicit ReplaceVisitor(std::vector<boost::intrusive_ptr<VariableExpr> > *vars)
-      : vec_idx_(), okay_(true), result_(), aux_stack_(), subscript_stack_(), variables_(vars), terminals_() {}
+  struct SubscriptVal {
+    uint64_t bits;
+    unsigned width;
+    bool is_signed;
+    bool is_bool;
+    bool valid;
+    bool has_placeholder;
+    bool used_target_placeholder;
+  };
+
+  explicit ReplaceVisitor(
+      std::vector<boost::intrusive_ptr<VariableExpr> > *vars,
+      std::map<unsigned int, std::vector<boost::intrusive_ptr<VariableExpr> > > const *multi_vec_vars = nullptr,
+      int target_placeholder_id = -1,
+      bool allow_unguarded_oob_skip = false)
+      : vec_idx_(),
+        target_placeholder_id_(target_placeholder_id),
+        allow_unguarded_oob_skip_(allow_unguarded_oob_skip),
+        okay_(true),
+        result_(),
+        result_bounds_(),
+        aux_stack_(),
+        subscript_stack_(),
+        bounds_stack_(),
+        variables_(vars),
+        multi_vec_vars_(multi_vec_vars),
+        terminals_() {}
 
   virtual void visitNode(Node const &);
   virtual void visitTerminal(Terminal const &);
@@ -62,6 +88,7 @@ class ReplaceVisitor : public NodeVisitor {
   virtual void visitOrOpr(OrOpr const &);
   virtual void visitLogicalAndOpr(LogicalAndOpr const &);
   virtual void visitLogicalOrOpr(LogicalOrOpr const &);
+  virtual void visitLogicalIffOpr(LogicalIffOpr const &);
   virtual void visitXorOpr(XorOpr const &);
   virtual void visitEqualOpr(EqualOpr const &);
   virtual void visitNotEqualOpr(NotEqualOpr const &);
@@ -85,10 +112,18 @@ class ReplaceVisitor : public NodeVisitor {
   virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const &);
   virtual void visitTolPlusPctExpr(TolPlusPctExpr const &);
   virtual void visitVectorContains(VectorContains const &);
+  virtual void visitOneHotExpr(OneHotExpr const &);
+  virtual void visitOneHot0Expr(OneHot0Expr const &);
+  virtual void visitCountOnesExpr(CountOnesExpr const &);
+  virtual void visitClog2Expr(Clog2Expr const &);
+  virtual void visitSelfDeterminedExpr(SelfDeterminedExpr const &);
+  virtual void visitBoundsCheckExpr(BoundsCheckExpr const &);
+  virtual void visitVectorReduceWith(VectorReduceWith const &);
 
   void reset();
   bool okay() { return okay_; }
   NodePtr result() { return result_; }
+  NodePtr resultBoundsGuard() const { return result_bounds_; }
   void setVecIdx(unsigned int const idx) { vec_idx_ = idx; }
 
  private:
@@ -96,16 +131,31 @@ class ReplaceVisitor : public NodeVisitor {
   void evalUnaryExpr(UnaryExpression const &, NodePtr &);
   void evalBinExpr(BinaryExpression const &, NodePtr &, NodePtr &);
   void evalTernExpr(TernaryExpression const &, NodePtr &, NodePtr &, NodePtr &);
-  void evalBinSubscript(int &, int &);
-  void evalTernSubscript(int &, int &, int &);
+  void evalBinSubscript(SubscriptVal &, SubscriptVal &);
+  void evalTernSubscript(SubscriptVal &, SubscriptVal &, SubscriptVal &);
+  NodePtr popBounds();
+  void evalBinBounds(NodePtr &, NodePtr &);
+  void evalTernBounds(NodePtr &, NodePtr &, NodePtr &);
 
  private:
+  struct ScopedSkip {
+    bool &flag;
+    bool saved;
+    ScopedSkip(bool &f, bool val) : flag(f), saved(f) { f = val; }
+    ~ScopedSkip() { flag = saved; }
+  };
+
   unsigned int vec_idx_;
+  int target_placeholder_id_;
+  bool allow_unguarded_oob_skip_;
   bool okay_;
   NodePtr result_;
+  NodePtr result_bounds_;
   std::stack<NodePtr> aux_stack_;
-  std::stack<int> subscript_stack_;
+  std::stack<SubscriptVal> subscript_stack_;
+  std::stack<NodePtr> bounds_stack_;
   std::vector<boost::intrusive_ptr<VariableExpr> > *variables_;
+  std::map<unsigned int, std::vector<boost::intrusive_ptr<VariableExpr> > > const *multi_vec_vars_;
   std::map<int, NodePtr> terminals_;
 };
 

@@ -61,6 +61,7 @@ class ToDotVisitor : public NodeVisitor {
   void visitOrOpr(OrOpr const&);
   void visitLogicalAndOpr(LogicalAndOpr const&);
   void visitLogicalOrOpr(LogicalOrOpr const&);
+  void visitLogicalIffOpr(LogicalIffOpr const&);
   void visitXorOpr(XorOpr const&);
   void visitEqualOpr(EqualOpr const&);
   void visitNotEqualOpr(NotEqualOpr const&);
@@ -84,6 +85,13 @@ class ToDotVisitor : public NodeVisitor {
   void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
   void visitTolPlusPctExpr(TolPlusPctExpr const&);
   void visitVectorContains(VectorContains const&);
+  void visitOneHotExpr(OneHotExpr const&);
+  void visitOneHot0Expr(OneHot0Expr const&);
+  void visitCountOnesExpr(CountOnesExpr const&);
+  void visitClog2Expr(Clog2Expr const&);
+  void visitSelfDeterminedExpr(SelfDeterminedExpr const&);
+  void visitBoundsCheckExpr(BoundsCheckExpr const&);
+  void visitVectorReduceWith(VectorReduceWith const&);
 
  private:
   bool putNode(Node const*);

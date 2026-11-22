@@ -38,6 +38,13 @@ OUT& operator<<(OUT& out, placeholder_tag const& tag) {
 template std::ostream& operator<<(std::ostream& out, placeholder_tag const& tag);
 
 template <typename OUT>
+OUT& operator<<(OUT& out, item_placeholder_tag const& tag) {
+  out << "item_placeholder<" << tag.id << ">";
+  return out;
+}
+template std::ostream& operator<<(std::ostream& out, item_placeholder_tag const& tag);
+
+template <typename OUT>
 OUT& operator<<(OUT& out, operator_inside const&) {
   return out << "inside";
 }
@@ -78,4 +85,34 @@ OUT& operator<<(OUT& out, operator_bitslice const&) {
   return out << "bitslice";
 }
 template std::ostream& operator<<(std::ostream& out, operator_bitslice const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_iff const&) {
+  return out << "iff";
+}
+template std::ostream& operator<<(std::ostream& out, operator_iff const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_onehot const&) {
+  return out << "onehot";
+}
+template std::ostream& operator<<(std::ostream& out, operator_onehot const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_onehot0 const&) {
+  return out << "onehot0";
+}
+template std::ostream& operator<<(std::ostream& out, operator_onehot0 const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_countones const&) {
+  return out << "countones";
+}
+template std::ostream& operator<<(std::ostream& out, operator_countones const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_clog2 const&) {
+  return out << "clog2";
+}
+template std::ostream& operator<<(std::ostream& out, operator_clog2 const& tag);
 }

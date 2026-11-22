@@ -83,6 +83,7 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   virtual void visitOrOpr(OrOpr const &);
   virtual void visitLogicalAndOpr(LogicalAndOpr const &);
   virtual void visitLogicalOrOpr(LogicalOrOpr const &);
+  virtual void visitLogicalIffOpr(LogicalIffOpr const &);
   virtual void visitXorOpr(XorOpr const &);
   virtual void visitEqualOpr(EqualOpr const &);
   virtual void visitNotEqualOpr(NotEqualOpr const &);
@@ -106,6 +107,13 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const &);
   virtual void visitTolPlusPctExpr(TolPlusPctExpr const &);
   virtual void visitVectorContains(VectorContains const &);
+  virtual void visitOneHotExpr(OneHotExpr const &);
+  virtual void visitOneHot0Expr(OneHot0Expr const &);
+  virtual void visitCountOnesExpr(CountOnesExpr const &);
+  virtual void visitClog2Expr(Clog2Expr const &);
+  virtual void visitSelfDeterminedExpr(SelfDeterminedExpr const &);
+  virtual void visitBoundsCheckExpr(BoundsCheckExpr const &);
+  virtual void visitVectorReduceWith(VectorReduceWith const &);
 
   virtual void makeAssertion(Node const &);
   virtual void makeSoftAssertion(Node const &);
@@ -350,6 +358,15 @@ void metaSMTVisitorImpl<SolverType>::visitLogicalOrOpr(LogicalOrOpr const &o) {
 
   result_type result = evaluate(solver_, preds::Or(fst.first, snd.first));
   exprStack_.push(std::make_pair(result, fst.second || snd.second));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitLogicalIffOpr(LogicalIffOpr const &o) {
+  stack_entry fst, snd;
+  evalBinExpr(o, fst, snd);
+
+  result_type result = evaluate(solver_, preds::equal(fst.first, snd.first));
+  exprStack_.push(std::make_pair(result, false));
 }
 
 template <typename SolverType>
@@ -602,6 +619,118 @@ void metaSMTVisitorImpl<SolverType>::visitUnique(Unique const &) {
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::visitVectorContains(VectorContains const &) {
   throw std::runtime_error("VectorContains is not allowed in metaSMTNodeVisitor.");
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitOneHotExpr(OneHotExpr const &o) {
+  visitUnaryExpr(o);
+  stack_entry entry;
+  pop(entry);
+  unsigned const w = normalizeBv(entry);
+  result_type bv = entry.first;
+  result_type res;
+  if (w == 1) {
+    res = evaluate(solver_, preds::nequal(bv, qf_bv::bvuint(0, 1)));
+  } else {
+    result_type zero = evaluate(solver_, qf_bv::bvuint(0, w));
+    result_type one = evaluate(solver_, qf_bv::bvuint(1, w));
+    result_type anded = evaluate(solver_, qf_bv::bvand(bv, qf_bv::bvsub(bv, one)));
+    res = evaluate(solver_, preds::And(preds::nequal(bv, zero), preds::equal(anded, zero)));
+  }
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitOneHot0Expr(OneHot0Expr const &o) {
+  visitUnaryExpr(o);
+  stack_entry entry;
+  pop(entry);
+  unsigned const w = normalizeBv(entry);
+  result_type bv = entry.first;
+  result_type res;
+  if (w == 1) {
+    res = evaluate(solver_, preds::True);
+  } else {
+    result_type zero = evaluate(solver_, qf_bv::bvuint(0, w));
+    result_type one = evaluate(solver_, qf_bv::bvuint(1, w));
+    result_type anded = evaluate(solver_, qf_bv::bvand(bv, qf_bv::bvsub(bv, one)));
+    res = evaluate(solver_, preds::equal(anded, zero));
+  }
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitCountOnesExpr(CountOnesExpr const &o) {
+  visitUnaryExpr(o);
+  stack_entry entry;
+  pop(entry);
+  unsigned const w = normalizeBv(entry);
+  result_type bv = entry.first;
+  std::vector<result_type> terms;
+  terms.reserve(w);
+  for (unsigned i = 0; i < w; ++i) {
+    terms.push_back(evaluate(solver_, qf_bv::extract(i, i, bv)));
+  }
+  unsigned cur_w = 1;
+  while (terms.size() > 1) {
+    std::vector<result_type> next;
+    next.reserve((terms.size() + 1) / 2);
+    for (std::size_t i = 0; i + 1 < terms.size(); i += 2) {
+      result_type a = evaluate(solver_, qf_bv::zero_extend(1, terms[i]));
+      result_type b = evaluate(solver_, qf_bv::zero_extend(1, terms[i + 1]));
+      next.push_back(evaluate(solver_, qf_bv::bvadd(a, b)));
+    }
+    if (terms.size() % 2 == 1) {
+      next.push_back(evaluate(solver_, qf_bv::zero_extend(1, terms.back())));
+    }
+    terms.swap(next);
+    ++cur_w;
+  }
+  result_type res = terms[0];
+  if (cur_w < 32) {
+    res = evaluate(solver_, qf_bv::zero_extend(32 - cur_w, res));
+  } else if (cur_w > 32) {
+    res = evaluate(solver_, qf_bv::extract(31, 0, res));
+  }
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitClog2Expr(Clog2Expr const &o) {
+  visitUnaryExpr(o);
+  stack_entry entry;
+  pop(entry);
+  unsigned const w = normalizeBv(entry);
+  result_type bv = entry.first;
+  if (w == 1) {
+    exprStack_.push(std::make_pair(evaluate(solver_, qf_bv::bvuint(0, 32)), false));
+    return;
+  }
+  result_type v = evaluate(solver_, qf_bv::bvsub(bv, qf_bv::bvuint(1, w)));
+  result_type one1 = evaluate(solver_, qf_bv::bvuint(1, 1));
+  result_type res = evaluate(solver_, qf_bv::bvuint(0, 32));
+  for (unsigned i = 0; i < w; ++i) {
+    result_type bit_i = evaluate(solver_, qf_bv::extract(i, i, v));
+    res = evaluate(solver_, preds::Ite(preds::equal(bit_i, one1), qf_bv::bvuint(i + 1, 32), res));
+  }
+  result_type le1 = evaluate(solver_, qf_bv::bvule(bv, qf_bv::bvuint(1, w)));
+  res = evaluate(solver_, preds::Ite(le1, qf_bv::bvuint(0, 32), res));
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitSelfDeterminedExpr(SelfDeterminedExpr const &s) {
+  visitUnaryExpr(s);
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitBoundsCheckExpr(BoundsCheckExpr const &) {
+  throw std::runtime_error("BoundsCheckExpr is not allowed in metaSMTNodeVisitor.");
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitVectorReduceWith(VectorReduceWith const &) {
+  throw std::runtime_error("VectorReduceWith is not allowed in metaSMTNodeVisitor.");
 }
 
 template <typename SolverType>

@@ -37,9 +37,105 @@
 #include <vector>
 #include "../frontend/PlaceHolder.hpp"
 #include "../frontend/ReadReference.hpp"
-#include "../frontend/VectorConstraint.hpp"
 #include "../frontend/WriteReference.hpp"
 #include "../frontend/WeightedRange.hpp"
+#include "../ir/Node.hpp"
+
+namespace crave {
+
+template <typename T, unsigned N>
+class crv_array;
+
+class __rand_vec_base;
+
+template <typename Pred>
+struct captured_lambda_pred {
+  explicit captured_lambda_pred(Pred p) : pred(std::move(p)) {}
+  Pred pred;
+};
+
+namespace detail {
+template <typename T>
+using op_uncvref_t = typename std::remove_cv<typename std::remove_reference<T>::type>::type;
+
+template <typename T, typename Enable = void>
+struct is_crv_variable_arg : std::false_type {};
+
+template <typename T>
+struct is_lambda_node_proxy : std::false_type {};
+
+template <typename R, bool IsExpr = boost::proto::is_expr<typename std::decay<R>::type>::value>
+struct wrap_pred_result {
+  typedef typename boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain,
+                                                      typename std::decay<R>::type>::type type;
+  static type apply(R const& r) { return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(r); }
+};
+
+template <typename R>
+struct wrap_pred_result<R, true> {
+  typedef typename boost::proto::result_of::deep_copy<typename std::decay<R>::type const&>::type type;
+  static type apply(R const& r) { return boost::proto::deep_copy(r); }
+};
+
+template <typename Pred,
+          bool IsExpr = boost::proto::is_expr<typename std::decay<Pred>::type>::value,
+          bool IsScalar = is_distribution_scalar<typename std::decay<Pred>::type>::value>
+struct pred_capture_helper {
+  typedef typename boost::proto::result_of::make_expr<
+      boost::proto::tag::terminal, Constraint_Domain,
+      captured_lambda_pred<typename std::decay<Pred>::type> >::type type;
+  static type capture(Pred const& p) {
+    return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(
+        captured_lambda_pred<typename std::decay<Pred>::type>(p));
+  }
+};
+
+template <typename Pred, bool IsScalar>
+struct pred_capture_helper<Pred, true, IsScalar> {
+  typedef typename boost::proto::result_of::deep_copy<typename std::decay<Pred>::type const&>::type type;
+  static type capture(Pred const& p) { return boost::proto::deep_copy(p); }
+};
+
+template <typename Pred>
+struct pred_capture_helper<Pred, false, true> {
+  typedef typename wrap_pred_result<Pred, false>::type type;
+  static type capture(Pred const& p) { return wrap_pred_result<Pred, false>::apply(p); }
+};
+
+template <typename Pred>
+using capture_pred_t = typename pred_capture_helper<typename std::decay<Pred>::type>::type;
+
+template <typename Pred>
+capture_pred_t<Pred> capture_predicate(Pred&& p) {
+  return pred_capture_helper<typename std::decay<Pred>::type>::capture(p);
+}
+}  // namespace detail
+
+template <typename VecExpr, typename Pred>
+struct vector_reduce_with_tag {
+  vector_reduce_with_tag(VecExpr v, VectorReduction::Kind k, Pred p)
+      : vec(std::move(v)), kind(k), pred(std::move(p)) {}
+  VecExpr vec;
+  VectorReduction::Kind kind;
+  Pred pred;
+};
+
+template <typename VecExpr, typename Pred>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    vector_reduce_with_tag<typename boost::proto::result_of::deep_copy<VecExpr const&>::type,
+                           detail::capture_pred_t<Pred> > >::type
+make_vector_reduce_with_expr(VecExpr const& vec, VectorReduction::Kind kind, Pred&& pred) {
+  typedef vector_reduce_with_tag<typename boost::proto::result_of::deep_copy<VecExpr const&>::type,
+                                 detail::capture_pred_t<Pred> >
+      tag_t;
+  tag_t tag(boost::proto::deep_copy(vec), kind, detail::capture_predicate(std::forward<Pred>(pred)));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+}  // namespace crave
+
+#include "../frontend/VectorConstraint.hpp"
 
 namespace crave {
 
@@ -100,6 +196,9 @@ OUT& operator<<(OUT& out, vector_tag<value_type> const& tag) {
 template <typename OUT>
 OUT& operator<<(OUT& out, placeholder_tag const& tag);
 
+template <typename OUT>
+OUT& operator<<(OUT& out, item_placeholder_tag const& tag);
+
 // special operators
 
 struct operator_inside {};
@@ -110,11 +209,21 @@ struct operator_if_then {};
 
 struct operator_if_then_else : operator_if_then {};
 
+struct operator_iff {};
+
 struct operator_foreach {};
 
 struct operator_unique {};
 
 struct operator_bitslice {};
+
+struct operator_onehot {};
+
+struct operator_onehot0 {};
+
+struct operator_countones {};
+
+struct operator_clog2 {};
 
 /**
  * \ingroup operators
@@ -442,6 +551,103 @@ auto inside_mask(Lhs&& lhs, char const* pattern)
   return inside(std::forward<Lhs>(lhs), inside_mask(pattern));
 }
 
+template <typename... Args>
+struct unique_expr_tag {
+  explicit unique_expr_tag(std::tuple<Args...> a) : args(std::move(a)) {}
+  std::tuple<Args...> args;
+};
+
+template <typename OpTag, typename Arg>
+struct bv_unary_expr_tag {
+  explicit bv_unary_expr_tag(Arg a) : arg(std::move(a)) {}
+  Arg arg;
+};
+
+template <typename VecExpr, typename Pred>
+struct vector_foreach_tag {
+  vector_foreach_tag(VecExpr v, Pred p) : vec(std::move(v)), pred(std::move(p)) {}
+  VecExpr vec;
+  Pred pred;
+};
+
+namespace detail {
+template <typename... Args>
+struct all_not_crv_variable : std::true_type {};
+template <typename Head, typename... Tail>
+struct all_not_crv_variable<Head, Tail...>
+    : std::integral_constant<bool, !is_crv_variable_arg<op_uncvref_t<Head> >::value &&
+                                       all_not_crv_variable<Tail...>::value> {};
+
+template <typename T>
+struct is_bv_func_arg
+    : std::integral_constant<bool, boost::proto::is_expr<op_uncvref_t<T> >::value ||
+                                       is_distribution_scalar<op_uncvref_t<T> >::value ||
+                                       is_lambda_node_proxy<op_uncvref_t<T> >::value> {};
+
+template <typename OpTag, typename Expr>
+auto make_bv_unary_expr_impl(Expr const& e, std::true_type)
+    -> typename boost::proto::result_of::make_expr<
+        boost::proto::tag::terminal, Constraint_Domain,
+        bv_unary_expr_tag<OpTag, typename boost::proto::result_of::deep_copy<Expr const&>::type> >::type {
+  typedef bv_unary_expr_tag<OpTag, typename boost::proto::result_of::deep_copy<Expr const&>::type> tag_t;
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(tag_t(boost::proto::deep_copy(e)));
+}
+
+template <typename OpTag, typename Scalar>
+auto make_bv_unary_expr_impl(Scalar const& s, std::false_type)
+    -> typename boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain,
+                                                   bv_unary_expr_tag<OpTag, Scalar> >::type {
+  typedef bv_unary_expr_tag<OpTag, Scalar> tag_t;
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(tag_t(s));
+}
+}  // namespace detail
+
+template <typename T, unsigned N, typename Idx>
+struct array_access_tag {
+  array_access_tag(crv_array<T, N> const* a, Idx i) : arr(a), idx(std::move(i)) {}
+  crv_array<T, N> const* arr;
+  Idx idx;
+};
+
+template <typename T, unsigned N, typename Idx>
+struct array_access_expr
+    : public Constraint<typename boost::proto::result_of::make_expr<
+          boost::proto::tag::terminal, Constraint_Domain, array_access_tag<T, N, Idx> >::type> {
+  typedef Constraint<typename boost::proto::result_of::make_expr<
+      boost::proto::tag::terminal, Constraint_Domain, array_access_tag<T, N, Idx> >::type>
+      base_type;
+  explicit array_access_expr(array_access_tag<T, N, Idx> tag)
+      : base_type(boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag))) {}
+
+  array_access_expr const& operator()() const { return *this; }
+};
+
+template <typename T, unsigned N, typename Pred>
+struct array_reduce_with_tag {
+  array_reduce_with_tag(crv_array<T, N> const* a, VectorReduction::Kind k, Pred p)
+      : arr(a), kind(k), pred(std::move(p)) {}
+  crv_array<T, N> const* arr;
+  VectorReduction::Kind kind;
+  Pred pred;
+};
+
+template <typename T, unsigned N, typename Pred>
+struct array_foreach_tag {
+  array_foreach_tag(crv_array<T, N> const* a, Pred p) : arr(a), pred(std::move(p)) {}
+  crv_array<T, N> const* arr;
+  Pred pred;
+};
+
+template <typename T, unsigned N, typename Pred>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    array_reduce_with_tag<T, N, detail::capture_pred_t<Pred> > >::type
+make_array_reduce_with_expr(crv_array<T, N> const& arr, VectorReduction::Kind kind, Pred&& pred) {
+  typedef array_reduce_with_tag<T, N, detail::capture_pred_t<Pred> > tag_t;
+  tag_t tag(&arr, kind, detail::capture_predicate(std::forward<Pred>(pred)));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
 /**
  * \ingroup operators
  * \brief A special operator for distribution constraint specification.
@@ -449,7 +655,7 @@ auto inside_mask(Lhs&& lhs, char const* pattern)
  * The first parameter is the variable to be randomized.
  * The second parameter is the distributon of values. See crave::distribution for details.
  */
-boost::proto::terminal<operator_dist>::type const dist = {};
+boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_dist>::type const dist{};
 
 /**
  * \ingroup operators
@@ -459,7 +665,8 @@ boost::proto::terminal<operator_dist>::type const dist = {};
  * The second parameter is the consequent.
  * crave::if_then_else also adds an else-part as the third parameter.
  */
-boost::proto::terminal<operator_if_then>::type const if_then = {};
+boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_if_then>::type const
+    if_then{};
 
 /**
  * \ingroup operators
@@ -467,28 +674,124 @@ boost::proto::terminal<operator_if_then>::type const if_then = {};
  * 
  * See also crave::if_then.
  */
-boost::proto::terminal<operator_if_then_else>::type const if_then_else = {};
+boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_if_then_else>::type const
+    if_then_else{};
 
 /**
  * \ingroup operators
- * \brief A special operator to iterate over a symbolic vector.
- * 
- * crave::foreach is an operator for iterating over a symbolic vector and applying constraints to its elements.
- * The first parameter of foreach is a symbolic vector of the CRAVE random vector object.
- * The second parameter of foreach is an expression that should be used as a constraint for each element.
- * You can access the current element using the access operator [] and the placeholder variable crave::_i.
- * Arithmetic operations on the index, e.g. (crave::_i + 1) or c(rave::_i - 1) is also supported.
+ * \brief Logical equivalence (iff / <->) constraint operator.
  */
-boost::proto::terminal<operator_foreach>::type const foreach = {};
+boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_iff>::type const iff{};
 
 /**
  * \ingroup operators
- * \brief A special operator to ensure all elements of a vector are unique.
- * 
- * crave::unique is a constraint operator that make sure that no value in a given vector appears more than once.
- * The one and only parameter is a symbolic vector from the CRAVE random vector object.
+ * \brief Iterates over a symbolic vector or crv_array and applies constraints to its elements.
  */
-boost::proto::terminal<operator_unique>::type const unique = {};
+template <typename T, typename Pred>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    vector_foreach_tag<typename boost::proto::result_of::deep_copy<Vector<T> const&>::type,
+                       detail::capture_pred_t<Pred> > >::type
+foreach(Vector<T> const& vec, Pred&& pred) {
+  typedef vector_foreach_tag<typename boost::proto::result_of::deep_copy<Vector<T> const&>::type,
+                             detail::capture_pred_t<Pred> >
+      tag_t;
+  tag_t tag(boost::proto::deep_copy(vec), detail::capture_predicate(std::forward<Pred>(pred)));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+template <typename Vec, typename Pred,
+          typename std::enable_if<std::is_base_of<__rand_vec_base, detail::op_uncvref_t<Vec> >::value, int>::type = 0>
+auto foreach(Vec const& vec, Pred&& pred) -> decltype(foreach(vec(), std::forward<Pred>(pred))) {
+  return foreach(vec(), std::forward<Pred>(pred));
+}
+
+template <typename T, unsigned N, typename Pred>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    array_foreach_tag<T, N, detail::capture_pred_t<Pred> > >::type
+foreach(crv_array<T, N> const& arr, Pred&& pred) {
+  typedef array_foreach_tag<T, N, detail::capture_pred_t<Pred> > tag_t;
+  tag_t tag(&arr, detail::capture_predicate(std::forward<Pred>(pred)));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+/**
+ * \ingroup operators
+ * \brief Variadic uniqueness constraint for vectors, crv_arrays, scalars, and expressions.
+ */
+inline typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain, unique_expr_tag<> >::type
+unique() {
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(
+      unique_expr_tag<>(std::tuple<>()));
+}
+
+template <typename Arg0, typename... Args>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    unique_expr_tag<detail::inside_capture_t<Arg0>, detail::inside_capture_t<Args>...> >::type
+unique(Arg0&& arg0, Args&&... args) {
+  static_assert(detail::all_not_crv_variable<Arg0, Args...>::value,
+                "crave::unique() requires var() rather than bare crv_variable");
+  typedef unique_expr_tag<detail::inside_capture_t<Arg0>, detail::inside_capture_t<Args>...> tag_t;
+  tag_t tag(std::tuple<detail::inside_capture_t<Arg0>, detail::inside_capture_t<Args>...>(
+      detail::inside_capture<Arg0>::capture(std::forward<Arg0>(arg0)),
+      detail::inside_capture<Args>::capture(std::forward<Args>(args))...));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+/**
+ * \ingroup operators
+ * \brief Bit-vector system functions (IEEE 1800-2023 20.8-20.9).
+ */
+template <typename Expr>
+auto onehot(Expr&& e)
+    -> decltype(detail::make_bv_unary_expr_impl<operator_onehot>(
+        std::declval<detail::op_uncvref_t<Expr> const&>(),
+        std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{})) {
+  static_assert(!detail::is_crv_variable_arg<detail::op_uncvref_t<Expr> >::value,
+                "crave::onehot() requires var() rather than bare crv_variable");
+  static_assert(detail::is_bv_func_arg<Expr>::value, "crave::onehot() requires a CRAVE expression or scalar");
+  return detail::make_bv_unary_expr_impl<operator_onehot>(
+      e, std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{});
+}
+
+template <typename Expr>
+auto onehot0(Expr&& e)
+    -> decltype(detail::make_bv_unary_expr_impl<operator_onehot0>(
+        std::declval<detail::op_uncvref_t<Expr> const&>(),
+        std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{})) {
+  static_assert(!detail::is_crv_variable_arg<detail::op_uncvref_t<Expr> >::value,
+                "crave::onehot0() requires var() rather than bare crv_variable");
+  static_assert(detail::is_bv_func_arg<Expr>::value, "crave::onehot0() requires a CRAVE expression or scalar");
+  return detail::make_bv_unary_expr_impl<operator_onehot0>(
+      e, std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{});
+}
+
+template <typename Expr>
+auto countones(Expr&& e)
+    -> decltype(detail::make_bv_unary_expr_impl<operator_countones>(
+        std::declval<detail::op_uncvref_t<Expr> const&>(),
+        std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{})) {
+  static_assert(!detail::is_crv_variable_arg<detail::op_uncvref_t<Expr> >::value,
+                "crave::countones() requires var() rather than bare crv_variable");
+  static_assert(detail::is_bv_func_arg<Expr>::value, "crave::countones() requires a CRAVE expression or scalar");
+  return detail::make_bv_unary_expr_impl<operator_countones>(
+      e, std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{});
+}
+
+template <typename Expr>
+auto clog2(Expr&& e)
+    -> decltype(detail::make_bv_unary_expr_impl<operator_clog2>(
+        std::declval<detail::op_uncvref_t<Expr> const&>(),
+        std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{})) {
+  static_assert(!detail::is_crv_variable_arg<detail::op_uncvref_t<Expr> >::value,
+                "crave::clog2() requires var() rather than bare crv_variable");
+  static_assert(detail::is_bv_func_arg<Expr>::value, "crave::clog2() requires a CRAVE expression or scalar");
+  return detail::make_bv_unary_expr_impl<operator_clog2>(
+      e, std::integral_constant<bool, boost::proto::is_expr<detail::op_uncvref_t<Expr> >::value>{});
+}
 
 /**
  * \ingroup operators
@@ -500,7 +803,8 @@ boost::proto::terminal<operator_unique>::type const unique = {};
  * Both bounds are inclusive.
  * The third parameter is the variable.
  */
-boost::proto::terminal<operator_bitslice>::type const bitslice = {};
+boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_bitslice>::type const
+    bitslice{};
 
 /**
  * outputstreamoperator for operator_inside
@@ -564,6 +868,21 @@ OUT& operator<<(OUT& out, operator_unique const& tag);
 */
 template <typename OUT>
 OUT& operator<<(OUT& out, operator_bitslice const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_iff const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_onehot const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_onehot0 const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_countones const& tag);
+
+template <typename OUT>
+OUT& operator<<(OUT& out, operator_clog2 const& tag);
 
 template <typename Expr>
 struct soft_expr {

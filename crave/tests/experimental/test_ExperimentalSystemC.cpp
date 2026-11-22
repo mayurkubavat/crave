@@ -351,6 +351,170 @@ BOOST_AUTO_TEST_CASE(crv_variable_wide_sc_bv_128) {
   }
 }
 
-BOOST_AUTO_TEST_SUITE_END()  // Ex_SystemC_t
+struct sc_bv_m2_item : public crv_sequence_item {
+  sc_bv_m2_item(crv_object_name) {}
+  crv_variable<sc_bv<8> > bv8;
+  crv_variable<sc_bv<128> > bv128;
+  crv_array<sc_bv<129>, 3> arr129;
+  crv_constraint con{"con"};
+};
+
+BOOST_AUTO_TEST_CASE(sc_bv_unique_onehot_countones_clog2) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      sc_bv_m2_item item("item");
+      item.con = {onehot(item.bv8()), countones(item.bv8()) == 1u, clog2(item.bv8()) == 7u};
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE_EQUAL(static_cast<sc_bv<8> >(item.bv8).to_uint64(), 0x80ULL);
+
+      if (std::string(backend) == "Z3") {
+        item.con = {onehot(item.bv128()), clog2(item.bv128()) == 127u, unique(item.arr129)};
+        BOOST_REQUIRE(item.randomize());
+        sc_bv<128> v128 = item.bv128;
+        BOOST_REQUIRE_EQUAL(v128.range(127, 64).to_uint64(), 0x8000000000000000ULL);
+        BOOST_REQUIRE_EQUAL(v128.range(63, 0).to_uint64(), 0ULL);
+        BOOST_REQUIRE(static_cast<sc_bv<129> >(item.arr129[0]) != static_cast<sc_bv<129> >(item.arr129[1]));
+        BOOST_REQUIRE(static_cast<sc_bv<129> >(item.arr129[0]) != static_cast<sc_bv<129> >(item.arr129[2]));
+        BOOST_REQUIRE(static_cast<sc_bv<129> >(item.arr129[1]) != static_cast<sc_bv<129> >(item.arr129[2]));
+      }
+    }
+  }
+}
+
+struct sc_dist_cm_item : public crv_sequence_item {
+  sc_dist_cm_item(crv_object_name) {}
+  crv_variable<sc_int<8> > s8;
+  crv_variable<sc_uint<8> > u8;
+  crv_constraint c_s8{"c_s8", dist(s8(), make_distribution(range<sc_int<8> >(sc_int<8>(-10), sc_int<8>(-8))))};
+  crv_constraint c_u8{"c_u8", dist(u8(), make_distribution(range<sc_uint<8> >(sc_uint<8>(200), sc_uint<8>(202))))};
+};
+
+BOOST_AUTO_TEST_CASE(sc_int_uint_dist_constraint_mode) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    sc_dist_cm_item item("sc_dist");
+    item.c_s8.constraint_mode(false);
+    item.c_u8.constraint_mode(false);
+    std::set<int> s_vals;
+    std::set<unsigned> u_vals;
+    for (int i = 0; i < 16; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      s_vals.insert(static_cast<sc_int<8> >(item.s8).to_int());
+      u_vals.insert(static_cast<sc_uint<8> >(item.u8).to_uint());
+    }
+    BOOST_REQUIRE_GT(s_vals.size(), 1u);
+    BOOST_REQUIRE_GT(u_vals.size(), 1u);
+
+    item.constraint_mode(true);
+    for (int i = 0; i < 5; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      int sv = static_cast<sc_int<8> >(item.s8).to_int();
+      unsigned uv = static_cast<sc_uint<8> >(item.u8).to_uint();
+      BOOST_REQUIRE(sv >= -10 && sv <= -8);
+      BOOST_REQUIRE(uv >= 200u && uv <= 202u);
+    }
+
+    item.constraint_mode(false);
+    s_vals.clear();
+    u_vals.clear();
+    for (int i = 0; i < 16; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      s_vals.insert(static_cast<sc_int<8> >(item.s8).to_int());
+      u_vals.insert(static_cast<sc_uint<8> >(item.u8).to_uint());
+    }
+    BOOST_REQUIRE_GT(s_vals.size(), 1u);
+    BOOST_REQUIRE_GT(u_vals.size(), 1u);
+  }
+}
+
+struct sc_uint3_dist_cm_item : public crv_sequence_item {
+  sc_uint3_dist_cm_item(crv_object_name) {}
+  crv_variable<sc_uint<3> > x;
+  crv_constraint c_dist{"c_dist", dist(x(), make_distribution(range<sc_uint<3> >(sc_uint<3>(0), sc_uint<3>(1))))};
+};
+
+struct sc_uint3_plain_item : public crv_sequence_item {
+  sc_uint3_plain_item(crv_object_name) {}
+  crv_variable<sc_uint<3> > x;
+};
+
+BOOST_AUTO_TEST_CASE(sc_uint3_dist_constraint_mode_randc_and_uniform) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // 1) Pure c_var_uniform recovery (no explicit bound constraint) after c_dist.constraint_mode(false)
+    {
+      sc_uint3_dist_cm_item item("sc_u3_rec");
+      for (int i = 0; i < 6; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_LE(static_cast<sc_uint<3> >(item.x).to_uint(), 1u);
+      }
+
+      item.c_dist.constraint_mode(false);
+      std::set<unsigned> seen;
+      for (int i = 0; i < 96; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        seen.insert(static_cast<sc_uint<3> >(item.x).to_uint());
+      }
+      BOOST_REQUIRE_EQUAL(seen.size(), 8u);
+
+      // 2) randc(true) after c_dist.constraint_mode(false) cycles all 8 values without throwing
+      item.x.randc(true);
+      std::set<unsigned> cycle_vals;
+      for (int i = 0; i < 8; ++i) {
+        BOOST_REQUIRE_NO_THROW(BOOST_REQUIRE(item.randomize()));
+        BOOST_REQUIRE(cycle_vals.insert(static_cast<sc_uint<3> >(item.x).to_uint()).second);
+      }
+      BOOST_REQUIRE_EQUAL(cycle_vals.size(), 8u);
+
+      // 3) Re-enable c_dist after randc(false)
+      item.x.randc(false);
+      item.c_dist.constraint_mode(true);
+      for (int i = 0; i < 6; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_LE(static_cast<sc_uint<3> >(item.x).to_uint(), 1u);
+      }
+    }
+
+    // 4) randomize_with(dist(...)) on unconstrained sc_uint<3> recovers full 8-value c_var_uniform domain
+    {
+      sc_uint3_plain_item plain("sc_u3_plain");
+      BOOST_REQUIRE(
+          plain.randomize_with(dist(plain.x(), make_distribution(range<sc_uint<3> >(sc_uint<3>(0), sc_uint<3>(0))))));
+      BOOST_REQUIRE_EQUAL(static_cast<sc_uint<3> >(plain.x).to_uint(), 0u);
+
+      std::set<unsigned> seen;
+      for (int i = 0; i < 96; ++i) {
+        BOOST_REQUIRE(plain.randomize());
+        seen.insert(static_cast<sc_uint<3> >(plain.x).to_uint());
+      }
+      BOOST_REQUIRE_EQUAL(seen.size(), 8u);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

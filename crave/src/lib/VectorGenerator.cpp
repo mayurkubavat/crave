@@ -174,8 +174,8 @@ struct VectorElementTypeVisitor : public NodeVisitor {
   void visitVectorReduction(VectorReduction const& r) {
     if (r.id() == vector_id_) {
       found_ = true;
-      bitsize_ = r.bitsize();
-      sign_ = r.sign();
+      bitsize_ = r.elemBitsize();
+      sign_ = r.elemSign();
     }
   }
   void visitNotOpr(NotOpr const& n) { visitUnaryExpr(n); }
@@ -187,6 +187,7 @@ struct VectorElementTypeVisitor : public NodeVisitor {
   void visitOrOpr(const OrOpr& o) { visitBinaryExpr(o); }
   void visitLogicalAndOpr(LogicalAndOpr const& la) { visitBinaryExpr(la); }
   void visitLogicalOrOpr(LogicalOrOpr const& lo) { visitBinaryExpr(lo); }
+  void visitLogicalIffOpr(LogicalIffOpr const& liff) { visitBinaryExpr(liff); }
   void visitXorOpr(XorOpr const& x) { visitBinaryExpr(x); }
   void visitEqualOpr(EqualOpr const& eq) { visitBinaryExpr(eq); }
   void visitNotEqualOpr(NotEqualOpr const& neq) { visitBinaryExpr(neq); }
@@ -216,6 +217,21 @@ struct VectorElementTypeVisitor : public NodeVisitor {
       sign_ = vc.elem_sign();
     } else if (!found_) {
       vc.child()->visit(this);
+    }
+  }
+  void visitOneHotExpr(OneHotExpr const& o) { visitUnaryExpr(o); }
+  void visitOneHot0Expr(OneHot0Expr const& o) { visitUnaryExpr(o); }
+  void visitCountOnesExpr(CountOnesExpr const& o) { visitUnaryExpr(o); }
+  void visitClog2Expr(Clog2Expr const& o) { visitUnaryExpr(o); }
+  void visitSelfDeterminedExpr(SelfDeterminedExpr const& s) { visitUnaryExpr(s); }
+  void visitBoundsCheckExpr(BoundsCheckExpr const& b) { visitBinaryExpr(b); }
+  void visitVectorReduceWith(VectorReduceWith const& vrw) {
+    if (vrw.vec_id() == vector_id_) {
+      found_ = true;
+      bitsize_ = vrw.elemBitsize();
+      sign_ = vrw.elemSign();
+    } else if (!found_) {
+      vrw.child()->visit(this);
     }
   }
 
@@ -405,35 +421,52 @@ void VectorSolver::buildSolver(unsigned int const size) {
   for(VectorConstraintPtr constraint : constraints_) {
     if (constraint->isReduction()) {
       // a constraint on the reductions of all elements, which is solved once
-      ReplaceVisitor replacer(&vec_elements_);
+      ReplaceVisitor replacer(&vec_elements_, nullptr, -2);
       constraint->expr()->visit(&replacer);
       if (replacer.okay()) {
+        NodePtr res = replacer.result();
+        if (replacer.resultBoundsGuard()) {
+          res = new LogicalAndOpr(replacer.resultBoundsGuard(), res);
+        }
         if (constraint->isSoft())
-          solver_->makeSoftAssertion(*replacer.result());
+          solver_->makeSoftAssertion(*res);
         else
-          solver_->makeAssertion(*replacer.result());
+          solver_->makeAssertion(*res);
       } else if (!constraint->isSoft()) {
         // an element outside the vector is accessed, the constraint does not hold for this size
         LOG(INFO) << "Constraint " << constraint->name() << " accesses an element outside vector " << vector_id_;
         solver_->makeAssertion(Constant(false));
       }
     } else if (!constraint->isUnique()) {
-      ReplaceVisitor replacer(&vec_elements_);
+      ForEach const* fe = dynamic_cast<ForEach const*>(constraint->expr().get());
+      bool const allow_oob_skip = !(fe && dynamic_cast<VectorAccess const*>(fe->rhs().get()));
+      ReplaceVisitor replacer(&vec_elements_, nullptr, -1, allow_oob_skip);
       for (unsigned int i = 0u; i < size; ++i) {
         replacer.setVecIdx(i);
         constraint->expr()->visit(&replacer);
 
         if (replacer.okay()) {
+          NodePtr iter_res = replacer.result();
+          if (replacer.resultBoundsGuard()) {
+            iter_res = new LogicalAndOpr(replacer.resultBoundsGuard(), iter_res);
+          }
           if (constraint->isSoft()) {
-            solver_->makeSoftAssertion(*replacer.result());
+            solver_->makeSoftAssertion(*iter_res);
           } else {
-            solver_->makeAssertion(*replacer.result());
+            solver_->makeAssertion(*iter_res);
 
             GetSupportSetVisitor gssv;
-            replacer.result()->visit(&gssv);
+            iter_res->visit(&gssv);
             std::set<int> const& support = gssv.getSupportVars();
             if (support.size() == 1 && *support.begin() == static_cast<int>(vec_elements_[i]->id()))
-              elem_constraints_[i].push_back(replacer.result());
+              elem_constraints_[i].push_back(iter_res);
+          }
+        } else if (replacer.resultBoundsGuard()) {
+          NodePtr bg = replacer.resultBoundsGuard();
+          if (constraint->isSoft()) {
+            solver_->makeSoftAssertion(*bg);
+          } else {
+            solver_->makeAssertion(*bg);
           }
         }
 
@@ -576,26 +609,42 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
 
     for (VectorConstraintPtr const& constraint : vs.constraints()) {
       if (constraint->isReduction()) {
-        ReplaceVisitor replacer(&elems);
+        ReplaceVisitor replacer(&elems, nullptr, -2);
         constraint->expr()->visit(&replacer);
         if (replacer.okay()) {
+          NodePtr res = replacer.result();
+          if (replacer.resultBoundsGuard()) {
+            res = new LogicalAndOpr(replacer.resultBoundsGuard(), res);
+          }
           if (constraint->isSoft())
-            joint_solver->makeSoftAssertion(*replacer.result());
+            joint_solver->makeSoftAssertion(*res);
           else
-            joint_solver->makeAssertion(*replacer.result());
+            joint_solver->makeAssertion(*res);
         } else if (!constraint->isSoft()) {
           joint_solver->makeAssertion(Constant(false));
         }
       } else if (!constraint->isUnique()) {
-        ReplaceVisitor replacer(&elems);
-        for (unsigned int i = 0; i < sz; ++i) {
+        ForEach const* fe = dynamic_cast<ForEach const*>(constraint->expr().get());
+        bool const allow_oob_skip = !(fe && dynamic_cast<VectorAccess const*>(fe->rhs().get()));
+        ReplaceVisitor replacer(&elems, nullptr, -1, allow_oob_skip);
+        for (unsigned int i = 0u; i < sz; ++i) {
           replacer.setVecIdx(i);
           constraint->expr()->visit(&replacer);
           if (replacer.okay()) {
+            NodePtr iter_res = replacer.result();
+            if (replacer.resultBoundsGuard()) {
+              iter_res = new LogicalAndOpr(replacer.resultBoundsGuard(), iter_res);
+            }
             if (constraint->isSoft())
-              joint_solver->makeSoftAssertion(*replacer.result());
+              joint_solver->makeSoftAssertion(*iter_res);
             else
-              joint_solver->makeAssertion(*replacer.result());
+              joint_solver->makeAssertion(*iter_res);
+          } else if (replacer.resultBoundsGuard()) {
+            NodePtr bg = replacer.resultBoundsGuard();
+            if (constraint->isSoft())
+              joint_solver->makeSoftAssertion(*bg);
+            else
+              joint_solver->makeAssertion(*bg);
           }
           replacer.reset();
         }

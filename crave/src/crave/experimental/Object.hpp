@@ -165,6 +165,22 @@ class crv_object {
   }
 
   /**
+   * \brief Enables or disables all constraints in this object and its child objects.
+   * \param on true to enable, false to disable constraints.
+   */
+  virtual void constraint_mode(bool on) {
+    for (auto obj : children_) obj->constraint_mode(on);
+    object_constraint_mode_ = on;
+    notify_constraint_mode_changed_();
+  }
+
+  /**
+   * \brief Get whether constraints of this object are enabled.
+   * \return true if enabled, false otherwise.
+   */
+  virtual bool constraint_mode() const { return object_constraint_mode_; }
+
+  /**
    * outputs the object hierarchy (i.e. children and their children, etc.) to std::cout
    */
   void print_object_hierarchy(int level = 0) const;
@@ -210,6 +226,25 @@ class crv_object {
 
   virtual VariableContainer* check_default_constraints(Generator& gen);
 
+  virtual bool has_active_constraint_() const {
+    for (auto obj : children_) {
+      if (obj->has_active_constraint_()) return true;
+    }
+    return false;
+  }
+
+  virtual void on_child_constraint_mode_changed_() {
+    bool any = has_active_constraint_();
+    if (object_constraint_mode_ != any) {
+      object_constraint_mode_ = any;
+      notify_constraint_mode_changed_();
+    }
+  }
+
+  void notify_constraint_mode_changed_() {
+    if (parent_) parent_->on_child_constraint_mode_changed_();
+  }
+
   std::string name_;                                         /** < name of the object*/
   std::string orig_name_;                                    /** < original name of the object*/
   crv_object* parent_;                                       /** < parent node*/
@@ -217,6 +252,7 @@ class crv_object {
   std::string fullname_;                                     /** < fullname*/
   std::unordered_map<std::string, unsigned> local_name_map_; /** < names of children in a map*/
   bool object_rand_mode_ = true;                             /** < set by rand_mode(bool) of this object*/
+  bool object_constraint_mode_ = true;                       /** < set by constraint_mode(bool) of this object*/
 
  private:
   /**

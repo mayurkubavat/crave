@@ -629,6 +629,78 @@ BOOST_AUTO_TEST_CASE(vector_inside_experimental) {
   }
 }
 
+struct BoolVecSumItem : public crv_sequence_item {
+  BoolVecSumItem(crv_object_name) {}
+  crv_vector<bool> bv;
+  crv_vector<uint8_t> uv;
+  crv_variable<unsigned> target;
+  crv_constraint con{"con"};
+};
+
+BOOST_AUTO_TEST_CASE(experimental_bool_vector_sum_and_with) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      // crv_vector<bool>::sum() with empty, single, > 1, size retry, joint target, and randomize_with
+      {
+        BoolVecSumItem item("bitem");
+        item.con = {item.bv().size() == 0u, item.bv.sum() == 0u};
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_EQUAL(item.bv.size(), 0u);
+
+        item.con = {item.bv().size() == 6u, item.bv.sum() == 4u, item.uv().size() == 4u,
+                    foreach (item.uv, item.uv[_i] < 20u),
+                    item.uv.sum_with(item.uv[_i] > 10u) == 3u,
+                    item.uv.with(_item <= 10u).sum() == 1u,
+                    item.uv.sum().with([](auto const& idx, auto const& elem) { return idx == 0u && elem > 10u; }) == 1u};
+        for (int iter = 0; iter < 4; ++iter) {
+          BOOST_REQUIRE(item.randomize());
+          unsigned bcnt = 0;
+          for (unsigned i = 0; i < item.bv.size(); ++i) bcnt += (item.bv[i] ? 1u : 0u);
+          BOOST_REQUIRE_EQUAL(bcnt, 4u);
+          unsigned gt10 = 0;
+          for (unsigned i = 0; i < item.uv.size(); ++i) {
+            BOOST_REQUIRE_LT(item.uv[i], 20u);
+            if (item.uv[i] > 10u) ++gt10;
+          }
+          BOOST_REQUIRE_EQUAL(gt10, 3u);
+          BOOST_REQUIRE_GT(item.uv[0], 10u);
+        }
+
+        // Joint scalar+vector with crv_vector<bool>::sum()
+        item.con = {item.target() == 5u, item.bv().size() <= 6u, item.bv.sum() == item.target()};
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_GE(item.bv.size(), 5u);
+        unsigned bcnt = 0;
+        for (unsigned i = 0; i < item.bv.size(); ++i) bcnt += (item.bv[i] ? 1u : 0u);
+        BOOST_REQUIRE_EQUAL(bcnt, 5u);
+
+        // Nested foreach + sum_with and randomize_with
+        item.con = {item.uv().size() == 3u,
+                    foreach (item.uv(), item.uv.sum_with(item.uv()[_i] == 7u) == 2u)};
+        BOOST_REQUIRE(item.randomize());
+        unsigned eq7 = 0;
+        for (unsigned i = 0; i < 3u; ++i)
+          if (item.uv[i] == 7u) ++eq7;
+        BOOST_REQUIRE_EQUAL(eq7, 2u);
+
+        BOOST_REQUIRE(item.randomize_with(item.uv.product_with(item.uv()[_i] == 7u) == false,
+                                          item.uv.or_with(item.uv()[_i] == 7u) == true));
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

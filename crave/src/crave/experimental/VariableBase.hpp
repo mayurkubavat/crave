@@ -92,6 +92,11 @@ struct crv_variable_base_ : public crv_object {
    */
   bool randc() const { return randc_; }
 
+  void constraint_mode(bool) override {}
+  bool constraint_mode() const override { return true; }
+  bool has_active_constraint_() const override { return false; }
+  void on_child_constraint_mode_changed_() override {}
+
   void recursive_build(Generator& gen) const override;
 
  protected:
@@ -104,6 +109,12 @@ struct crv_variable_base_ : public crv_object {
   bool rand_mode_ = true;
   bool randc_ = false;
 };
+
+namespace detail {
+template <typename T>
+struct is_crv_variable_arg<
+    T, typename std::enable_if<std::is_base_of<crv_variable_base_, T>::value>::type> : std::true_type {};
+}  // namespace detail
 
 
 struct prev_ {};

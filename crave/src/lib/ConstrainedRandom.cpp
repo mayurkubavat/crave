@@ -57,6 +57,7 @@ unsigned int default_rand_vec_size() { return 5; }
 unsigned int placeholder_bitsize() { return bitsize_traits<placeholder_tag>::value; }
 
 placeholder _i;
+item_placeholder _item;
 
 RandomSeedManager rng(static_cast<unsigned>(std::time(0)));
 

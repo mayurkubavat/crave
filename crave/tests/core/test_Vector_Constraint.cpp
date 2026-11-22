@@ -742,23 +742,55 @@ BOOST_AUTO_TEST_CASE(foreach_inside_subscript) {
     rand_vec<unsigned int> v(NULL);
     Variable<unsigned int> x;
     std::set<unsigned int> s{1u};
+    Generator gen_oob;
+    gen_oob(v().size() == 3)(x == 1u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 1u, 0u)] == 7u + _i));
+    BOOST_CHECK(!gen_oob.next());
+
     Generator gen;
-    gen(v().size() == 3)(x == 1u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 1u, 0u)] == 7u + _i));
+    gen(v().size() == 3)(x == 1u)(
+        foreach (v(), if_then(_i < 2u, v()[_i + if_then_else(inside(x, s), 1u, 0u)] == 7u + _i)))(
+        foreach (v(), if_then(_i == 0u, v()[_i] == 42u)));
     bool const ok = gen.next();
     BOOST_CHECK(ok);
     if (ok) {
       BOOST_REQUIRE_EQUAL(v.size(), 3u);
-      BOOST_CHECK_EQUAL(v[0], 7u);
-      BOOST_CHECK_EQUAL(v[1], 8u);
-      BOOST_CHECK_EQUAL(v[2], 9u);
+      BOOST_CHECK_EQUAL(v[0], 42u);
+      BOOST_CHECK_EQUAL(v[1], 7u);
+      BOOST_CHECK_EQUAL(v[2], 8u);
     }
   }
   {
     rand_vec<unsigned int> v(NULL);
     Variable<unsigned int> x;
     std::set<unsigned int> s{1u};
+    Generator gen_oob;
+    gen_oob(v().size() == 3)(x == 0u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 0u, 1u)] == 7u + _i));
+    BOOST_CHECK(!gen_oob.next());
+
     Generator gen;
-    gen(v().size() == 3)(x == 0u)(foreach (v(), v()[_i + if_then_else(inside(x, s), 0u, 1u)] == 7u + _i))(
+    gen(v().size() == 3)(x == 0u)(
+        foreach (v(), if_then(_i < 2u, v()[_i + if_then_else(inside(x, s), 0u, 1u)] == 7u + _i)))(
+        foreach (v(), if_then(_i == 0u, v()[_i] == 42u)));
+    bool const ok = gen.next();
+    BOOST_CHECK(ok);
+    if (ok) {
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_CHECK_EQUAL(v[0], 42u);
+      BOOST_CHECK_EQUAL(v[1], 7u);
+      BOOST_CHECK_EQUAL(v[2], 8u);
+    }
+  }
+  {
+    rand_vec<unsigned int> v(NULL);
+    randv<unsigned int> r(NULL);
+    std::set<unsigned int> s{1u, 2u};
+    Generator gen_oob;
+    gen_oob(v().size() == 3)(r() == 2u)(foreach (v(), v()[_i + if_then_else(inside(r(), s), 1u, 0u)] == 7u + _i));
+    BOOST_CHECK(!gen_oob.next());
+
+    Generator gen;
+    gen(v().size() == 3)(r() == 2u)(
+        foreach (v(), if_then(_i < 2u, v()[_i + if_then_else(inside(r(), s), 1u, 0u)] == 7u + _i)))(
         foreach (v(), if_then(_i == 0u, v()[_i] == 42u)));
     bool const ok = gen.next();
     BOOST_CHECK(ok);
@@ -774,7 +806,7 @@ BOOST_AUTO_TEST_CASE(foreach_inside_subscript) {
     randv<unsigned int> r(NULL);
     std::set<unsigned int> s{1u, 2u};
     Generator gen;
-    gen(v().size() == 3)(r() == 2u)(foreach (v(), v()[_i + if_then_else(inside(r(), s), 1u, 0u)] == 7u + _i));
+    gen(v().size() == 3)(r() == 5u)(foreach (v(), v()[_i + if_then_else(inside(r(), s), 1u, 0u)] == 7u + _i));
     bool const ok = gen.next();
     BOOST_CHECK(ok);
     if (ok) {
@@ -1098,6 +1130,145 @@ BOOST_AUTO_TEST_CASE(vector_joint_dont_care_write_ref_and_randc) {
   }
 }
 
-BOOST_AUTO_TEST_SUITE_END()  // Context
+BOOST_AUTO_TEST_CASE(bool_vector_sum_and_reduce_with) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      // crv_vector/rand_vec<bool>::sum() across empty, 1, 5, size-retry, and joint scalar target
+      {
+        rand_vec<bool> b0(NULL);
+        Generator g0(b0().size() == 0u);
+        g0(b0().sum() == 0u);
+        BOOST_REQUIRE(g0.next());
+        BOOST_REQUIRE_EQUAL(b0.size(), 0u);
+
+        rand_vec<bool> b1(NULL);
+        Generator g1(b1().size() == 1u);
+        g1(b1().sum() == 1u);
+        BOOST_REQUIRE(g1.next());
+        BOOST_REQUIRE_EQUAL(b1.size(), 1u);
+        BOOST_REQUIRE(b1[0]);
+
+        rand_vec<bool> b5(NULL);
+        Generator g5(b5().size() == 5u);
+        g5(b5().sum() == 3u);
+        for (int iter = 0; iter < 4; ++iter) {
+          BOOST_REQUIRE(g5.next());
+          BOOST_REQUIRE_EQUAL(b5.size(), 5u);
+          unsigned cnt = 0;
+          for (unsigned i = 0; i < b5.size(); ++i) cnt += (b5[i] ? 1u : 0u);
+          BOOST_REQUIRE_EQUAL(cnt, 3u);
+        }
+
+        // Size retry: size <= 4 and sum() == 3 forces size >= 3
+        rand_vec<bool> bretry(NULL);
+        Generator gretry(bretry().size() <= 4u);
+        gretry(bretry().sum() == 3u);
+        for (int iter = 0; iter < 5; ++iter) {
+          BOOST_REQUIRE(gretry.next());
+          BOOST_REQUIRE_GE(bretry.size(), 3u);
+          unsigned cnt = 0;
+          for (unsigned i = 0; i < bretry.size(); ++i) cnt += (bretry[i] ? 1u : 0u);
+          BOOST_REQUIRE_EQUAL(cnt, 3u);
+        }
+      }
+
+      // sum_with / with().sum() / sum().with() / product_with / and_with / or_with / xor_with
+      {
+        rand_vec<uint8_t> v(NULL);
+        Generator gen;
+        gen(v().size() == 5u);
+        gen(foreach (v(), v()[_i] < 20u));
+        gen(v().sum_with(v()[_i] > 10u) == 3u);
+        gen(v().with(_item <= 10u).sum() == 2u);
+        gen(v().sum().with([](auto const& idx, auto const& item) { return (idx < 2u) && (item > 10u); }) == 2u);
+        gen(v().or_with(v()[_i] == 15u));
+        gen(v().and_with(_item < 20u));
+        gen(v().product_with([](auto const& item) { return item < 20u; }));
+        gen(v().xor_with(v()[_i] == 15u) == true);
+        BOOST_REQUIRE(gen.next());
+        BOOST_REQUIRE_EQUAL(v.size(), 5u);
+        unsigned gt10 = 0, eq15 = 0;
+        for (unsigned i = 0; i < v.size(); ++i) {
+          if (v[i] > 10u) ++gt10;
+          if (v[i] == 15u) ++eq15;
+          BOOST_REQUIRE_LT(v[i], 20u);
+        }
+        BOOST_REQUIRE_EQUAL(gt10, 3u);
+        BOOST_REQUIRE_GT(v[0], 10u);
+        BOOST_REQUIRE_GT(v[1], 10u);
+        BOOST_REQUIRE_EQUAL(eq15 % 2u, 1u);
+      }
+
+      // Integer predicate reduction on rand_vec<uint8_t>
+      {
+        rand_vec<uint8_t> v(NULL);
+        Generator gen(v().size() == 3u);
+        gen(foreach (v(), v()[_i] < 10u));
+        gen(v().sum_with(v()[_i] + uint8_t(1u)) == 9u);
+        BOOST_REQUIRE(gen.next());
+        BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2] + 3u, 9u);
+      }
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(nested_vector_foreach_and_reduce_with) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // Nested foreach + sum_with with 2-arg lambda outer idx/item
+    {
+      rand_vec<uint8_t> v(NULL);
+      Generator gen;
+      gen(v().size() == 3u);
+      gen(foreach (v(), v()[_i] >= 1u && v()[_i] <= 4u));
+      gen(foreach (v(), [&](auto const& idx, auto const& a) {
+        return v().sum_with([&](auto const& j, auto const& b) { return (idx != j) && (a == b); }) == 0u;
+      }));
+      gen(foreach (v(), v()[_i] <= v().sum_with(_item > 0u)));
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_REQUIRE_NE(v[0], v[1]);
+      BOOST_REQUIRE_NE(v[0], v[2]);
+      BOOST_REQUIRE_NE(v[1], v[2]);
+    }
+
+    // Top-level sum_with nesting inner sum_with
+    {
+      rand_vec<uint8_t> v(NULL);
+      Generator gen;
+      gen(v().size() == 3u);
+      gen(foreach (v(), v()[_i] >= 1u && v()[_i] <= 3u));
+      gen(v().sum_with([&](auto const& idx, auto const& a) {
+        return v().sum_with([&](auto const& j, auto const& b) { return (idx + 1u == j) && (a < b); }) == 1u;
+      }) == 2u);
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(v.size(), 3u);
+      BOOST_REQUIRE_LT(v[0], v[1]);
+      BOOST_REQUIRE_LT(v[1], v[2]);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

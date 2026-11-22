@@ -37,33 +37,10 @@ namespace crave
 
   std::string crv_sequence_item::obj_kind() const { return "crv_sequence_item"; }
 
-  void crv_sequence_item :: crosscheck_constraints () {
-
-	  if (!built_) {
-		  gen_ = std::make_shared<Generator>();
-		  auto local_var_ctn = check_default_constraints(*gen_);
-		  std::map<int, int> dist = local_var_ctn->dist_ref_to_var_map;
-
-		  for (auto obj : children_) {
-			  bool flag = false;
-			  crave::crv_var* local_var = dynamic_cast< crave::crv_var* >(obj);
-			  if (local_var != nullptr) {
-				  for (auto out_it : dist) {
-					  if ((local_var->getVarID() == out_it.second) && (!flag)) {
-						  flag = true;
-					  }
-					  else if ((local_var->getVarID() == out_it.second) && (flag)) {
-						  crave::crv_constraint* cntr = dynamic_cast< crave::crv_constraint* >(obj->children_.front());
-						  if (cntr != nullptr){
-							  cntr->deactivate();
-
-							  break;
-						  }
-					  }
-				  }
-			  }
-		  }
-	  }
+  void crv_sequence_item::crosscheck_constraints() {
+    // Implicit default distributions (c_var_uniform) are suppressed per-Generator
+    // during partitioning whenever an active user dist() constraint targets the
+    // same variable, so c_var_uniform must never be permanently deactivated.
   }
 
   Generator& crv_sequence_item::ensure_generator_() {

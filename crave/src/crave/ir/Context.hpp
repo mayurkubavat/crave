@@ -57,6 +57,9 @@
 #include "VariableContainer.hpp"
 #include "Node.hpp"
 #include "ReferenceExpression.hpp"
+#include "visitor/ReplaceVisitor.hpp"
+
+#include <stdexcept>
 
 namespace crave {
 
@@ -186,53 +189,88 @@ inline bool scalar_fits_width(__int128 v, unsigned width, bool sign, bool is_boo
   }
 }
 
-inline bool inside_node_is_bool(Node const& n) {
-  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->isBool();
-  if (dynamic_cast<NotOpr const*>(&n) || dynamic_cast<LogicalAndOpr const*>(&n) ||
-      dynamic_cast<LogicalOrOpr const*>(&n) || dynamic_cast<EqualOpr const*>(&n) ||
-      dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
-      dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
-      dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
-      dynamic_cast<RangeExpr const*>(&n) || dynamic_cast<TolPlusMinusExpr const*>(&n) ||
-      dynamic_cast<TolPlusPctExpr const*>(&n) || dynamic_cast<VectorContains const*>(&n))
-    return true;
-  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return inside_node_is_bool(*ite->b());
-  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return inside_node_is_bool(*va->lhs());
-  return false;
-}
+inline bool inside_node_is_bool(Node const& n) { return is_boolean_ir_node(n); }
 
-inline unsigned inside_node_width(Node const& n) {
-  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->bitsize();
-  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return inside_node_width(*va->lhs());
-  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&n)) return static_cast<unsigned>(b->r() - b->l() + 1);
-  if (inside_node_is_bool(n)) return 1;
-  if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n))
-    return inside_node_width(*e->child()) + e->value();
-  if (dynamic_cast<NegOpr const*>(&n) || dynamic_cast<ComplementOpr const*>(&n))
-    return inside_node_width(*static_cast<UnaryExpression const&>(n).child());
-  if (dynamic_cast<ShiftLeftOpr const*>(&n) || dynamic_cast<ShiftRightOpr const*>(&n))
-    return inside_node_width(*static_cast<BinaryExpression const&>(n).lhs());
-  if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n))
-    return std::max(inside_node_width(*b->lhs()), inside_node_width(*b->rhs()));
-  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
-    return std::max(inside_node_width(*ite->b()), inside_node_width(*ite->c()));
-  return 1;
-}
+inline unsigned inside_node_width(Node const& n) { return ir_node_width(n); }
 
-inline bool inside_node_signed(Node const& n) {
-  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->sign();
-  if (dynamic_cast<Bitslice const*>(&n)) return false;
-  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return inside_node_signed(*va->lhs());
-  if (dynamic_cast<ExtendExpression const*>(&n) || dynamic_cast<NegOpr const*>(&n) ||
-      dynamic_cast<ComplementOpr const*>(&n))
-    return inside_node_signed(*static_cast<UnaryExpression const&>(n).child());
-  if (dynamic_cast<ShiftLeftOpr const*>(&n) || dynamic_cast<ShiftRightOpr const*>(&n))
-    return inside_node_signed(*static_cast<BinaryExpression const&>(n).lhs());
-  if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n))
-    return inside_node_signed(*b->lhs()) && inside_node_signed(*b->rhs());
-  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
-    return inside_node_signed(*ite->b()) && inside_node_signed(*ite->c());
-  return false;
+inline bool inside_node_signed(Node const& n) { return ir_node_signed(n); }
+}  // namespace detail
+
+struct Context;
+
+namespace detail {
+struct lambda_node_proxy {
+  NodePtr node;
+  Context* ctx;
+};
+
+template <>
+struct is_inside_wrapper<lambda_node_proxy> : std::true_type {};
+
+template <>
+struct is_lambda_node_proxy<lambda_node_proxy> : std::true_type {};
+
+template <typename T, typename std::enable_if<boost::proto::is_expr<uncvref_t<T> >::value, int>::type = 0>
+inline NodePtr eval_proxy_operand(T const& expr, Context* ctx);
+
+template <typename T,
+          typename std::enable_if<!boost::proto::is_expr<uncvref_t<T> >::value &&
+                                      !std::is_same<uncvref_t<T>, lambda_node_proxy>::value,
+                                  int>::type = 0>
+inline NodePtr eval_proxy_operand(T const& val, Context* ctx);
+
+inline NodePtr eval_proxy_operand(lambda_node_proxy const& p, Context*) { return p.node; }
+
+#define CRAVE_PROXY_BIN_OP(OP, NODE)                                                                          \
+  template <typename Rhs,                                                                                     \
+            typename std::enable_if<!boost::proto::is_expr<uncvref_t<Rhs> >::value, int>::type = 0>           \
+  inline lambda_node_proxy operator OP(lambda_node_proxy const& lhs, Rhs const& rhs) {                        \
+    return lambda_node_proxy{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                  \
+  }                                                                                                           \
+  template <typename Lhs,                                                                                     \
+            typename std::enable_if<!boost::proto::is_expr<uncvref_t<Lhs> >::value &&                         \
+                                        !std::is_same<uncvref_t<Lhs>, lambda_node_proxy>::value,              \
+                                    int>::type = 0>                                                           \
+  inline lambda_node_proxy operator OP(Lhs const& lhs, lambda_node_proxy const& rhs) {                        \
+    return lambda_node_proxy{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                  \
+  }                                                                                                           \
+  template <typename E>                                                                                       \
+  inline lambda_node_proxy operator OP(lambda_node_proxy const& lhs, Constraint<E> const& rhs) {              \
+    return lambda_node_proxy{new NODE(lhs.node, eval_proxy_operand(rhs, lhs.ctx)), lhs.ctx};                  \
+  }                                                                                                           \
+  template <typename E>                                                                                       \
+  inline lambda_node_proxy operator OP(Constraint<E> const& lhs, lambda_node_proxy const& rhs) {              \
+    return lambda_node_proxy{new NODE(eval_proxy_operand(lhs, rhs.ctx), rhs.node), rhs.ctx};                  \
+  }
+
+CRAVE_PROXY_BIN_OP(==, EqualOpr)
+CRAVE_PROXY_BIN_OP(!=, NotEqualOpr)
+CRAVE_PROXY_BIN_OP(<, LessOpr)
+CRAVE_PROXY_BIN_OP(<=, LessEqualOpr)
+CRAVE_PROXY_BIN_OP(>, GreaterOpr)
+CRAVE_PROXY_BIN_OP(>=, GreaterEqualOpr)
+CRAVE_PROXY_BIN_OP(&&, LogicalAndOpr)
+CRAVE_PROXY_BIN_OP(||, LogicalOrOpr)
+CRAVE_PROXY_BIN_OP(+, PlusOpr)
+CRAVE_PROXY_BIN_OP(-, MinusOpr)
+CRAVE_PROXY_BIN_OP(*, MultipliesOpr)
+CRAVE_PROXY_BIN_OP(/, DevideOpr)
+CRAVE_PROXY_BIN_OP(%, ModuloOpr)
+CRAVE_PROXY_BIN_OP(&, AndOpr)
+CRAVE_PROXY_BIN_OP(|, OrOpr)
+CRAVE_PROXY_BIN_OP(^, XorOpr)
+CRAVE_PROXY_BIN_OP(<<, ShiftLeftOpr)
+CRAVE_PROXY_BIN_OP(>>, ShiftRightOpr)
+#undef CRAVE_PROXY_BIN_OP
+
+inline lambda_node_proxy operator!(lambda_node_proxy const& arg) {
+  return lambda_node_proxy{new NotOpr(arg.node), arg.ctx};
+}
+inline lambda_node_proxy operator~(lambda_node_proxy const& arg) {
+  return lambda_node_proxy{new ComplementOpr(arg.node), arg.ctx};
+}
+inline lambda_node_proxy operator-(lambda_node_proxy const& arg) {
+  return lambda_node_proxy{new NegOpr(arg.node), arg.ctx};
 }
 }  // namespace detail
 
@@ -305,7 +343,32 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       return vec;
     }
   }
-  result_type operator()(boost::proto::tag::terminal, placeholder_tag const& tag) { return new Placeholder(tag.id); }
+  result_type operator()(boost::proto::tag::terminal, placeholder_tag const& tag) {
+    if ((tag.id == _i.id() || array_loop_depth_ > 0) && !current_i_stack_.empty()) {
+      return new Placeholder(current_i_stack_.back());
+    }
+    return new Placeholder(tag.id);
+  }
+
+  result_type operator()(boost::proto::tag::terminal, item_placeholder_tag const&) {
+    if (item_stack_.empty()) {
+      throw std::runtime_error("crave::_item used outside foreach or reduction predicate");
+    }
+    return item_stack_.back();
+  }
+
+  template <typename Pred>
+  result_type operator()(boost::proto::tag::terminal, captured_lambda_pred<Pred> const& tag) {
+    if (item_stack_.empty()) {
+      throw std::runtime_error("crave lambda predicate used outside foreach or reduction predicate");
+    }
+    int const idx_ph_id = loop_ph_stack_.empty() ? _i.id() : loop_ph_stack_.back();
+    detail::lambda_node_proxy idx_proxy{new Placeholder(idx_ph_id), this};
+    detail::lambda_node_proxy item_proxy{item_stack_.back(), this};
+    return invoke_captured_lambda(tag.pred, idx_proxy, item_proxy, 0);
+  }
+
+  result_type operator()(boost::proto::tag::terminal, detail::lambda_node_proxy const& p) { return p.node; }
 
   result_type operator()(boost::proto::tag::terminal, result_type const& r) { return r; }
 
@@ -393,15 +456,27 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   }
 
   template <typename Expr1, typename Expr2>
-  result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_if_then>::type const&,
-                         Expr1 const& e1, Expr2 const& e2) {
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_if_then>::type const&,
+      Expr1 const& e1, Expr2 const& e2) {
     return new IfThenElse(boost::proto::eval(e1, *this), boost::proto::eval(e2, *this), new Constant(true));
   }
 
   template <typename Expr1, typename Expr2, typename Expr3>
-  result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_if_then_else>::type const,
-                         Expr1 const& e1, Expr2 const& e2, Expr3 const& e3) {
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_if_then_else>::type const&,
+      Expr1 const& e1, Expr2 const& e2, Expr3 const& e3) {
     return new IfThenElse(boost::proto::eval(e1, *this), boost::proto::eval(e2, *this), boost::proto::eval(e3, *this));
+  }
+
+  template <typename Expr1, typename Expr2>
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_iff>::type const&,
+      Expr1 const& e1, Expr2 const& e2) {
+    return new LogicalIffOpr(boost::proto::eval(e1, *this), boost::proto::eval(e2, *this));
   }
 
   template <typename Expr>
@@ -525,6 +600,20 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   result_type eval_inside_arg(detail::inside_ref<T> const& r) {
     return eval_inside_arg(r.get());
   }
+  result_type eval_inside_arg(detail::lambda_node_proxy const& p) { return p.node; }
+
+  template <typename P>
+  auto invoke_captured_lambda(P const& p, detail::lambda_node_proxy const& idx,
+                              detail::lambda_node_proxy const& item, int)
+      -> decltype(detail::eval_proxy_operand(p(idx, item), this)) {
+    return detail::eval_proxy_operand(p(idx, item), this);
+  }
+  template <typename P>
+  auto invoke_captured_lambda(P const& p, detail::lambda_node_proxy const&,
+                              detail::lambda_node_proxy const& item, long)
+      -> decltype(detail::eval_proxy_operand(p(item), this)) {
+    return detail::eval_proxy_operand(p(item), this);
+  }
 
   template <typename Tag>
   struct single_var_tag_traits : std::false_type {};
@@ -611,6 +700,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   template <typename T>
   result_type lower_inside_item(result_type const& lhs_node, detail::inside_ref<T> const& r) {
     return lower_inside_item(lhs_node, r.get());
+  }
+
+  result_type lower_inside_item(result_type const& lhs_node, detail::lambda_node_proxy const& p) {
+    return new EqualOpr(lhs_node, p.node);
   }
 
   template <typename Expr,
@@ -744,12 +837,15 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
       return fast_res;
     }
     result_type lhs_node = eval_inside_arg(tag.lhs);
-    return lower_inside_tuple(lhs_node, tag.items, std::make_index_sequence<sizeof...(Items)>{});
+    return new SelfDeterminedExpr(
+        lower_inside_tuple(lhs_node, tag.items, std::make_index_sequence<sizeof...(Items)>{}));
   }
 
   template <typename Integer, typename DistInt>
-  result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
-                         WriteReference<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_dist>::type const&,
+      WriteReference<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
     typedef typename distribution_value_type<DistInt>::type DistValue;
     distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
@@ -780,9 +876,11 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
     return dist.ranges().size() > 0 ? new LogicalAndOpr(var_equal_tmp, in_ranges) : var_equal_tmp;
   }
   
-   template <typename Integer, typename DistInt>
-  result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_dist>::type const&,
-                         Variable<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
+  template <typename Integer, typename DistInt>
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_dist>::type const&,
+      Variable<Integer> const& var_term, distribution_tag<DistInt> const& dist_expr) {
     typedef typename distribution_value_type<DistInt>::type DistValue;
     distribution<DistValue> const dist = value_distribution(boost::proto::value(dist_expr));
     unsigned width = bitsize_traits<DistInt>::value;
@@ -813,13 +911,219 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   template <typename Expr1, typename Expr2>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_foreach>::type const&,
                          Expr1 const& e1, Expr2 const& e2) {
-    return new ForEach(boost::proto::eval(e1, *this), boost::proto::eval(e2, *this));
+    result_type lhs = boost::proto::eval(e1, *this);
+    NodePtr item_node = new VectorAccess(lhs, new Placeholder(_i.id()));
+    VectorLoopGuard guard(*this, _i.id(), item_node);
+    return new ForEach(lhs, boost::proto::eval(e2, *this));
   }
 
   template <typename Expr>
   result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_unique>::type const&,
                          Expr const& e) {
     return new Unique(boost::proto::eval(e, *this));
+  }
+
+  template <typename T, unsigned N, typename Idx>
+  result_type operator()(boost::proto::tag::terminal, array_access_tag<T, N, Idx> const& tag) {
+    ensure_array_registered(*tag.arr);
+    unsigned const sym_id = static_cast<unsigned>(tag.arr->sym_id());
+    NodePtr arr_vec(new VectorExpr(sym_id, bitsize_traits<T>::value, crave::is_signed<T>::value));
+    auto it = array_ph_stacks_.find(sym_id);
+    if (it != array_ph_stacks_.end() && !it->second.empty()) {
+      CurrentIGuard guard(current_i_stack_, it->second.back());
+      return new VectorAccess(arr_vec, boost::proto::eval(tag.idx, *this));
+    }
+    return new VectorAccess(arr_vec, boost::proto::eval(tag.idx, *this));
+  }
+
+  template <typename T, unsigned N, typename Pred>
+  result_type operator()(boost::proto::tag::terminal, array_foreach_tag<T, N, Pred> const& tag) {
+    ensure_array_registered(*tag.arr);
+    unsigned const sym_id = static_cast<unsigned>(tag.arr->sym_id());
+    NodePtr arr_vec(new VectorExpr(sym_id, bitsize_traits<T>::value, crave::is_signed<T>::value));
+    int const ph_id = new_var_id();
+    NodePtr item_node(new VectorAccess(arr_vec, new Placeholder(ph_id)));
+    NodePtr pred_node;
+    {
+      ArrayLoopGuard guard(*this, sym_id, ph_id, item_node);
+      pred_node = boost::proto::eval(tag.pred, *this);
+    }
+    result_type acc;
+    result_type all_bounds;
+    for (unsigned i = 0; i < N; ++i) {
+      ReplaceVisitor replacer(nullptr, &array_elems_, ph_id, !dynamic_cast<VectorAccess const*>(pred_node.get()));
+      replacer.setVecIdx(i);
+      pred_node->visit(&replacer);
+      if (replacer.resultBoundsGuard()) {
+        all_bounds = all_bounds ? result_type(new LogicalAndOpr(all_bounds, replacer.resultBoundsGuard()))
+                                : replacer.resultBoundsGuard();
+      }
+      if (!replacer.okay()) continue;
+      result_type iter_res = replacer.result();
+      acc = acc ? result_type(new LogicalAndOpr(acc, iter_res)) : iter_res;
+    }
+    if (!acc) {
+      return all_bounds ? result_type(new BoundsCheckExpr(new Constant(true), all_bounds))
+                        : result_type(new Constant(true));
+    }
+    return new BoundsCheckExpr(acc, all_bounds ? all_bounds : result_type(new Constant(true)));
+  }
+
+  template <typename VecExpr, typename Pred>
+  result_type operator()(boost::proto::tag::terminal, vector_reduce_with_tag<VecExpr, Pred> const& tag) {
+    result_type vec_node = boost::proto::eval(tag.vec, *this);
+    int const ph_id = new_var_id();
+    NodePtr item_node(new VectorAccess(vec_node, new Placeholder(ph_id)));
+    NodePtr pred_node;
+    {
+      VectorLoopGuard guard(*this, ph_id, item_node);
+      pred_node = boost::proto::eval(tag.pred, *this);
+    }
+    VectorExpr const& ve = static_cast<VectorExpr const&>(*vec_node);
+    return new VectorReduceWith(static_cast<unsigned>(ve.id()), ve.bitsize(), ve.sign(), tag.kind, pred_node, ph_id);
+  }
+
+  template <typename T, unsigned N, typename Pred>
+  result_type operator()(boost::proto::tag::terminal, array_reduce_with_tag<T, N, Pred> const& tag) {
+    ensure_array_registered(*tag.arr);
+    unsigned const sym_id = static_cast<unsigned>(tag.arr->sym_id());
+    NodePtr arr_vec(new VectorExpr(sym_id, bitsize_traits<T>::value, crave::is_signed<T>::value));
+    int const ph_id = new_var_id();
+    NodePtr item_node(new VectorAccess(arr_vec, new Placeholder(ph_id)));
+    NodePtr pred_node;
+    {
+      ArrayLoopGuard guard(*this, sym_id, ph_id, item_node);
+      pred_node = boost::proto::eval(tag.pred, *this);
+    }
+    bool const pred_is_bool = is_boolean_ir_node(*pred_node);
+    NodePtr result;
+    NodePtr all_bounds;
+    for (unsigned i = 0; i < N; ++i) {
+      ReplaceVisitor replacer(nullptr, &array_elems_, ph_id, false);
+      replacer.setVecIdx(i);
+      pred_node->visit(&replacer);
+      if (replacer.resultBoundsGuard()) {
+        all_bounds = all_bounds ? NodePtr(new LogicalAndOpr(all_bounds, replacer.resultBoundsGuard()))
+                                : replacer.resultBoundsGuard();
+      }
+      if (!replacer.okay()) continue;
+      NodePtr elem = replacer.result();
+      if (tag.kind == VectorReduction::Sum && pred_is_bool) {
+        elem = new IfThenElse(elem, new Constant(1, 32, false), new Constant(0, 32, false));
+        result = result ? NodePtr(new PlusOpr(result, elem)) : elem;
+      } else if (pred_is_bool) {
+        if (!result) {
+          result = elem;
+        } else {
+          switch (tag.kind) {
+            case VectorReduction::Product:
+            case VectorReduction::And:
+              result = new LogicalAndOpr(result, elem);
+              break;
+            case VectorReduction::Or:
+              result = new LogicalOrOpr(result, elem);
+              break;
+            default:
+              result = new NotEqualOpr(result, elem);
+              break;
+          }
+        }
+      } else {
+        if (!result) {
+          result = elem;
+        } else {
+          switch (tag.kind) {
+            case VectorReduction::Sum:
+              result = new PlusOpr(result, elem);
+              break;
+            case VectorReduction::Product:
+              result = new MultipliesOpr(result, elem);
+              break;
+            case VectorReduction::And:
+              result = new AndOpr(result, elem);
+              break;
+            case VectorReduction::Or:
+              result = new OrOpr(result, elem);
+              break;
+            default:
+              result = new XorOpr(result, elem);
+              break;
+          }
+        }
+      }
+    }
+    if (!result) {
+      if (tag.kind == VectorReduction::Sum && pred_is_bool) {
+        result = new Constant(0, 32, false);
+      } else if (pred_is_bool) {
+        result = new Constant(tag.kind == VectorReduction::Product || tag.kind == VectorReduction::And);
+      } else {
+        bool const sv_rules = sv_signedness();
+        unsigned const w = expr_width_ir_node(*pred_node, sv_rules);
+        bool const s = expr_signed_ir_node(*pred_node, sv_rules);
+        uint64_t const ones = s || w >= 64 ? ~uint64_t(0) : (uint64_t(1) << w) - 1;
+        switch (tag.kind) {
+          case VectorReduction::Product:
+            result = new Constant(1, w, s);
+            break;
+          case VectorReduction::And:
+            result = new Constant(ones, w, s);
+            break;
+          default:
+            result = new Constant(0, w, s);
+            break;
+        }
+      }
+    }
+    NodePtr out(new SelfDeterminedExpr(result));
+    return all_bounds ? NodePtr(new BoundsCheckExpr(out, all_bounds)) : out;
+  }
+
+  template <typename... Args>
+  result_type operator()(boost::proto::tag::terminal, unique_expr_tag<Args...> const& tag) {
+    result_type vec_res;
+    if (try_unique_single_vector(tag.args, vec_res, std::integral_constant<bool, sizeof...(Args) == 1>())) {
+      return vec_res;
+    }
+    std::vector<NodePtr> elems;
+    collect_unique_tuple(elems, tag.args, std::make_index_sequence<sizeof...(Args)>{});
+    if (elems.size() <= 1) return new Constant(true);
+    result_type acc;
+    for (std::size_t i = 0; i < elems.size(); ++i) {
+      for (std::size_t j = i + 1; j < elems.size(); ++j) {
+        result_type ne(new NotEqualOpr(elems[i], elems[j]));
+        acc = acc ? result_type(new LogicalAndOpr(acc, ne)) : ne;
+      }
+    }
+    return acc;
+  }
+
+  template <typename VecExpr, typename Pred>
+  result_type operator()(boost::proto::tag::terminal, vector_foreach_tag<VecExpr, Pred> const& tag) {
+    result_type lhs = boost::proto::eval(tag.vec, *this);
+    NodePtr item_node = new VectorAccess(lhs, new Placeholder(_i.id()));
+    VectorLoopGuard guard(*this, _i.id(), item_node);
+    return new ForEach(lhs, boost::proto::eval(tag.pred, *this));
+  }
+
+  template <typename Arg>
+  result_type operator()(boost::proto::tag::terminal, bv_unary_expr_tag<operator_onehot, Arg> const& tag) {
+    return new OneHotExpr(eval_inside_arg(tag.arg));
+  }
+
+  template <typename Arg>
+  result_type operator()(boost::proto::tag::terminal, bv_unary_expr_tag<operator_onehot0, Arg> const& tag) {
+    return new OneHot0Expr(eval_inside_arg(tag.arg));
+  }
+
+  template <typename Arg>
+  result_type operator()(boost::proto::tag::terminal, bv_unary_expr_tag<operator_countones, Arg> const& tag) {
+    return new CountOnesExpr(eval_inside_arg(tag.arg));
+  }
+
+  template <typename Arg>
+  result_type operator()(boost::proto::tag::terminal, bv_unary_expr_tag<operator_clog2, Arg> const& tag) {
+    return new Clog2Expr(eval_inside_arg(tag.arg));
   }
 
   template <typename Expr1, typename Expr2>
@@ -829,8 +1133,10 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
 
   template <typename Integer1, typename Integer2, typename VarTerm,
             typename std::enable_if<is_single_var_lhs<typename std::decay<VarTerm>::type>::value, int>::type = 0>
-  result_type operator()(boost::proto::tag::function, boost::proto::terminal<operator_bitslice>::type const&,
-                         Integer1 const& r, Integer2 const& l, VarTerm const& var_term) {
+  result_type operator()(
+      boost::proto::tag::function,
+      boost::proto::result_of::make_expr<boost::proto::tag::terminal, Constraint_Domain, operator_bitslice>::type const&,
+      Integer1 const& r, Integer2 const& l, VarTerm const& var_term) {
     typedef typename is_single_var_lhs<typename std::decay<VarTerm>::type>::integer_type Integer3;
     unsigned int rb = static_cast<unsigned int>(boost::proto::value(r));
     unsigned int lb = static_cast<unsigned int>(boost::proto::value(l));
@@ -841,6 +1147,150 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   }
 
  private:
+  struct ArrayLoopGuard {
+    ArrayLoopGuard(Context& ctx, unsigned int sym_id, int ph_id, NodePtr const& item_node)
+        : ctx_(ctx), sym_id_(sym_id) {
+      ctx_.item_stack_.push_back(item_node);
+      ctx_.loop_ph_stack_.push_back(ph_id);
+      ctx_.current_i_stack_.push_back(ph_id);
+      ctx_.array_ph_stacks_[sym_id_].push_back(ph_id);
+      ++ctx_.array_loop_depth_;
+    }
+    ~ArrayLoopGuard() {
+      --ctx_.array_loop_depth_;
+      ctx_.array_ph_stacks_[sym_id_].pop_back();
+      ctx_.current_i_stack_.pop_back();
+      ctx_.loop_ph_stack_.pop_back();
+      ctx_.item_stack_.pop_back();
+    }
+    Context& ctx_;
+    unsigned int sym_id_;
+  };
+
+  struct VectorLoopGuard {
+    VectorLoopGuard(Context& ctx, int ph_id, NodePtr const& item_node) : ctx_(ctx) {
+      ctx_.item_stack_.push_back(item_node);
+      ctx_.loop_ph_stack_.push_back(ph_id);
+      ctx_.current_i_stack_.push_back(ph_id);
+    }
+    ~VectorLoopGuard() {
+      ctx_.current_i_stack_.pop_back();
+      ctx_.loop_ph_stack_.pop_back();
+      ctx_.item_stack_.pop_back();
+    }
+    Context& ctx_;
+  };
+
+  struct CurrentIGuard {
+    CurrentIGuard(std::vector<int>& stack, int ph_id) : stack_(stack) { stack_.push_back(ph_id); }
+    ~CurrentIGuard() { stack_.pop_back(); }
+    std::vector<int>& stack_;
+  };
+
+  template <typename T, unsigned N>
+  std::vector<boost::intrusive_ptr<VariableExpr> >& ensure_array_registered(crv_array<T, N> const& arr) {
+    unsigned const sym_id = static_cast<unsigned>(arr.sym_id());
+    auto it = array_elems_.find(sym_id);
+    if (it != array_elems_.end()) return it->second;
+    auto& vec = array_elems_[sym_id];
+    vec.reserve(N);
+    for (unsigned i = 0; i < N; ++i) {
+      NodePtr elem_node = boost::proto::eval(arr[i](), *this);
+      vec.push_back(boost::dynamic_pointer_cast<VariableExpr>(elem_node));
+    }
+    return vec;
+  }
+
+  template <typename VecExpr,
+            typename std::enable_if<detail::is_vector_proto_expr<VecExpr>::value, int>::type = 0>
+  bool try_unique_single_elem(VecExpr const& v, result_type& out) {
+    out = new Unique(boost::proto::eval(v, *this));
+    return true;
+  }
+
+  template <typename Vec,
+            typename std::enable_if<std::is_base_of<__rand_vec_base, Vec>::value, int>::type = 0>
+  bool try_unique_single_elem(Vec const& v, result_type& out) {
+    out = new Unique(boost::proto::eval(v(), *this));
+    return true;
+  }
+
+  template <typename T,
+            typename std::enable_if<!detail::is_vector_proto_expr<T>::value &&
+                                        !std::is_base_of<__rand_vec_base, T>::value,
+                                    int>::type = 0>
+  bool try_unique_single_elem(T const&, result_type&) {
+    return false;
+  }
+
+  template <typename T>
+  bool try_unique_single_elem(detail::inside_ref<T> const& r, result_type& out) {
+    return try_unique_single_elem(r.get(), out);
+  }
+
+  template <typename Tuple>
+  bool try_unique_single_vector(Tuple const& args, result_type& out, std::true_type) {
+    return try_unique_single_elem(std::get<0>(args), out);
+  }
+
+  template <typename Tuple>
+  bool try_unique_single_vector(Tuple const&, result_type&, std::false_type) {
+    return false;
+  }
+
+  template <typename T>
+  void collect_unique_elem(std::vector<NodePtr>& out, detail::inside_ref<T> const& r) {
+    collect_unique_elem(out, r.get());
+  }
+
+  void collect_unique_elem(std::vector<NodePtr>& out, detail::lambda_node_proxy const& p) { out.push_back(p.node); }
+
+  template <typename VecExpr,
+            typename std::enable_if<detail::is_vector_proto_expr<VecExpr>::value ||
+                                        std::is_base_of<__rand_vec_base, VecExpr>::value,
+                                    int>::type = 0>
+  void collect_unique_elem(std::vector<NodePtr>&, VecExpr const&) {
+    throw std::runtime_error("unique: dynamic vector cannot be combined with other arguments");
+  }
+
+  template <typename ElemT, unsigned N>
+  void collect_unique_elem(std::vector<NodePtr>& out, crv_array<ElemT, N> const& arr) {
+    for (unsigned i = 0; i < arr.size(); ++i) {
+      out.push_back(boost::proto::eval(arr[i](), *this));
+    }
+  }
+
+  template <typename Container,
+            typename std::enable_if<detail::is_boost_range_container<Container>::value, int>::type = 0>
+  void collect_unique_elem(std::vector<NodePtr>& out, Container const& c) {
+    for (auto const& entry : c) {
+      collect_unique_elem(out, entry);
+    }
+  }
+
+  template <typename Expr,
+            typename std::enable_if<boost::proto::is_expr<Expr>::value &&
+                                        !detail::is_vector_proto_expr<Expr>::value,
+                                    int>::type = 0>
+  void collect_unique_elem(std::vector<NodePtr>& out, Expr const& expr) {
+    out.push_back(boost::proto::eval(expr, *this));
+  }
+
+  template <typename Scalar,
+            typename std::enable_if<is_scalar_elem<Scalar>::value, int>::type = 0>
+  void collect_unique_elem(std::vector<NodePtr>& out, Scalar const& s) {
+    out.push_back(new_value<Scalar>(s));
+  }
+
+  template <typename Tuple>
+  void collect_unique_tuple(std::vector<NodePtr>&, Tuple const&, std::index_sequence<>) {}
+
+  template <typename Tuple, std::size_t... Is>
+  void collect_unique_tuple(std::vector<NodePtr>& out, Tuple const& args, std::index_sequence<Is...>) {
+    int dummy[] = {0, (collect_unique_elem(out, std::get<Is>(args)), 0)...};
+    (void)dummy;
+  }
+
   std::map<int, result_type>& variables_;
   std::map<int, result_type>& vector_variables_;
   std::vector<ReadRefPair>& read_references_;
@@ -853,7 +1303,28 @@ struct Context : boost::proto::callable_context<Context, boost::proto::null_cont
   typedef std::map<std::pair<void const*, std::type_index>, std::function<result_type()> > BoundReferences;
   BoundReferences bound_references_;
   std::set<int> referenced_variables_;
+  std::vector<NodePtr> item_stack_;
+  std::vector<int> loop_ph_stack_;
+  std::vector<int> current_i_stack_;
+  std::map<unsigned int, std::vector<int> > array_ph_stacks_;
+  unsigned int array_loop_depth_ = 0;
+  std::map<unsigned int, std::vector<boost::intrusive_ptr<VariableExpr> > > array_elems_;
 };
+
+namespace detail {
+template <typename T, typename std::enable_if<boost::proto::is_expr<uncvref_t<T> >::value, int>::type>
+inline NodePtr eval_proxy_operand(T const& expr, Context* ctx) {
+  return boost::proto::eval(expr, *ctx);
+}
+
+template <typename T,
+          typename std::enable_if<!boost::proto::is_expr<uncvref_t<T> >::value &&
+                                      !std::is_same<uncvref_t<T>, lambda_node_proxy>::value,
+                                  int>::type>
+inline NodePtr eval_proxy_operand(T const& val, Context*) {
+  return Context::new_value(val);
+}
+}  // namespace detail
 // Context
 
 }  // namespace crave

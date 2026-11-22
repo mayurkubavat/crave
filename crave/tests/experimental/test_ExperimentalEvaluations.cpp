@@ -26,6 +26,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <crave/experimental/Experimental.hpp>
 #include <crave/utils/Evaluator.hpp>
 #include <crave/ir/UserConstraint.hpp>
 #include <crave/ir/UserExpression.hpp>
@@ -638,6 +639,89 @@ BOOST_AUTO_TEST_CASE(inside_negation_and_unassigned_equal) {
   crv_variable<unsigned> b;
   eval.assign(a(), 5u);
   BOOST_REQUIRE(!eval.evaluate(a() == b() && b() == 5u));
+}
+
+BOOST_AUTO_TEST_CASE(bounds_check_evaluator_and_coverage_parity) {
+  struct Guard {
+    Guard() : prev_sv(sv_signedness()) {}
+    ~Guard() {
+      set_sv_signedness(prev_sv);
+      set_solver_backend("Z3");
+    }
+    bool prev_sv;
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+
+    crv_array<uint8_t, 4> arr{"arr"};
+    crv_variable<uint8_t> x, y;
+    Evaluator eval;
+    for (unsigned i = 0; i < 4; ++i) eval.assign(arr[i](), uint8_t(10));
+    eval.assign(x(), uint8_t(5));  // OOB for size 4
+    eval.assign(y(), uint8_t(1));
+
+    // All 6 Challenger 2 parity cases + in-bounds + non-bool root + if_then_else
+    auto check_bool_parity = [&](expression const& expr, bool expected) {
+      BOOST_REQUIRE(eval.evaluate(expr));
+      BOOST_REQUIRE_EQUAL(eval.result<bool>(), expected);
+
+      for (const char* backend : {"Z3", "Cudd"}) {
+        if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+        set_solver_backend(backend);
+        Generator gen;
+        for (unsigned i = 0; i < 4; ++i) gen(arr[i]() == uint8_t(10));
+        gen(x() == uint8_t(5))(y() == uint8_t(1));
+        gen(expr);
+        BOOST_REQUIRE_EQUAL(gen.next(), expected);
+      }
+    };
+
+    check_bool_parity(make_expression(!(arr.and_with([&](auto, auto) { return arr[x()] == 10u; }))), false);
+    check_bool_parity(make_expression(arr.and_with([&](auto, auto) { return arr[x()] == 10u; }) == false), false);
+    check_bool_parity(
+        make_expression(arr.and_with([&](auto, auto) { return arr[x()] == 10u; }) || (y() == 1u)), false);
+    check_bool_parity(
+        make_expression((y() == 1u) || (arr.sum_with([&](auto, auto) { return arr[x()] == 10u; }) == 0u)), true);
+    check_bool_parity(make_expression(!foreach (arr, arr[x()] == 10u)), false);
+    check_bool_parity(make_expression(foreach (arr, arr[x()] == 10u) || (y() == 1u)), false);
+    check_bool_parity(
+        make_expression(if_then_else(y() == 1u, arr[0]() == 10u, arr.and_with([&](auto, auto) { return arr[x()] == 10u; }))),
+        true);
+    check_bool_parity(
+        make_expression(if_then_else(y() == 0u, arr[0]() == 10u, arr.and_with([&](auto, auto) { return arr[x()] == 10u; }))),
+        false);
+    check_bool_parity(make_expression(iff(arr.and_with([&](auto, auto) { return arr[x()] == 10u; }), false)), false);
+
+    // A5: division / modulo by OOB reduction BoundsCheckExpr under sv=0 and sv=1
+    check_bool_parity(
+        make_expression(((10u / arr.sum_with([&](auto, auto) { return arr[x()]; })) == 2u) || (y() == 1u)), false);
+    check_bool_parity(make_expression((10u / arr.sum_with([&](auto, auto) { return arr[x()]; })) == 2u), false);
+    check_bool_parity(make_expression((10u % arr.sum_with([&](auto, auto) { return arr[x()]; })) == 0u), false);
+    check_bool_parity(
+        make_expression((y() == 1u) || ((10u / arr.sum_with([&](auto, auto) { return arr[x()]; })) == 2u)), true);
+
+    // Non-bool OOB reduction at root -> evaluate() returns false (invalid)
+    BOOST_REQUIRE(!eval.evaluate(arr.sum_with([&](auto, auto) { return arr[x()]; })));
+
+    // In-bounds checks
+    eval.assign(x(), uint8_t(2));
+    BOOST_REQUIRE(eval.evaluate(arr.and_with([&](auto, auto) { return arr[x()] == 10u; })));
+    BOOST_REQUIRE(eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(!(arr.and_with([&](auto, auto) { return arr[x()] == 10u; }))));
+    BOOST_REQUIRE(!eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(arr.sum_with([&](auto, auto) { return arr[x()]; })));
+    BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 40u);
+
+    // CoverageBins caller parity under sv=0 and sv=1
+    eval.assign(x(), uint8_t(5));
+    crv_bin bin_not_oob(!(arr.and_with([&](auto, auto) { return arr[x()] == 10u; })));
+    crv_bin bin_or_short_circuit((y() == 1u) || (arr.sum_with([&](auto, auto) { return arr[x()] == 10u; }) == 0u));
+    bin_not_oob.calcHit(eval);
+    bin_or_short_circuit.calcHit(eval);
+    BOOST_REQUIRE_EQUAL(bin_not_oob.hit_count(), 0u);
+    BOOST_REQUIRE_EQUAL(bin_or_short_circuit.hit_count(), 1u);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Evaluations

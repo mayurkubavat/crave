@@ -70,6 +70,10 @@ class crv_constraint_base : public crv_object {
    */
   bool active() const;
 
+  void constraint_mode(bool on) override;
+  bool constraint_mode() const override;
+  bool has_active_constraint_() const override { return active_; }
+
   /**
    * \brief Checks if constraint is a soft constraint.
    * \return True if this constraint is a soft constraint, false otherwise
