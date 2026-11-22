@@ -42,6 +42,8 @@ bool isBoolean(Node const& n) {
       dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
       dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
       dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
+      dynamic_cast<RangeExpr const*>(&n) || dynamic_cast<TolPlusMinusExpr const*>(&n) ||
+      dynamic_cast<TolPlusPctExpr const*>(&n) || dynamic_cast<VectorContains const*>(&n) ||
       dynamic_cast<ForEach const*>(&n) || dynamic_cast<Unique const*>(&n))
     return true;
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return isBoolean(*ite->b());
@@ -228,6 +230,38 @@ NodeRef svBoolean(NodeRef const& n) {
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
     return new IfThenElse(svBoolean(ite->a()), svBoolean(ite->b()), svBoolean(ite->c()));
   if (Inside const* in = dynamic_cast<Inside const*>(&node)) return new Inside(svSelf(in->child()), in->collection());
+  auto svBoolToBv = [](NodeRef const& c, unsigned w) -> NodeRef {
+    return new IfThenElse(svBoolean(c), new Constant(1, w, false), new Constant(0, w, false));
+  };
+  auto svTernChild = [&svBoolToBv](NodeRef const& c, unsigned w) -> NodeRef {
+    if (isBoolean(*c)) return svBoolToBv(c, w);
+    return svInteger(c, w, svSigned(*c));
+  };
+  if (RangeExpr const* r = dynamic_cast<RangeExpr const*>(&node)) {
+    unsigned const w = std::max({svWidth(*r->a()), svWidth(*r->b()), svWidth(*r->c())});
+    return new RangeExpr(svTernChild(r->a(), w), svTernChild(r->b(), w), svTernChild(r->c(), w));
+  }
+  if (TolPlusMinusExpr const* t = dynamic_cast<TolPlusMinusExpr const*>(&node)) {
+    unsigned const w = std::max({svWidth(*t->a()), svWidth(*t->b()), svWidth(*t->c())});
+    return new TolPlusMinusExpr(svTernChild(t->a(), w), svTernChild(t->b(), w), svTernChild(t->c(), w));
+  }
+  if (TolPlusPctExpr const* t = dynamic_cast<TolPlusPctExpr const*>(&node)) {
+    unsigned const w = std::max(svWidth(*t->a()), svWidth(*t->b()));
+    unsigned const w_pct = svWidth(*t->c());
+    return new TolPlusPctExpr(svTernChild(t->a(), w), svTernChild(t->b(), w), svTernChild(t->c(), w_pct));
+  }
+  if (VectorContains const* vc = dynamic_cast<VectorContains const*>(&node)) {
+    bool const elem_is_bool = (vc->elem_bitsize() == 1 && vc->elem_sign());
+    if (elem_is_bool && isBoolean(*vc->child())) {
+      return new VectorContains(svBoolean(vc->child()), vc->vec_id(), 1, true, 1, true);
+    }
+    NodeRef child = isBoolean(*vc->child()) ? svBoolToBv(vc->child(), 1u) : svSelf(vc->child());
+    unsigned const ew = elem_is_bool ? 1u : vc->elem_bitsize();
+    bool const es = elem_is_bool ? false : vc->elem_sign();
+    unsigned const cw = std::max(svWidth(*child), ew);
+    bool const cs = svSigned(*child) && es;
+    return new VectorContains(svInteger(child, cw, cs), vc->vec_id(), vc->elem_bitsize(), vc->elem_sign(), cw, cs);
+  }
   if (ForEach const* fe = dynamic_cast<ForEach const*>(&node)) return new ForEach(fe->lhs(), svBoolean(fe->rhs()));
   return n;
 }
@@ -439,7 +473,7 @@ void FixWidthVisitor::visitExtendExpr(const ExtendExpression& e) {
   stack_entry entry;
   pop(entry);
 
-  exprStack_.push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second));
+  exprStack_.push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second + e.value()));
 }
 
 void FixWidthVisitor::visitAndOpr(const AndOpr& a) { visitNumberResultBinExpr(a); }
@@ -561,6 +595,53 @@ void FixWidthVisitor::visitBitslice(const Bitslice& b) {
   pop(e);
 
   exprStack_.push(std::make_pair(new Bitslice(e.first, b.r(), b.l()), b.r() - b.l() + 1));
+}
+
+void FixWidthVisitor::visitRangeExpr(const RangeExpr& r) {
+  stack_entry a, b, c;
+  evalTernExpr(r, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new RangeExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new TolPlusMinusExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new TolPlusPctExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitVectorContains(const VectorContains& vc) {
+  visitUnaryExpr(vc);
+  stack_entry e;
+  pop(e);
+  bool const elem_is_bool = (vc.elem_bitsize() == 1 && vc.elem_sign());
+  if (elem_is_bool && isBoolean(*e.first)) {
+    exprStack_.push(std::make_pair(new VectorContains(e.first, vc.vec_id(), 1, true, 1, true), 1));
+    return;
+  }
+  promoteToInteger(e);
+  unsigned const ew = elem_is_bool ? (sv_signedness_ ? 1u : bitsize_traits<int>::value) : vc.elem_bitsize();
+  bool const es = elem_is_bool ? (sv_signedness_ ? false : crave::is_signed<int>::value) : vc.elem_sign();
+  unsigned const cw = std::max(static_cast<unsigned>(e.second), ew);
+  NodeRef child = e.first;
+  if (static_cast<unsigned>(e.second) < cw) {
+    child = NodeRef(new ExtendExpression(child, cw - static_cast<unsigned>(e.second)));
+  }
+  exprStack_.push(std::make_pair(new VectorContains(child, vc.vec_id(), vc.elem_bitsize(), vc.elem_sign(), cw, es), 1));
 }
 
 }  // end namespace crave

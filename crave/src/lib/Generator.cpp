@@ -86,7 +86,7 @@ void Generator::rebuild(bool selfInclude) {
   }
   var_gen_->reset(constr_pttn_.getPartitions());
   vec_gen_.reset(constr_pttn_.getVectorConstraints());
-  var_cov_gen_.reset(constr_pttn_.getPartitions());
+  cov_reset_needed_ = true;
 }
 
 bool Generator::next() {
@@ -101,10 +101,11 @@ bool Generator::next() {
   std::vector<std::string> excluded;
   bool result = false;
   while (var_gen_->solve()) {
-    if (vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_)) {
+    if (vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_, &constr_pttn_.getPartitions())) {
       result = true;
       break;
     }
+    var_gen_->undoRandc();
     int id;
     unsigned size;
     if (excluded.size() >= max_excluded_sizes || !vec_gen_.failedSize(&id, &size)) break;
@@ -126,6 +127,10 @@ bool Generator::nextCov() {
     rebuild(true);
   }
   if (!covered_) {
+    if (cov_reset_needed_) {
+      var_cov_gen_.reset(constr_pttn_.getPartitions());
+      cov_reset_needed_ = false;
+    }
     if (var_cov_gen_.solve() && vec_gen_.solve(var_cov_gen_, to_be_generated_vec_ids_))
       return true;
     else
@@ -138,7 +143,7 @@ bool Generator::isCovered() { return covered_; }
 
 void Generator::resetCoverage() {
   covered_ = false;
-  var_cov_gen_.reset(constr_pttn_.getPartitions());
+  cov_reset_needed_ = true;
 }
 
 std::ostream& Generator::printDotGraph(std::ostream& os, bool root) {

@@ -579,6 +579,56 @@ BOOST_AUTO_TEST_CASE(vector_scalar_before_vector) {
   }
 }
 
+struct VectorInsideMemberItem : public crv_sequence_item {
+  VectorInsideMemberItem(crv_object_name) {}
+  crv_variable<unsigned int> x;
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 4, foreach (v(), v()[_i] < 5u), inside(x(), v)};
+};
+
+struct VectorInsideBoolItem : public crv_sequence_item {
+  VectorInsideBoolItem(crv_object_name) {}
+  crv_variable<bool> flag;
+  crv_vector<bool> bv;
+  crv_constraint con = {bv().size() == 3, foreach (bv(), bv()[_i] == true), inside(flag(), bv)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_inside_experimental) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    {
+      VectorInsideMemberItem item("item");
+      for (int i = 0; i < 5; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_EQUAL(item.v.size(), 4u);
+        BOOST_REQUIRE_LT(item.x, 5u);
+        bool found = false;
+        for (unsigned j = 0; j < item.v.size(); ++j)
+          if (item.v[j] == item.x) found = true;
+        BOOST_REQUIRE(found);
+      }
+
+      BOOST_REQUIRE(item.randomize_with(item.x() == 3u));
+      BOOST_REQUIRE_EQUAL(item.x, 3u);
+      BOOST_REQUIRE(item.v[0] == 3u || item.v[1] == 3u || item.v[2] == 3u || item.v[3] == 3u);
+
+      BOOST_REQUIRE(!item.randomize_with(item.x() == 9u));
+    }
+
+    {
+      VectorInsideBoolItem bitem("bitem");
+      BOOST_REQUIRE(bitem.randomize());
+      BOOST_REQUIRE(bitem.flag);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

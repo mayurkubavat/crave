@@ -28,6 +28,7 @@
 
 #include <boost/format.hpp>
 
+#include <cstdint>
 #include <set>
 #include <iostream>
 
@@ -845,6 +846,254 @@ BOOST_AUTO_TEST_CASE(vector_soft_last_wins_and_partial) {
       target = 18;  // compatible again -> re-activates
       BOOST_REQUIRE(gen.next());
       BOOST_REQUIRE_EQUAL(v[0] + v[1] + v[2], 18u);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(inside_vector_membership_and_joint_fallback) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // 1. Fixed size + fixed x: inside(x, v) and inside(x, v())
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> x;
+      Generator gen;
+      gen(v().size() == 3)(x == 7u)(inside(x, v));
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_EQUAL(gen[x], 7u);
+      BOOST_REQUIRE(v[0] == 7u || v[1] == 7u || v[2] == 7u);
+
+      Generator gen2;
+      gen2(v().size() == 3)(x == 9u)(inside(x, v()));
+      BOOST_REQUIRE(gen2.next());
+      BOOST_REQUIRE_EQUAL(gen2[x], 9u);
+      BOOST_REQUIRE(v[0] == 9u || v[1] == 9u || v[2] == 9u);
+    }
+
+    // 2. Unconstrained scalar Variable<unsigned> x + foreach(v, v[i] < 5u) + inside(x, v)
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> x;
+      Generator gen;
+      gen(v().size() == 4)(foreach (v(), v()[_i] < 5u))(inside(x, v));
+      for (int iter = 0; iter < 5; ++iter) {
+        BOOST_REQUIRE(gen.next());
+        unsigned xv = gen[x];
+        BOOST_REQUIRE_LT(xv, 5u);
+        bool found = false;
+        for (unsigned i = 0; i < v.size(); ++i)
+          if (v[i] == xv) found = true;
+        BOOST_REQUIRE(found);
+      }
+    }
+
+    // 3. Coupled scalar constraint triggering joint scalar+vector fallback
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> x;
+      Generator gen;
+      gen(v().size() == 3)(x >= 10u && x <= 20u)(foreach (v(), v()[_i] < 13u))(inside(x, v));
+      for (int iter = 0; iter < 5; ++iter) {
+        BOOST_REQUIRE(gen.next());
+        unsigned xv = gen[x];
+        BOOST_REQUIRE(xv >= 10u && xv < 13u);
+        BOOST_REQUIRE(v[0] == xv || v[1] == xv || v[2] == xv);
+      }
+    }
+
+    // 4. Negation !inside(x, v)
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> x;
+      Generator gen;
+      gen(v().size() == 3)(foreach (v(), v()[_i] == 5u))(x < 7u)(!inside(x, v));
+      BOOST_REQUIRE(gen.next());
+      BOOST_REQUIRE_NE(gen[x], 5u);
+    }
+
+    // 5. Empty vector UNSAT vs size retry + mixed inside(x, v, 99u)
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> x;
+      Generator g_empty;
+      g_empty(v().size() == 0u)(inside(x, v));
+      BOOST_REQUIRE(!g_empty.next());
+
+      Generator g_retry;
+      g_retry(v().size() <= 3u)(foreach (v(), v()[_i] == 4u))(x == 4u)(inside(x, v));
+      BOOST_REQUIRE(g_retry.next());
+      BOOST_REQUIRE_GT(v.size(), 0u);
+
+      Generator g_mixed;
+      g_mixed(v().size() == 0u)(inside(x, v, 99u));
+      BOOST_REQUIRE(g_mixed.next());
+      BOOST_REQUIRE_EQUAL(g_mixed[x], 99u);
+    }
+
+    // 6. foreach with tol_plusminus & range
+    {
+      rand_vec<unsigned int> v(NULL);
+      Variable<unsigned int> target;
+      Generator gen;
+      gen(v().size() == 4)(target == 20u)(foreach (v(), inside(v()[_i], tol_plusminus(target, 3u))));
+      BOOST_REQUIRE(gen.next());
+      for (unsigned i = 0; i < 4; ++i) {
+        BOOST_REQUIRE(v[i] >= 17u && v[i] <= 23u);
+      }
+    }
+
+    // 7. Negative throws: two-vector membership & self-size_var cycle
+    {
+      rand_vec<unsigned int> v(NULL), w(NULL);
+      Variable<unsigned int> x;
+      Generator gen;
+      BOOST_REQUIRE_THROW(gen(inside(x, v, w)), std::runtime_error);
+      BOOST_REQUIRE_THROW(gen(inside(v().size(), v)), std::runtime_error);
+    }
+  }
+}
+
+struct BugB_RandObj : public rand_obj {
+  BugB_RandObj() : x(this), v(this) {
+    x = 2u;
+    constraint(v().size() == 3u);
+    constraint(foreach (v(), v()[_i] < 10u));
+    constraint(inside(x(), v));
+  }
+  randv<unsigned> x;
+  rand_vec<unsigned> v;
+};
+
+BOOST_AUTO_TEST_CASE(vector_joint_dont_care_write_ref_and_randc) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    // Bug A: CUDD 'X' don't-care bits materialized consistently across scalar & vector (uint8_t, int8_t, bool)
+    {
+      Variable<uint8_t> x;
+      rand_vec<uint8_t> v(NULL);
+      Generator gen;
+      gen(v().size() == 3u)(foreach (v(), v()[_i] >= 10 && v()[_i] <= 20))(inside(x, v))(x >= 5 && x <= 12);
+      for (int i = 0; i < 30; ++i) {
+        BOOST_REQUIRE(gen.next());
+        uint8_t xv = gen[x];
+        BOOST_REQUIRE(xv == v[0] || xv == v[1] || xv == v[2]);
+      }
+
+      Variable<int8_t> sx;
+      rand_vec<int8_t> sv(NULL);
+      Generator sgen;
+      sgen(sv().size() == 3u)(foreach (sv(), sv()[_i] >= -20 && sv()[_i] <= -10))(inside(sx, sv))(
+          sx >= -12 && sx <= -5);
+      for (int i = 0; i < 30; ++i) {
+        BOOST_REQUIRE(sgen.next());
+        int8_t sxv = sgen[sx];
+        BOOST_REQUIRE(sxv == sv[0] || sxv == sv[1] || sxv == sv[2]);
+      }
+
+      Variable<bool> bx;
+      rand_vec<bool> bv(NULL);
+      Generator bgen;
+      bgen(bv().size() == 2u)(inside(bx, bv));
+      for (int i = 0; i < 20; ++i) {
+        BOOST_REQUIRE(bgen.next());
+        bool bxv = bgen[bx];
+        BOOST_REQUIRE(bxv == bv[0] || bxv == bv[1]);
+      }
+    }
+
+    // Bug B: WriteReference / randv in rand_obj / crave::randomize(x).with(...) not pinned to stale C++ value
+    {
+      uint8_t x_val = 15u;
+      WriteReference<uint8_t> x_ref(&x_val);
+      rand_vec<uint8_t> v(NULL);
+      Generator gen(v().size() == 3u);
+      gen(foreach (v(), v()[_i] >= 10 && v()[_i] <= 20))(inside(x_ref, v));
+      std::set<uint8_t> seen;
+      for (int i = 0; i < 25; ++i) {
+        BOOST_REQUIRE(gen.next());
+        BOOST_REQUIRE(x_val == v[0] || x_val == v[1] || x_val == v[2]);
+        seen.insert(x_val);
+      }
+      BOOST_REQUIRE_GT(seen.size(), 1u);
+
+      BugB_RandObj obj;
+      std::set<unsigned> obj_seen;
+      for (int i = 0; i < 25; ++i) {
+        BOOST_REQUIRE(obj.next());
+        BOOST_REQUIRE(obj.x == obj.v[0] || obj.x == obj.v[1] || obj.x == obj.v[2]);
+        obj_seen.insert(obj.x);
+      }
+      BOOST_REQUIRE_GT(obj_seen.size(), 1u);
+    }
+
+    // Bug C: randc + inside(x, v) 8-bit cycles, 16-bit O(1) listing, and failed-next() cycle preservation
+    {
+      Variable<uint8_t> x;
+      rand_vec<uint8_t> v(NULL);
+      Generator gen;
+      gen.randc(x);
+      gen(v().size() == 2u)(x >= 5 && x <= 7)(foreach (v(), v()[_i] >= 6 && v()[_i] <= 8))(inside(x, v));
+      for (int cyc = 0; cyc < 3; ++cyc) {
+        std::set<uint8_t> cyc_vals;
+        for (int draw = 0; draw < 2; ++draw) {
+          BOOST_REQUIRE(gen.next());
+          uint8_t xv = gen[x];
+          BOOST_REQUIRE(xv == 6 || xv == 7);
+          BOOST_REQUIRE(xv == v[0] || xv == v[1]);
+          cyc_vals.insert(xv);
+        }
+        BOOST_REQUIRE_EQUAL(cyc_vals.size(), 2u);
+      }
+
+      Variable<uint16_t> x16;
+      rand_vec<uint16_t> v16(NULL);
+      Generator gen16;
+      gen16.randc(x16);
+      gen16(v16().size() == 2u)(foreach (v16(), v16()[_i] >= 6 && v16()[_i] <= 7))(inside(x16, v16));
+      for (int cyc = 0; cyc < 2; ++cyc) {
+        std::set<uint16_t> cyc_vals;
+        for (int draw = 0; draw < 2; ++draw) {
+          BOOST_REQUIRE(gen16.next());
+          uint16_t xv = gen16[x16];
+          BOOST_REQUIRE(xv == 6 || xv == 7);
+          cyc_vals.insert(xv);
+        }
+        BOOST_REQUIRE_EQUAL(cyc_vals.size(), 2u);
+      }
+
+      // Failed next() due to vector contradiction must not consume/corrupt randc cycle
+      Variable<uint8_t> xc;
+      rand_vec<uint8_t> vc(NULL);
+      uint8_t min_elem = 6u;
+      Generator genc;
+      genc.randc(xc);
+      genc(vc().size() == 2u)(xc >= 5 && xc <= 7)(
+          foreach (vc(), vc()[_i] >= reference(min_elem) && vc()[_i] <= 7))(inside(xc, vc));
+      BOOST_REQUIRE(genc.next());
+      uint8_t first_draw = genc[xc];
+      BOOST_REQUIRE(first_draw == 6 || first_draw == 7);
+
+      min_elem = 8u;  // vector UNSAT while scalar partition xc in [5, 7] remains SAT
+      BOOST_REQUIRE(!genc.next());
+      BOOST_REQUIRE(!genc.next());
+
+      min_elem = 6u;  // restore satisfiability: remaining value in cycle must appear without repeating first_draw
+      BOOST_REQUIRE(genc.next());
+      uint8_t second_draw = genc[xc];
+      BOOST_REQUIRE(second_draw == 6 || second_draw == 7);
+      BOOST_REQUIRE_NE(second_draw, first_draw);
     }
   }
 }

@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -84,6 +85,32 @@ struct RandcState {
   bool complete;                 // whether all unused values, which satisfy the constraints, are listed
   bool started;
 };
+
+struct RandcUndo {
+  int id;
+  RandcState* state;
+  std::shared_ptr<RandcState> saved;
+  uint64_t value;
+  bool listed;
+};
+
+inline void undoRandcEntries(std::vector<RandcUndo>& undo_list) {
+  for (std::vector<RandcUndo>::reverse_iterator ite = undo_list.rbegin(); ite != undo_list.rend(); ++ite) {
+    RandcState& state = *ite->state;
+    if (ite->saved) {
+      state = *ite->saved;
+      continue;
+    }
+    std::vector<uint64_t>::iterator vit = std::find(state.used.begin(), state.used.end(), ite->value);
+    if (vit != state.used.end()) {
+      *vit = state.used.back();
+      state.used.pop_back();
+    }
+    state.unused.push_back(ite->value);
+    if (ite->listed) state.listed.push_back(ite->value);
+  }
+  undo_list.clear();
+}
 
 /**
  * \internal

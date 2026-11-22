@@ -81,6 +81,10 @@ class ReplaceVisitor : public NodeVisitor {
   virtual void visitForEach(ForEach const &);
   virtual void visitUnique(Unique const &);
   virtual void visitBitslice(Bitslice const &);
+  virtual void visitRangeExpr(RangeExpr const &);
+  virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const &);
+  virtual void visitTolPlusPctExpr(TolPlusPctExpr const &);
+  virtual void visitVectorContains(VectorContains const &);
 
   void reset();
   bool okay() { return okay_; }

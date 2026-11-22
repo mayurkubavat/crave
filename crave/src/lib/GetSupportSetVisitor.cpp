@@ -123,4 +123,17 @@ void GetSupportSetVisitor::visitIfThenElse(const IfThenElse& ite) { visitTernary
 
 void GetSupportSetVisitor::visitBitslice(const Bitslice& b) { visitUnaryExpr(b); }
 
+void GetSupportSetVisitor::visitRangeExpr(const RangeExpr& r) { visitTernaryExpr(r); }
+
+void GetSupportSetVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) { visitTernaryExpr(t); }
+
+void GetSupportSetVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) { visitTernaryExpr(t); }
+
+void GetSupportSetVisitor::visitVectorContains(const VectorContains& vc) {
+  visitUnaryExpr(vc);
+  support_vars.insert(vc.vec_id());
+  reduced_vectors.insert(vc.vec_id());
+  vector_vars.insert(vc.vec_id());
+}
+
 }  // end namespace crave

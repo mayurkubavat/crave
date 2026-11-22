@@ -457,18 +457,24 @@ void VariableDefaultSolver::listWindows(NodePtr const& var, RandcState const& st
 
 // As SystemVerilog keeps the values of the variables when randomize() fails, the values of the randc variables
 // are not used up by a failed generation.
-void VariableDefaultSolver::undoRandc() {
+void VariableDefaultSolver::undoRandc() { undoRandcEntries(randc_undo_); }
+
+void VariableDefaultSolver::undoRandc(std::set<int> const& ids) {
+  std::vector<RandcUndo> remaining;
   for (std::vector<RandcUndo>::reverse_iterator ite = randc_undo_.rbegin(); ite != randc_undo_.rend(); ++ite) {
-    RandcState& state = *ite->state;
-    if (ite->saved) {
-      state = *ite->saved;
-      continue;
+    if (ids.count(ite->id)) {
+      std::vector<RandcUndo> single(1, *ite);
+      undoRandcEntries(single);
+    } else {
+      remaining.push_back(*ite);
     }
-    removeValue(state.used, ite->value);
-    state.unused.push_back(ite->value);
-    if (ite->listed) state.listed.push_back(ite->value);
   }
-  randc_undo_.clear();
+  std::reverse(remaining.begin(), remaining.end());
+  randc_undo_.swap(remaining);
+}
+
+std::string VariableDefaultSolver::randcSignature(int id) {
+  return containsVar(id) ? signature() : std::string();
 }
 
 // IEEE 1800-2017 18.4.2: a randc variable takes the values, which satisfy the constraints, in a random order
@@ -485,7 +491,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
                              " bits.");
 
   // the state before this call, if a new cycle starts, to give the value back on failure
-  RandcUndo undo = {&state, std::shared_ptr<RandcState>(), 0, false};
+  RandcUndo undo = {id, &state, std::shared_ptr<RandcState>(), 0, false};
   if (!state.started || state.signature != signature()) {
     undo.saved = std::make_shared<RandcState>(state);
     startCycle(state, v->bitsize());

@@ -36,7 +36,11 @@
 #include <boost/tuple/tuple.hpp>
 #include <boost/tuple/tuple_io.hpp>
 #include <boost/multiprecision/cpp_int.hpp>
+#include <cassert>
+#include <cstddef>
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 namespace metaSMT {
 
@@ -100,6 +104,66 @@ namespace metaSMT {
 
         Z3_context &ctx;
       }; // domain_sort_visitor
+
+      inline std::string bv_literal_to_binary(std::string const &str, unsigned bv_size) {
+        std::string bin;
+        if (str.size() > 2 && str[0] == '#' && (str[1] == 'b' || str[1] == 'B')) {
+          bin = str.substr(2);
+          for (std::size_t i = 0; i < bin.size(); ++i) {
+            if (bin[i] != '0' && bin[i] != '1') {
+              throw std::runtime_error("invalid binary digit in Z3 bitvector literal");
+            }
+          }
+        } else if (str.size() > 2 && str[0] == '#' && (str[1] == 'x' || str[1] == 'X')) {
+          static char const * const hex_nibbles[16] = {
+            "0000", "0001", "0010", "0011",
+            "0100", "0101", "0110", "0111",
+            "1000", "1001", "1010", "1011",
+            "1100", "1101", "1110", "1111"
+          };
+          bin.reserve((str.size() - 2) * 4);
+          for (std::size_t i = 2; i < str.size(); ++i) {
+            char c = str[i];
+            unsigned nibble = 0;
+            if (c >= '0' && c <= '9') {
+              nibble = static_cast<unsigned>(c - '0');
+            } else if (c >= 'a' && c <= 'f') {
+              nibble = static_cast<unsigned>(c - 'a' + 10);
+            } else if (c >= 'A' && c <= 'F') {
+              nibble = static_cast<unsigned>(c - 'A' + 10);
+            } else {
+              throw std::runtime_error("invalid hex digit in Z3 bitvector literal");
+            }
+            bin.append(hex_nibbles[nibble], 4);
+          }
+        } else if (str.size() > 5 && str.compare(0, 5, "(_ bv") == 0) {
+          std::size_t pos = 5;
+          while (pos < str.size() && str[pos] >= '0' && str[pos] <= '9') ++pos;
+          if (pos == 5 || pos >= str.size() || str[pos] != ' ') {
+            throw std::runtime_error("invalid decimal Z3 bitvector literal: " + str);
+          }
+          std::size_t width_pos = pos + 1;
+          while (width_pos < str.size() && str[width_pos] >= '0' && str[width_pos] <= '9') ++width_pos;
+          if (width_pos == pos + 1 || width_pos + 1 != str.size() || str[width_pos] != ')') {
+            throw std::runtime_error("invalid decimal Z3 bitvector literal: " + str);
+          }
+          boost::multiprecision::cpp_int dec_val(str.substr(5, pos - 5));
+          bin.assign(bv_size, '0');
+          for (unsigned i = 0; i < bv_size; ++i) {
+            if (bit_test(dec_val, i)) bin[bv_size - 1 - i] = '1';
+          }
+          return bin;
+        } else {
+          throw std::runtime_error("unexpected Z3 bitvector literal format: " + str);
+        }
+
+        if (bin.size() < bv_size) {
+          bin.insert(0, bv_size - bin.size(), '0');
+        } else if (bin.size() > bv_size) {
+          bin.erase(0, bin.size() - bv_size);
+        }
+        return bin;
+      }
     } // detail
 
     class Z3_Backend {
@@ -171,17 +235,17 @@ namespace metaSMT {
         }
 
         assert(r.is_bv());
+        unsigned const bv_size = r.get_sort().bv_size();
 #ifdef metaSMT_Z3_ULL_API
         unsigned long long val = 0;
 #else
         uint64_t val = 0;
 #endif
-        if (Z3_get_numeral_uint64(ctx_, r, &val) && val <= std::numeric_limits<uint64_t>::max())
-          return result_wrapper(val, r.get_sort().bv_size());
+        if (Z3_get_numeral_uint64(ctx_, r, &val))
+          return result_wrapper(static_cast<uint64_t>(val), bv_size);
 
         std::string str = Z3_ast_to_string(ctx_, r);
-        assert(str.find("#b") == 0);
-        return result_wrapper(str.substr(2));
+        return result_wrapper(detail::bv_literal_to_binary(str, bv_size));
       }
 
       void assertion( result_type const &e ) {

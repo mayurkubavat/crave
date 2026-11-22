@@ -76,11 +76,15 @@ class ModuloOpr;
 // misc
 class Inside;
 class IfThenElse;
+class RangeExpr;
+class TolPlusMinusExpr;
+class TolPlusPctExpr;
 
 // vector
 class VectorAccess;
 class ForEach;
 class Unique;
+class VectorContains;
 
 class NodeVisitor {
  protected:
@@ -129,6 +133,10 @@ class NodeVisitor {
   virtual void visitForEach(ForEach const&) = 0;
   virtual void visitUnique(Unique const&) = 0;
   virtual void visitBitslice(Bitslice const&) = 0;
+  virtual void visitRangeExpr(RangeExpr const&);
+  virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
+  virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
+  virtual void visitVectorContains(VectorContains const&);
 };
 
 unsigned int placeholder_bitsize();

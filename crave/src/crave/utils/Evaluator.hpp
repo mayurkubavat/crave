@@ -55,7 +55,8 @@ class Evaluator {
   void assign(var_type const& var, value_type const& value) {
     unsigned width = bitsize_traits<typename var_type::value_type>::value;
     bool sign = crave::is_signed<typename var_type::value_type>::value;
-    assignments_[var.id()] = Constant(value, width, sign);
+    auto scalar = distribution_value_type<value_type>::value(value);
+    assignments_[var.id()] = Constant(static_cast<uint64_t>(scalar), width, sign);
   }
 
   void assign(unsigned id, Constant c);

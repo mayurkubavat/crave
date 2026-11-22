@@ -80,6 +80,10 @@ class ToDotVisitor : public NodeVisitor {
   void visitForEach(ForEach const&);
   void visitUnique(Unique const&);
   void visitBitslice(Bitslice const&);
+  void visitRangeExpr(RangeExpr const&);
+  void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
+  void visitTolPlusPctExpr(TolPlusPctExpr const&);
+  void visitVectorContains(VectorContains const&);
 
  private:
   bool putNode(Node const*);

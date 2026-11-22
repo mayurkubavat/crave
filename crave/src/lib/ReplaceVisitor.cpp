@@ -449,6 +449,74 @@ void ReplaceVisitor::visitBitslice(Bitslice const& b) {
   subscript_stack_.push(!idx);
 }
 
+void ReplaceVisitor::visitRangeExpr(RangeExpr const& r) {
+  NodePtr a, b, c;
+  evalTernExpr(r, a, b, c);
+  aux_stack_.push(new RangeExpr(a, b, c));
+  updateResult();
+  int a_val, b_val, c_val;
+  evalTernSubscript(a_val, b_val, c_val);
+  subscript_stack_.push(b_val <= a_val && a_val <= c_val);
+}
+
+void ReplaceVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const& t) {
+  NodePtr a, b, c;
+  evalTernExpr(t, a, b, c);
+  aux_stack_.push(new TolPlusMinusExpr(a, b, c));
+  updateResult();
+  int a_val, b_val, c_val;
+  evalTernSubscript(a_val, b_val, c_val);
+  subscript_stack_.push(0);
+}
+
+void ReplaceVisitor::visitTolPlusPctExpr(TolPlusPctExpr const& t) {
+  NodePtr a, b, c;
+  evalTernExpr(t, a, b, c);
+  aux_stack_.push(new TolPlusPctExpr(a, b, c));
+  updateResult();
+  int a_val, b_val, c_val;
+  evalTernSubscript(a_val, b_val, c_val);
+  subscript_stack_.push(0);
+}
+
+void ReplaceVisitor::visitVectorContains(VectorContains const& vc) {
+  NodePtr child;
+  evalUnaryExpr(vc, child);
+  subscript_stack_.pop();
+  if (variables_->empty()) {
+    aux_stack_.push(new Constant(false));
+    updateResult();
+    subscript_stack_.push(0);
+    return;
+  }
+  bool const bool_vec = (vc.elem_bitsize() == 1 && vc.elem_sign());
+  bool const bool_cmp = (vc.cmp_width() == 1 && vc.cmp_sign());
+  NodePtr disj;
+  for (unsigned int k = 0; k < variables_->size(); ++k) {
+    VariableExpr& var = *variables_->at(k);
+    variables_->at(k) = new VariableExpr(var.id(), vc.elem_bitsize(), vc.elem_sign());
+    NodePtr elem = variables_->at(k);
+    if (!bool_cmp) {
+      if (bool_vec) {
+        elem = new IfThenElse(elem, new Constant(1, vc.cmp_width(), vc.cmp_sign()),
+                              new Constant(0, vc.cmp_width(), vc.cmp_sign()));
+      } else {
+        if (!vc.cmp_sign() && vc.elem_sign() && vc.cmp_width() > vc.elem_bitsize()) {
+          elem = new Bitslice(elem, vc.elem_bitsize() - 1, 0);
+        }
+        if (vc.cmp_width() > vc.elem_bitsize()) {
+          elem = new ExtendExpression(elem, vc.cmp_width() - vc.elem_bitsize());
+        }
+      }
+    }
+    NodePtr eq(new EqualOpr(child, elem));
+    disj = disj ? NodePtr(new LogicalOrOpr(disj, eq)) : eq;
+  }
+  aux_stack_.push(disj);
+  updateResult();
+  subscript_stack_.push(0);
+}
+
 void ReplaceVisitor::updateResult() { result_ = aux_stack_.top(); }
 
 void ReplaceVisitor::reset() {

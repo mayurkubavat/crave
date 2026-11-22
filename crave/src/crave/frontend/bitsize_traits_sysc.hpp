@@ -128,9 +128,19 @@ struct distribution_value_type<sc_dt::sc_bigint<N> > {
 };
 
 template <int N>
+struct distribution_value_type<sc_dt::sc_bv<N> > {
+  static_assert(N <= 64, "sc_bv wider than 64 bits is not supported in distributions/constants");
+  typedef uint64_t type;
+  static type value(sc_dt::sc_bv<N> const& v) { return v.to_uint64(); }
+};
+
+template <int N>
 struct distribution_value_type<sc_dt::sc_biguint<N> > {
   typedef uint64_t type;
   static type value(sc_dt::sc_biguint<N> const& v) { return v.to_uint64(); }
 };
+
+template <typename T>
+struct is_distribution_scalar<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : std::true_type {};
 
 }  // namespace crave

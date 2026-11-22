@@ -25,6 +25,7 @@
 //****************************************************************************************
 
 #include <boost/test/unit_test.hpp>
+#include <crave/experimental/Experimental.hpp>
 #include <crave/experimental/Variable.hpp>
 
 #include <set>
@@ -835,6 +836,207 @@ BOOST_AUTO_TEST_CASE(inside_negation_and_if_then) {
   for (int i = 0; i < 20; ++i) {
     BOOST_REQUIRE(item.randomize());
     BOOST_REQUIRE(item.c == inside_color_enum::INSIDE_GREEN || item.c == inside_color_enum::INSIDE_BLUE);
+  }
+}
+
+struct inside_crv_array_item : public crv_sequence_item {
+  inside_crv_array_item(crv_object_name) {}
+  crv_variable<unsigned char> x;
+  crv_variable<unsigned char> a;
+  crv_variable<unsigned char> b;
+  crv_variable<bool> flag;
+  crv_array<unsigned char, 4> arr;
+  crv_constraint c_arr{arr[0]() == static_cast<unsigned char>(10u), arr[1]() == static_cast<unsigned char>(20u),
+                       arr[2]() == static_cast<unsigned char>(30u), arr[3]() == static_cast<unsigned char>(40u)};
+  crv_constraint con{"con"};
+};
+
+struct inside_crv_array2_item : public crv_sequence_item {
+  inside_crv_array2_item(crv_object_name) {}
+  crv_variable<unsigned char> a;
+  crv_variable<unsigned char> b;
+  crv_array<unsigned char, 2> arr;
+  crv_constraint c_arr{arr[0]() == static_cast<unsigned char>(10u), arr[1]() == static_cast<unsigned char>(20u)};
+  crv_constraint con{"con"};
+};
+
+struct inside_empty_array_item : public crv_sequence_item {
+  inside_empty_array_item(crv_object_name) {}
+  crv_variable<unsigned> x;
+  crv_array<unsigned, 0> arr;
+  crv_constraint con{"con"};
+};
+
+BOOST_AUTO_TEST_CASE(crv_array_membership_and_experimental_inside) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+  struct BypassAnalysisGuard {
+    bool prev_;
+    explicit BypassAnalysisGuard(bool enable) : prev_(VariableDefaultSolver::bypass_constraint_analysis) {
+      if (enable) VariableDefaultSolver::bypass_constraint_analysis = true;
+    }
+    ~BypassAnalysisGuard() { VariableDefaultSolver::bypass_constraint_analysis = prev_; }
+  };
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    {
+      inside_crv_array_item item("item");
+      item.con = {inside(item.x(), item.arr)};
+      for (int i = 0; i < 15; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE(item.x == 10u || item.x == 20u || item.x == 30u || item.x == 40u);
+      }
+
+      {
+        BypassAnalysisGuard bypass(std::string(backend) == "Cudd");
+        item.con = {item.x() == static_cast<unsigned char>(20u), !inside(item.x(), item.arr)};
+        BOOST_REQUIRE(!item.randomize());
+      }
+
+      {
+        BypassAnalysisGuard bypass(std::string(backend) == "Cudd");
+        item.con = {if_then(inside(item.x(), item.arr), item.flag() == true), !item.flag(),
+                    item.x() < static_cast<unsigned char>(50u)};
+        for (int i = 0; i < 10; ++i) {
+          BOOST_REQUIRE(item.randomize());
+          BOOST_REQUIRE(item.x != 10u && item.x != 20u && item.x != 30u && item.x != 40u);
+        }
+      }
+
+      {
+        BypassAnalysisGuard bypass(std::string(backend) == "Cudd");
+        item.con = {item.a() < static_cast<unsigned char>(25u), item.b() < static_cast<unsigned char>(25u),
+                    inside(item.a() + item.b(), item.arr, static_cast<unsigned char>(99u))};
+        for (int i = 0; i < 10; ++i) {
+          BOOST_REQUIRE(item.randomize());
+          unsigned sum = item.a + item.b;
+          BOOST_REQUIRE(sum == 10u || sum == 20u || sum == 30u || sum == 40u);
+        }
+      }
+      {
+        inside_crv_array2_item arr2("arr2");
+        arr2.con = {arr2.a() < static_cast<unsigned char>(15u), arr2.b() < static_cast<unsigned char>(15u),
+                    inside(arr2.a() + arr2.b(), arr2.arr, static_cast<unsigned char>(99u))};
+        for (int i = 0; i < 10; ++i) {
+          BOOST_REQUIRE(arr2.randomize());
+          unsigned sum = arr2.a + arr2.b;
+          BOOST_REQUIRE(sum == 10u || sum == 20u);
+        }
+      }
+    }
+
+    {
+      inside_empty_array_item empty_it("empty_it");
+      empty_it.con = {inside(empty_it.x(), empty_it.arr)};
+      BOOST_REQUIRE(!empty_it.randomize());
+      empty_it.con = {!inside(empty_it.x(), empty_it.arr), empty_it.x() == 7u};
+      BOOST_REQUIRE(empty_it.randomize());
+      BOOST_REQUIRE_EQUAL(empty_it.x, 7u);
+    }
+
+    // crave::randomize().with() + soft(inside(...)) + inside(reference(x), rand_vec)
+    {
+      unsigned v = 0u;
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(crave::randomize(v).with(inside(reference(v), range(16u, 31u)),
+                                               inside(reference(v), inside_mask("8'b0001_00xx"))));
+        BOOST_REQUIRE(v >= 16u && v <= 19u);
+      }
+
+      unsigned rval = 3u;
+      rand_vec<unsigned> rv(NULL);
+      std::set<unsigned> r_seen;
+      const int iters = (std::string(backend) == "Cudd") ? 8 : 25;
+      for (int i = 0; i < iters; ++i) {
+        BOOST_REQUIRE(crave::randomize(rval).with(rv().size() == 3u, foreach (rv(), rv()[_i] < 10u),
+                                                  inside(reference(rval), rv)));
+        BOOST_REQUIRE(rval == rv[0] || rval == rv[1] || rval == rv[2]);
+        r_seen.insert(rval);
+      }
+      BOOST_REQUIRE_GT(r_seen.size(), 1u);
+    }
+
+    {
+      inside_crv_array_item item("soft_it");
+      item.c_arr.deactivate();
+      item.con = {soft(inside(item.x(), tol_pluspct(100u, 10u))), soft(inside(item.x(), range(200u, 210u)))};
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE(item.x >= 200u && item.x <= 210u);
+    }
+  }
+}
+
+struct inside_two_item_exp_item : public crv_sequence_item {
+  inside_two_item_exp_item(crv_object_name) {}
+  crv_variable<unsigned char> x;
+  crv_variable<unsigned char> y;
+  crv_variable<unsigned char> z;
+  crv_variable<unsigned char> a;
+  crv_variable<unsigned char> b;
+  crv_vector<unsigned char> vec;
+  crv_constraint c_vec{vec().size() == 2u, foreach (vec(), vec()[_i] == static_cast<unsigned char>(7u) ||
+                                                             vec()[_i] == static_cast<unsigned char>(8u))};
+  crv_constraint con{"con"};
+};
+
+BOOST_AUTO_TEST_CASE(inside_two_item_experimental) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    inside_two_item_exp_item item("item");
+    item.c_vec.deactivate();
+
+    // 2-item inside(x(), y(), z())
+    item.con = {item.y() == static_cast<unsigned char>(10u), item.z() == static_cast<unsigned char>(20u),
+                inside(item.x(), item.y(), item.z())};
+    for (int i = 0; i < 6; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE(item.x == 10u || item.x == 20u);
+    }
+
+    // 2-item inside(x(), y() + 1, z() + 2)
+    item.con = {item.y() == static_cast<unsigned char>(10u), item.z() == static_cast<unsigned char>(20u),
+                inside(item.x(), item.y() + static_cast<unsigned char>(1u),
+                       item.z() + static_cast<unsigned char>(2u))};
+    for (int i = 0; i < 6; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE(item.x == 11u || item.x == 22u);
+    }
+
+    // 2-item inside(x(), range(a(), b()), y() + 1)
+    item.con = {item.a() == static_cast<unsigned char>(30u), item.b() == static_cast<unsigned char>(32u),
+                item.y() == static_cast<unsigned char>(40u),
+                inside(item.x(), range(item.a(), item.b()), item.y() + static_cast<unsigned char>(1u))};
+    for (int i = 0; i < 6; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE((item.x >= 30u && item.x <= 32u) || item.x == 41u);
+    }
+
+    // 2-item with ReadReference (prev) + WriteReference
+    item.y = static_cast<unsigned char>(55u);
+    item.con = {item.z() == static_cast<unsigned char>(66u), inside(item.x(), item.y(prev), item.z())};
+    for (int i = 0; i < 6; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE(item.x == 55u || item.x == 66u);
+      item.y = static_cast<unsigned char>(55u);
+    }
+
+    // 2-item with crv_vector Vector terminal + scalar
+    item.c_vec.activate();
+    item.con = {inside(item.x(), item.vec(), static_cast<unsigned char>(99u))};
+    for (int i = 0; i < 6; ++i) {
+      BOOST_REQUIRE(item.randomize());
+      BOOST_REQUIRE(item.x == 7u || item.x == 8u || item.x == 99u);
+    }
   }
 }
 

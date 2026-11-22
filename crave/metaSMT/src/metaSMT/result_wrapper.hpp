@@ -35,6 +35,7 @@
 #include <boost/algorithm/string/case_conv.hpp>
 
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #pragma warning (disable : 4800)
@@ -331,26 +332,27 @@ namespace metaSMT {
        */
       template< typename Integer>
       operator Integer () const {
-        Integer ret = 0;
+        typedef typename std::make_unsigned<Integer>::type UnsignedInteger;
+        UnsignedInteger ret = 0;
         std::string val = *this;
-        if( boost::is_signed<Integer>::value && val[0] == '1' ) ret = static_cast<Integer>(-1);
+        if( !val.empty() && boost::is_signed<Integer>::value && val[0] == '1' ) ret = static_cast<UnsignedInteger>(-1);
         unsigned first = 0;
         if (std::numeric_limits<Integer>::digits < val.size()) // downcasting
           first = val.size() - std::numeric_limits<Integer>::digits;
         for (unsigned i = 0; i < val.size() && i < std::numeric_limits<Integer>::digits; ++i)
         {
-          ret <<= static_cast<Integer>(1);
+          ret = static_cast<UnsignedInteger>(static_cast<unsigned long long>(ret) << 1);
           switch ( val[first + i] ) {
             case '0':
               break;
             case '1':
-              ret |= Integer(1);
+              ret |= UnsignedInteger(1);
               break;
             default:
-              ret |= Integer( _rng && random_bit());
+              ret |= UnsignedInteger( _rng && random_bit());
           }
         }
-        return ret;
+        return static_cast<Integer>(ret);
       }
 
       operator bool () const {

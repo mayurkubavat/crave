@@ -55,6 +55,7 @@ struct Generator {
       var_cov_gen_(*var_ctn_),
       vec_gen_(),
       covered_(false),
+      cov_reset_needed_(false),
       order_changed_(false) {}
 
   template <typename Expr>
@@ -66,6 +67,7 @@ struct Generator {
       var_cov_gen_(*var_ctn_),
       vec_gen_(),
       covered_(false),
+      cov_reset_needed_(false),
       order_changed_(false) {
     (*this)(expr);
   }
@@ -305,6 +307,7 @@ struct Generator {
 
   // coverage
   bool covered_;
+  bool cov_reset_needed_;
 
   // the solve-before ordering of this generator, and the one of the merged generators
   SolveOrder solve_order_;

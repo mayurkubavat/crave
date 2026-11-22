@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -47,9 +48,17 @@ struct VariableSolver {
    * when the generation fails afterwards
    */
   virtual void undoRandc() {}
+  virtual void undoRandc(std::set<int> const&) {}
+  virtual std::string randcSignature(int) { return std::string(); }
 
   template <typename T>
   bool read(Variable<T> const& var, T* value) {
+    auto ov = override_values_.find(var.id());
+    if (ov != override_values_.end()) {
+      AssignResultToRef<T> result(value);
+      result.set_value(ov->second);
+      return true;
+    }
     if (!has_solution_ || var_ctn_.variables.find(var.id()) == var_ctn_.variables.end()) return false;
     AssignResultToRef<T> result(value);
     solver_->read(*var_ctn_.variables[var.id()], result);
@@ -57,6 +66,10 @@ struct VariableSolver {
   }
 
   bool read(int id, std::string& value) const;
+
+  bool containsVar(int id) const { return var_ctn_.variables.find(id) != var_ctn_.variables.end(); }
+  void setOverride(int id, std::string const& bits) { override_values_[id] = bits; }
+  void clearOverrides() { override_values_.clear(); }
 
   std::vector<std::vector<std::string> > getContradictions() const;
 
@@ -67,6 +80,7 @@ struct VariableSolver {
   const ConstraintPartition& constr_pttn_;
   SolverPtr solver_;
   bool has_solution_ = false;
+  std::map<int, std::string> override_values_;
 
   std::vector<std::vector<std::string> > contradictions_;
   std::vector<std::string> inactive_softs_;

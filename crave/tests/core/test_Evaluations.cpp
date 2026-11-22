@@ -690,4 +690,131 @@ BOOST_AUTO_TEST_CASE(inside_negation_and_conditional_eval) {
   set_sv_signedness(old_setting);
 }
 
+BOOST_AUTO_TEST_CASE(inside_ranges_tolerances_mask_eval) {
+  bool const old_setting = sv_signedness();
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    Evaluator eval;
+
+    // range(lo, hi) & inverted range & 64-bit bounds
+    {
+      Variable<unsigned char> x8;
+      Variable<int> lo, hi;
+      eval.assign(lo, -5);
+      eval.assign(hi, 10);
+      eval.assign(x8, static_cast<unsigned char>(0));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, range(lo, hi))));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(x8, static_cast<unsigned char>(11));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, range(lo, hi))));
+      BOOST_REQUIRE(!eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(x8, range(20, 10))));
+      BOOST_REQUIRE(!eval.result<bool>());
+
+      Variable<uint64_t> u64;
+      eval.assign(u64, std::numeric_limits<uint64_t>::max() - 1ULL);
+      BOOST_REQUIRE(eval.evaluate(inside(u64, range(std::numeric_limits<uint64_t>::max() - 5ULL,
+                                                      std::numeric_limits<uint64_t>::max()))));
+      BOOST_REQUIRE(eval.result<bool>());
+    }
+
+    // tol_plusminus & tol_pluspct
+    {
+      Variable<unsigned char> x8;
+      eval.assign(x8, static_cast<unsigned char>(0));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, tol_plusminus(static_cast<unsigned char>(5), static_cast<unsigned char>(10)))));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(x8, static_cast<unsigned char>(255));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, tol_plusminus(static_cast<unsigned char>(250), static_cast<unsigned char>(10)))));
+      BOOST_REQUIRE(eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(x8, tol_plusminus(10, -1))));
+      BOOST_REQUIRE(!eval.result<bool>());
+
+      eval.assign(x8, static_cast<unsigned char>(14));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, tol_pluspct(15, 10))));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(x8, static_cast<unsigned char>(100));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, tol_pluspct(static_cast<unsigned char>(200), static_cast<unsigned char>(50)))));
+      BOOST_REQUIRE(eval.result<bool>());
+
+      Variable<short> s16;
+      eval.assign(s16, static_cast<short>(-110));
+      BOOST_REQUIRE(eval.evaluate(inside(s16, tol_pluspct(-100, 10))));
+      BOOST_REQUIRE(eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(s16, tol_pluspct(-100, -10))));
+      BOOST_REQUIRE(!eval.result<bool>());
+    }
+
+    // inside_mask & initializer_list & unsized vs sized vs bare patterns
+    {
+      Variable<unsigned char> x8;
+      eval.assign(x8, static_cast<unsigned char>(0xA7u));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, inside_mask("8'hA?"))));
+      BOOST_REQUIRE(eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(x8, {static_cast<unsigned char>(0x10u), static_cast<unsigned char>(0xA7u)})));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(x8, static_cast<unsigned char>(0xB7u));
+      BOOST_REQUIRE(eval.evaluate(!inside(x8, inside_mask("8'hA?"))));
+      BOOST_REQUIRE(eval.result<bool>());
+
+      eval.assign(x8, static_cast<unsigned char>(0xF1u));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, inside_mask("'bx1"))));
+      BOOST_REQUIRE(eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(x8, inside_mask("4'bx1"))));
+      BOOST_REQUIRE(!eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(x8, inside_mask("'b01"))));
+      BOOST_REQUIRE(!eval.result<bool>());
+      eval.assign(x8, static_cast<unsigned char>(0x09u));
+      BOOST_REQUIRE(eval.evaluate(inside(x8, inside_mask("10x?"))));
+      BOOST_REQUIRE(eval.result<bool>());
+
+      Variable<uint16_t> x16;
+      eval.assign(x16, static_cast<uint16_t>(0xABC1u));
+      BOOST_REQUIRE(eval.evaluate(inside(x16, inside_mask("'h?1"))));
+      BOOST_REQUIRE(eval.result<bool>());
+    }
+
+    // Plain scalar literal LHS
+    {
+      Variable<unsigned> x;
+      eval.assign(x, 800u);
+      BOOST_REQUIRE(eval.evaluate(inside(1000u, tol_pluspct(x, 25u))));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(x, 500u);
+      BOOST_REQUIRE(eval.evaluate(inside(1000u, tol_pluspct(x, 25u))));
+      BOOST_REQUIRE(!eval.result<bool>());
+    }
+  }
+
+  // SV ternary operand width promotion under sv_signedness(true)
+  set_sv_signedness(true);
+  {
+    Evaluator eval;
+    Variable<uint16_t> x;
+    Variable<uint8_t> a, b, tol, pct;
+    eval.assign(a, static_cast<uint8_t>(200));
+    eval.assign(b, static_cast<uint8_t>(100));
+    eval.assign(tol, static_cast<uint8_t>(10));
+    eval.assign(pct, static_cast<uint8_t>(10));
+
+    eval.assign(x, static_cast<uint16_t>(100));
+    BOOST_REQUIRE(eval.evaluate(inside(x, range(a + b, static_cast<uint16_t>(400)))));
+    BOOST_REQUIRE(!eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(inside(x, tol_plusminus(a + b, tol))));
+    BOOST_REQUIRE(!eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(inside(x, tol_pluspct(a + b, pct))));
+    BOOST_REQUIRE(!eval.result<bool>());
+
+    eval.assign(x, static_cast<uint16_t>(350));
+    BOOST_REQUIRE(eval.evaluate(inside(x, range(a + b, static_cast<uint16_t>(400)))));
+    BOOST_REQUIRE(eval.result<bool>());
+    eval.assign(x, static_cast<uint16_t>(305));
+    BOOST_REQUIRE(eval.evaluate(inside(x, tol_plusminus(a + b, tol))));
+    BOOST_REQUIRE(eval.result<bool>());
+    BOOST_REQUIRE(eval.evaluate(inside(x, tol_pluspct(a + b, pct))));
+    BOOST_REQUIRE(eval.result<bool>());
+  }
+  set_sv_signedness(old_setting);
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Evaluations

@@ -33,6 +33,7 @@ VariableCoverageGenerator::VariableCoverageGenerator(const VariableContainer& vc
 
 void VariableCoverageGenerator::reset(std::vector<ConstraintPartition>& partitions) {
   solvers_.clear();
+  override_values_.clear();
 
   for(ConstraintPartition & partition : partitions) {
     VarSolverPtr vs(new VariableCoverageSolver(var_ctn_, partition));
@@ -41,6 +42,7 @@ void VariableCoverageGenerator::reset(std::vector<ConstraintPartition>& partitio
 }
 
 bool VariableCoverageGenerator::solve() {
+  clearOverrides();
   bool res = false;
 
   for(VarSolverPtr vs : solvers_) {

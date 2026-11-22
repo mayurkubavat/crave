@@ -29,19 +29,14 @@
 
 #include "Variable.hpp"
 
+#include <algorithm>
 #include <limits>
 
 #include "../frontend/Distribution.hpp"
+#include "../frontend/SystemC.hpp"
 #include "../frontend/bitsize_traits_sysc.hpp"
 
 namespace crave {
-
-template <typename T>
-struct to_constant_expr<T, typename std::enable_if<is_sysc_dt<T>::value>::type> {
-  Constant operator()(T value) {
-    return Constant(value.to_uint64(), bitsize_traits<T>::value, crave::is_signed<T>::value);
-  }
-};
 
 /**
  * crv_variable for SystemC data types
@@ -63,7 +58,16 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
   bool randomize() override {
     if (!this->rand_mode()) return true;
     static distribution<uint64_t> dist;
-    this->value = dist.nextValue();
+    if (bitsize_traits<T>::value <= 64) {
+      this->value = dist.nextValue();
+    } else {
+      T v(0);
+      for (int pos = 0; pos < bitsize_traits<T>::value; pos += 64) {
+        v <<= 64;
+        v |= T(dist.nextValue());
+      }
+      this->value = v;
+    }
     return true;
   }
 
@@ -77,9 +81,12 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
     }
 
   template <typename L>
-   void create_distribution (const L &tvar, typename std::enable_if<is_unsigned<L>::value, void>::type* = nullptr) {
+   void create_distribution (const L &tvar, typename std::enable_if<is_unsigned<L>::value && (bitsize_traits<L>::value <= 64), void>::type* = nullptr) {
     	  c_var_uniform = {dist(this->var, implicit_distribution(make_distribution(weighted_range<uint64_t>(get_sc_dt_min_numeric_limit(tvar), get_sc_dt_max_numeric_limit(tvar),1))))};
     }
+
+  template <typename L>
+   void create_distribution (const L &, typename std::enable_if<is_unsigned<L>::value && (bitsize_traits<L>::value > 64), void>::type* = nullptr) {}
 
 
   template <typename L >

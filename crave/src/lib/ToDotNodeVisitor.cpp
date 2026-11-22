@@ -213,4 +213,36 @@ void ToDotVisitor::visitBitslice(Bitslice const &b) {
   visitUnaryExpr(b);
 }
 
+void ToDotVisitor::visitRangeExpr(RangeExpr const &r) {
+  if (putNode(&r)) {
+    visitNode(r);
+    out_ << " [label=\"range\"]" << std::endl;
+  }
+  visitTernaryExpr(r);
+}
+
+void ToDotVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const &t) {
+  if (putNode(&t)) {
+    visitNode(t);
+    out_ << " [label=\"tol_plusminus (+/-)\"]" << std::endl;
+  }
+  visitTernaryExpr(t);
+}
+
+void ToDotVisitor::visitTolPlusPctExpr(TolPlusPctExpr const &t) {
+  if (putNode(&t)) {
+    visitNode(t);
+    out_ << " [label=\"tol_pluspct (+%-)\"]" << std::endl;
+  }
+  visitTernaryExpr(t);
+}
+
+void ToDotVisitor::visitVectorContains(VectorContains const &vc) {
+  if (putNode(&vc)) {
+    visitNode(vc);
+    out_ << " [label=\"vector_contains (vec " << vc.vec_id() << ")\"]" << std::endl;
+  }
+  visitUnaryExpr(vc);
+}
+
 }  // namespace crave
