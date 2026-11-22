@@ -26,6 +26,7 @@
 
 
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <fstream>
 
@@ -61,9 +62,15 @@ item_placeholder _item;
 
 RandomSeedManager rng(static_cast<unsigned>(std::time(0)));
 
-std::function<bool(void)> random_bit = [](){return std::uniform_int_distribution<unsigned short>(0, 1)(*rng.get());};
+std::function<bool(void)> random_bit = []() {
+  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+  return std::uniform_int_distribution<unsigned short>(0, 1)(*rng.get());
+};
 
-std::function<unsigned(unsigned)> random_unsigned = [](unsigned i){return std::uniform_int_distribution<>(0, i - 1)(*rng.get());};
+std::function<unsigned(unsigned)> random_unsigned = [](unsigned i) {
+  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+  return std::uniform_int_distribution<>(0, i - 1)(*rng.get());
+};
 
 // if called with zero seed -> use default seed std::time(0)
 void set_global_seed(unsigned int s) {

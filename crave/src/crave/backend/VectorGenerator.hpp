@@ -50,7 +50,7 @@ struct VectorSolver {
   explicit VectorSolver(int vector_id);
 
   void addConstraint(VectorConstraintPtr vc);
-  bool solve(VariableGenerator& var_gen);
+  bool solve(VariableGenerator& var_gen, VariableContainer* vcon = variable_container());
 
   /**
    * Whether the last solve used a size of the vector, which has been solved with the other variables, and failed
@@ -66,8 +66,8 @@ struct VectorSolver {
   unsigned int lastSize() const { return last_size_; }
 
  private:
-  void resetSolver(unsigned int const size);
-  void buildSolver(unsigned int const size);
+  void resetSolver(unsigned int const size, VariableContainer const* vcon = variable_container());
+  void buildSolver(unsigned int const size, VariableContainer const* vcon = variable_container());
   void makeSuggestions();
 
  private:
@@ -94,7 +94,9 @@ struct VectorGenerator {
 
   VectorGenerator();
   bool solve(VariableGenerator& var_gen, const std::set<int>& vec_ids,
-             std::vector<ConstraintPartition> const* partitions = nullptr);
+             std::vector<ConstraintPartition> const* partitions = nullptr,
+             VariableContainer* vcon = variable_container(),
+             std::set<std::string> const* active_covers = nullptr);
   void reset(const std::vector<VectorConstraintPtr>& v);
 
   /**
@@ -102,11 +104,16 @@ struct VectorGenerator {
    * a constraint on a reduction, see VectorSolver::failedWithSolvedSize().
    */
   bool failedSize(int* id, unsigned int* size) const;
+  std::set<std::string> coupledCovers(std::vector<ConstraintPartition> const& partitions,
+                                      std::vector<std::string> const& hits,
+                                      std::set<int>* coupled_vecs = nullptr) const;
 
  private:
   void addConstraint(VectorConstraintPtr vc);
   bool solveJoint(VariableGenerator& var_gen, std::vector<ConstraintPartition> const& partitions,
-                  int failed_vec_id, std::set<int>& solved_vecs);
+                  int failed_vec_id, std::set<int>& solved_vecs,
+                  VariableContainer* vcon = variable_container(),
+                  std::set<std::string> const* active_covers = nullptr);
 
  private:
   VectorSolverMap vector_solvers_;

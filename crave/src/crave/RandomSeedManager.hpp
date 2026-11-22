@@ -27,6 +27,7 @@
 #pragma once
 #include <cstddef>
 #include <map>
+#include <mutex>
 #include <random>
 
 class RandomSeedManager {
@@ -37,6 +38,7 @@ class RandomSeedManager {
   std::mt19937* get();
   unsigned int get_seed();
   unsigned int charToUIntSeed(const char* name);
+  static std::recursive_mutex& mutex();
 
   bool operator==(const RandomSeedManager& rhs) const {
     bool equal = true;

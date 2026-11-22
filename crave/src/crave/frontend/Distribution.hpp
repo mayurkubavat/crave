@@ -29,6 +29,7 @@
 
 #include <random>
 #include <limits>
+#include <mutex>
 #include <vector>
 #include <stdexcept>
 	
@@ -159,6 +160,7 @@ struct distribution {
    * \return T Next random value based on specified weights of ranges.
    */
   T nextValue() const {
+    std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
     if (ranges_.empty()) {
       return uniformly_distributed_value(std::numeric_limits<T>::min(), std::numeric_limits<T>::max(), *rng.get());
     }
@@ -202,6 +204,8 @@ struct distribution<bool> {
   bool nextValue() const;
 
   std::vector<weighted_range<bool> > const& ranges() const;
+
+  double prob() const { return prob_; }
 
   bool isImplicit() const { return implicit_; }
 

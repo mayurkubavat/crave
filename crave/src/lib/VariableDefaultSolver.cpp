@@ -28,10 +28,12 @@
 #include "../crave/utils/Logging.hpp"
 #include "RandomShuffle.hpp"
 
+#include <atomic>
 #include <set>
 #include <functional>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <typeinfo>
@@ -154,7 +156,11 @@ Constant randomValue(VariableExpr const& var) {
   if (var.isBool()) return Constant(random_unsigned(2) != 0);
   unsigned const width = var.bitsize();
   uint64_t value = 0;
-  for (unsigned bits = 0; bits < width; bits += 32) value = (value << 32) | (*rng.get())();
+  {
+    std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+    std::mt19937& gen = *rng.get();
+    for (unsigned bits = 0; bits < width; bits += 32) value = (value << 32) | gen();
+  }
   if (width < 64) value &= (uint64_t(1) << width) - 1;
   return Constant(signExtend(var, value), width, var.sign());
 }
@@ -169,13 +175,35 @@ void startCycle(RandcState& state, unsigned width) {
 }
 }  // namespace
 
+namespace {
+std::atomic<std::size_t> g_analyse_hards_count{0};
+std::atomic<std::size_t> g_solver_build_count{0};
+}  // namespace
+
 bool VariableDefaultSolver::bypass_constraint_analysis = false;
 
 unsigned VariableDefaultSolver::complexity_limit_for_bdd = 400;
 
+std::size_t VariableDefaultSolver::analyse_hards_count() {
+  return g_analyse_hards_count.load(std::memory_order_relaxed);
+}
+
+void VariableDefaultSolver::reset_analyse_hards_count() {
+  g_analyse_hards_count.store(0, std::memory_order_relaxed);
+}
+
+std::size_t VariableDefaultSolver::solver_build_count() {
+  return g_solver_build_count.load(std::memory_order_relaxed);
+}
+
+void VariableDefaultSolver::reset_solver_build_count() {
+  g_solver_build_count.store(0, std::memory_order_relaxed);
+}
+
 VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
                                              std::vector<std::vector<int> > const& solve_levels)
     : VariableSolver(vcon, cp) {
+  g_solver_build_count.fetch_add(1, std::memory_order_relaxed);
   LOG(INFO) << "Create solver for partition " << constr_pttn_;
 
   // the ordering of the variables, which are not in this partition, does not change the distribution
@@ -199,8 +227,6 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   }
 
   if (bypass_constraint_analysis) return;
-
-  analyseConstraints();
 
   std::set<int> vars_with_dist;
   std::set<int> vars_with_user_dist;
@@ -276,29 +302,78 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   }
 }
 
-void VariableDefaultSolver::analyseConstraints() {
-  analyseHards();
-  if (contradictions_.empty()) {
-    analyseSofts();
-    LOG(INFO) << "Partition is solvable with " << inactive_softs_.size() << " soft constraint(s) deactivated:";
-
-    for(std::string & s : inactive_softs_) { LOG(INFO) << " " << s; }
-  } else {
-    LOG(INFO) << "Partition has unsatisfiable hard constraints:";
-    unsigned cnt = 0;
-
-    for(std::vector<std::string> & vs : contradictions_) {
-      LOG(INFO) << "  set #" << ++cnt;
-
-      for(std::string & s : vs) { LOG(INFO) << "   " << s; }
+bool VariableDefaultSolver::readRefsUnchanged() const {
+  if (analysed_read_refs_.size() != var_ctn_.read_references.size()) return false;
+  for (std::size_t i = 0; i < var_ctn_.read_references.size(); ++i) {
+    Constant cur = var_ctn_.read_references[i].second->constantValue();
+    Constant const& prev = analysed_read_refs_[i];
+    if (cur.value() != prev.value() || cur.bitsize() != prev.bitsize() || cur.sign() != prev.sign()) {
+      return false;
     }
   }
+  return true;
+}
+
+std::vector<std::vector<std::string> > VariableDefaultSolver::getContradictions() const {
+  if (!hards_analysed_ || !readRefsUnchanged()) {
+    analyseHards();
+  }
+  return contradictions_;
+}
+
+std::vector<std::string> VariableDefaultSolver::getInactiveSofts() const {
+  if (!solve_attempted_ && (!softs_analysed_ || !readRefsUnchanged())) {
+    if (!soft_constraints_.empty() && getContradictions().empty()) {
+      for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+        solver_->makeAssumption(*pair.second->expr());
+      }
+      analyseSofts();
+    } else {
+      inactive_softs_.clear();
+    }
+    softs_analysed_ = true;
+  }
+  return inactive_softs_;
+}
+
+bool VariableDefaultSolver::solveCover(std::set<std::string> const& skip_covers, std::string* hit_name) {
+  if (hit_name) hit_name->clear();
+  solve_attempted_ = true;
+  has_solution_ = false;
+  if (hards_analysed_ && readRefsUnchanged() && !contradictions_.empty()) {
+    inactive_softs_.clear();
+    LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
+    return false;
+  }
+  randc_undo_.clear();
+
+  for (ConstraintPtr c : constr_pttn_) {
+    if (!c->isCover()) continue;
+    if (skip_covers.count(c->name())) continue;
+    std::vector<NodePtr> assumptions(1, c->expr());
+    if (solveWith(assumptions, RandcMap(), false)) {
+      if (soft_constraints_.empty())
+        inactive_softs_.clear();
+      else
+        updateInactiveSofts(solver_->getInactiveSofts());
+      has_solution_ = true;
+      for (VariableContainer::WriteRefPair& pair : var_ctn_.write_references) {
+        solver_->read(*var_ctn_.variables[pair.first], *pair.second);
+      }
+      if (hit_name) *hit_name = c->name();
+      LOG(INFO) << "Solve partition " << constr_pttn_ << " hitting constraint " << c->name();
+      return true;
+    }
+  }
+  return solve();
 }
 
 bool VariableDefaultSolver::solve() {
   LOG(INFO) << "Solve constraints in partition " << constr_pttn_;
+  solve_attempted_ = true;
   has_solution_ = false;
-  if (!contradictions_.empty()) {
+  if (hards_analysed_ && readRefsUnchanged() && !contradictions_.empty()) {
+    inactive_softs_.clear();
     LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
     return false;
   }
@@ -659,7 +734,11 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
     for (unsigned tries = 0; tries < solve_before_max_tries; ++tries) {
       for (std::size_t i = 0; i < vars.size(); ++i) {
         VariableExpr const& v = static_cast<VariableExpr const&>(*vars[i]);
-        uint64_t const key = std::uniform_int_distribution<uint64_t>(bounds[i].first, bounds[i].second)(*rng.get());
+        uint64_t key = 0;
+        {
+          std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+          key = std::uniform_int_distribution<uint64_t>(bounds[i].first, bounds[i].second)(*rng.get());
+        }
         assumptions.push_back(new EqualOpr(vars[i], new Constant(keyValue(v, key))));
       }
       if (feasible(assumptions)) return true;
@@ -778,35 +857,50 @@ std::string const& VariableDefaultSolver::signature() {
   return signature_;
 }
 
-void VariableDefaultSolver::analyseHards() {
-  std::unique_ptr<metaSMTVisitor> solver(FactoryMetaSMT::getNewInstance());
+void VariableDefaultSolver::analyseHards() const {
+  g_analyse_hards_count.fetch_add(1, std::memory_order_relaxed);
+  contradictions_.clear();
+  analysed_read_refs_.clear();
+  analysed_read_refs_.reserve(var_ctn_.read_references.size());
 
   std::map<unsigned int, NodePtr> s;
   std::vector<std::string> out;
-  std::vector<std::vector<unsigned int> > results;
 
-  for(ConstraintPtr c : constr_pttn_) {
+  for (ConstraintPtr c : constr_pttn_) {
     if (!c->isSoft() && !c->isCover()) {
       s.insert(std::make_pair(s.size(), c->expr()));
       out.push_back(c->name());
     }
   }
-  results = solver->analyseContradiction(s);
 
-  for(std::vector<unsigned int> result : results) {
-    std::vector<std::string> vec;
-
-    for(unsigned int i : result) { vec.push_back(out[i]); }
-    contradictions_.push_back(vec);
+  for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+    analysed_read_refs_.push_back(pair.second->constantValue());
   }
+
+  if (!s.empty()) {
+    std::unique_ptr<metaSMTVisitor> solver(FactoryMetaSMT::getNewInstance());
+    for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+      solver->makeAssertion(*pair.second->expr());
+    }
+    std::vector<std::vector<unsigned int> > results = solver->analyseContradiction(s);
+
+    for (std::vector<unsigned int> const& result : results) {
+      std::vector<std::string> vec;
+      for (unsigned int i : result) {
+        vec.push_back(out[i]);
+      }
+      contradictions_.push_back(vec);
+    }
+  }
+  hards_analysed_ = true;
 }
 
-void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) {
+void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) const {
   inactive_softs_.clear();
   for (unsigned int idx : inactive_indices) {
     if (idx < soft_constraints_.size()) inactive_softs_.push_back(soft_constraints_[idx]->name());
   }
 }
 
-void VariableDefaultSolver::analyseSofts() { updateInactiveSofts(solver_->resolveSofts()); }
+void VariableDefaultSolver::analyseSofts() const { updateInactiveSofts(solver_->resolveSofts()); }
 }

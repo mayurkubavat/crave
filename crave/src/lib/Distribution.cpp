@@ -25,6 +25,7 @@
 //****************************************************************************************
 
 #include "../crave/frontend/Distribution.hpp"
+#include <mutex>
 #include <random>
 
 namespace crave {
@@ -35,6 +36,7 @@ distribution_tag<bool> distribution<bool>::create(const double prob) {
 }
 
 bool distribution<bool>::nextValue() const {
+  std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
   std::bernoulli_distribution dist(prob_);
   return dist(*rng.get());
 }

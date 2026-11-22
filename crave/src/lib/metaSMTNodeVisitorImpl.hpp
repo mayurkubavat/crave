@@ -32,6 +32,7 @@
 #include <metaSMT/support/contradiction_analysis.hpp>
 
 #include <map>
+#include <memory>
 #include <stack>
 #include <utility>
 #include <vector>
@@ -50,17 +51,35 @@ namespace qf_bv = metaSMT::logic::QF_BV;
 using metaSMT::evaluate;
 
 template <typename SolverType>
+struct SolverMutexTraits {
+  struct Guard {
+    Guard() {}
+  };
+};
+
+template <typename SolverType>
 class metaSMTVisitorImpl : public metaSMTVisitor {
  public:
   metaSMTVisitorImpl()
       : metaSMTVisitor(),
-        solver_(),
+        solver_storage_(createSolver()),
+        solver_(*solver_storage_),
         exprStack_(),
         terminals_(),
         softs_(),
         assumptions_(),
         suggestions_(),
         last_inactive_softs_() {}
+
+  virtual ~metaSMTVisitorImpl() {
+    typename SolverMutexTraits<SolverType>::Guard guard;
+    while (!exprStack_.empty()) exprStack_.pop();
+    terminals_.clear();
+    softs_.clear();
+    assumptions_.clear();
+    suggestions_.clear();
+    solver_storage_.reset();
+  }
 
   virtual void visitNode(Node const &);
   virtual void visitTerminal(Terminal const &);
@@ -148,7 +167,13 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   static std::string int128ToBvBin(__int128 v, unsigned width);
 
  private:  // data
-  SolverType solver_;
+  static std::unique_ptr<SolverType> createSolver() {
+    typename SolverMutexTraits<SolverType>::Guard guard;
+    return std::unique_ptr<SolverType>(new SolverType());
+  }
+
+  std::unique_ptr<SolverType> solver_storage_;
+  SolverType& solver_;
   std::stack<stack_entry> exprStack_;
   result_map terminals_;
   std::vector<result_type> softs_;
@@ -953,6 +978,7 @@ void metaSMTVisitorImpl<SolverType>::visitTolPlusPctExpr(TolPlusPctExpr const &t
 
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::makeAssertion(Node const &expr) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   expr.visit(this);
 
   stack_entry entry;
@@ -963,6 +989,7 @@ void metaSMTVisitorImpl<SolverType>::makeAssertion(Node const &expr) {
 
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::makeSoftAssertion(Node const &expr) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   expr.visit(this);
 
   stack_entry entry;
@@ -973,6 +1000,7 @@ void metaSMTVisitorImpl<SolverType>::makeSoftAssertion(Node const &expr) {
 
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::makeSuggestion(Node const &expr) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   expr.visit(this);
 
   stack_entry entry;
@@ -983,6 +1011,7 @@ void metaSMTVisitorImpl<SolverType>::makeSuggestion(Node const &expr) {
 
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::makeAssumption(Node const &expr) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   expr.visit(this);
 
   stack_entry entry;
@@ -993,6 +1022,7 @@ void metaSMTVisitorImpl<SolverType>::makeAssumption(Node const &expr) {
 
 template <typename SolverType>
 std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::analyseSofts() {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   std::vector<unsigned int> result;
   // IEEE 1800-2023 18.5.14: last-added soft constraint has highest priority
   for (std::size_t idx = softs_.size(); idx > 0; --idx) {
@@ -1014,6 +1044,7 @@ std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::analyseSofts() {
 
 template <typename SolverType>
 std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::resolveSofts() {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   last_inactive_softs_.clear();
   if (softs_.empty()) {
     assumptions_.clear();
@@ -1061,6 +1092,7 @@ std::vector<unsigned int> const& metaSMTVisitorImpl<SolverType>::getInactiveSoft
 template <typename SolverType>
 std::vector<std::vector<unsigned int> > metaSMTVisitorImpl<SolverType>::analyseContradiction(
     std::map<unsigned int, NodePtr> const &s) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   std::vector<std::vector<unsigned int> > results;
   std::map<unsigned int, result_type> result_map;
 
@@ -1083,6 +1115,7 @@ std::vector<std::vector<unsigned int> > metaSMTVisitorImpl<SolverType>::analyseC
 
 template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   bool result = false;
   unsigned failures = 0;
 
@@ -1208,6 +1241,7 @@ bool metaSMTVisitorImpl<SolverType>::read(Node const &v, AssignResult &assign) {
 
 template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::read(Node const &v, std::string &str) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   // assert(static_cast<VariableExpr const *>(&var) != 0);
   VariableExpr const &var = *static_cast<VariableExpr const *>(&v);
   typename result_map::const_iterator ite(terminals_.find(var.id()));
@@ -1221,6 +1255,7 @@ bool metaSMTVisitorImpl<SolverType>::read(Node const &v, std::string &str) {
 
 template <typename SolverType>
 bool metaSMTVisitorImpl<SolverType>::readVector(const std::vector<VariablePtr> &vec, __rand_vec_base *rand_vec) {
+  typename SolverMutexTraits<SolverType>::Guard guard;
   std::vector<std::string> sv;
   for(VariablePtr var : vec) {
     typename result_map::const_iterator ite(terminals_.find(var->id()));

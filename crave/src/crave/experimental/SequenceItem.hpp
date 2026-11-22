@@ -27,15 +27,89 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "Coverage.hpp"
 #include "Expression.hpp"
 #include "Object.hpp"
+#include "../ir/VariableContainer.hpp"
 
 namespace crave {
 struct Generator;
+struct RandWithCache;
+
+namespace detail {
+struct InlineReadCapture {
+  int id;
+  std::shared_ptr<ReferenceExpression> ref_expr;
+};
+
+struct InlineDistCapture {
+  int id;
+  std::shared_ptr<ReferenceExpression> ref_expr;
+  int target_var_id;
+  bool is_implicit;
+};
+
+class InlineContainerGuard {
+ public:
+  InlineContainerGuard()
+      : vcon_(variable_container()),
+        reads_0_(vcon_->read_references.size()),
+        dists_0_(vcon_->dist_references.size()),
+        rolled_back_(false) {}
+
+  InlineContainerGuard(InlineContainerGuard const&) = delete;
+  InlineContainerGuard& operator=(InlineContainerGuard const&) = delete;
+
+  ~InlineContainerGuard() { rollback(); }
+
+  void capture_and_rollback(std::vector<InlineReadCapture>& out_reads,
+                            std::vector<InlineDistCapture>& out_dists) {
+    out_reads.reserve(vcon_->read_references.size() - reads_0_);
+    for (std::size_t i = reads_0_; i < vcon_->read_references.size(); ++i) {
+      out_reads.push_back(InlineReadCapture{vcon_->read_references[i].first, vcon_->read_references[i].second});
+    }
+    out_dists.reserve(vcon_->dist_references.size() - dists_0_);
+    for (std::size_t i = dists_0_; i < vcon_->dist_references.size(); ++i) {
+      int id = vcon_->dist_references[i].first;
+      auto map_it = vcon_->dist_ref_to_var_map.find(id);
+      int target_var_id = (map_it != vcon_->dist_ref_to_var_map.end()) ? map_it->second : -1;
+      bool is_implicit = vcon_->implicit_dist_references.count(id) != 0;
+      out_dists.push_back(
+          InlineDistCapture{id, vcon_->dist_references[i].second, target_var_id, is_implicit});
+    }
+    rollback();
+  }
+
+  void rollback() {
+    if (rolled_back_) return;
+    rolled_back_ = true;
+    for (std::size_t i = reads_0_; i < vcon_->read_references.size(); ++i) {
+      vcon_->variables.erase(vcon_->read_references[i].first);
+    }
+    vcon_->read_references.resize(reads_0_);
+    for (std::size_t i = dists_0_; i < vcon_->dist_references.size(); ++i) {
+      int id = vcon_->dist_references[i].first;
+      vcon_->variables.erase(id);
+      vcon_->dist_ref_to_var_map.erase(id);
+      vcon_->implicit_dist_references.erase(id);
+      vcon_->user_dist_references.erase(id);
+    }
+    vcon_->dist_references.resize(dists_0_);
+  }
+
+ private:
+  VariableContainer* vcon_;
+  std::size_t reads_0_;
+  std::size_t dists_0_;
+  bool rolled_back_;
+};
+}  // namespace detail
 
 /**
  * \ingroup newAPI
@@ -57,6 +131,8 @@ class crv_sequence_item : public crv_object {
    * \param other The object to be copied from.
    */
   crv_sequence_item(crv_sequence_item const& other);
+  crv_sequence_item& operator=(crv_sequence_item const& other);
+  ~crv_sequence_item();
 
   std::string obj_kind() const override final;
 
@@ -73,8 +149,12 @@ class crv_sequence_item : public crv_object {
    */
   template <typename... Exprs>
   bool randomize_with(Exprs... exprs) {
+    detail::InlineContainerGuard guard;
     expression_list list(exprs...);
-    return randomize_with_expr_list(list);
+    std::vector<detail::InlineReadCapture> inline_reads;
+    std::vector<detail::InlineDistCapture> inline_dists;
+    guard.capture_and_rollback(inline_reads, inline_dists);
+    return randomize_with_expr_list_impl_(list, inline_reads, inline_dists);
   }
 
   /**
@@ -105,15 +185,50 @@ class crv_sequence_item : public crv_object {
    */
   std::vector<std::string> inactive_soft_constraints();
 
+  std::size_t randomize_with_cache_hits() const { return rand_with_cache_hits_; }
+  std::size_t randomize_with_cache_misses() const { return rand_with_cache_misses_; }
+  std::size_t randomize_with_cache_size() const;
+
  protected:
+  friend class crv_covergroup;
+
+  struct SavedCover {
+    std::string name;
+    expression expr;
+  };
+
+  struct SavedGoal {
+    crv_covergroup* group;
+    expression_list bindings;
+    std::vector<SavedCover> covers;
+  };
+
+  void detach_goal_(crv_covergroup const* group);
+  void detach_all_goals_();
+
   void request_rebuild() override;
+  bool prune_covered_goals_();
+  void prune_completed_goals_();
+  void refresh_goals_();
   Generator& ensure_generator_();
+  void apply_goals_(Generator& target);
+  void clear_rand_with_cache_();
 
   bool randomize_with_expr_list(expression_list const&);
+  bool randomize_with_expr_list_impl_(expression_list const& list,
+                                      std::vector<detail::InlineReadCapture> const& inline_reads,
+                                      std::vector<detail::InlineDistCapture> const& inline_dists);
+
   std::shared_ptr<Generator> gen_;
   std::shared_ptr<Generator> rand_with_gen_;
   std::shared_ptr<Generator> last_gen_;
   bool built_;
   bool cloned_;
+  std::vector<SavedGoal> goals_;
+  std::size_t goal_epoch_;
+  std::uint64_t next_goal_uid_;
+  std::shared_ptr<RandWithCache> rand_with_cache_;
+  std::size_t rand_with_cache_hits_;
+  std::size_t rand_with_cache_misses_;
 };
 }

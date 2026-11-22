@@ -46,3 +46,4 @@ struct Context_Fixture {
 #include "test_ExperimentalVector_Constraint.cpp"
 #include "test_ExperimentalRandc.cpp"
 #include "test_ExperimentalSolveBefore.cpp"
+#include "test_RandomizeWithSolverCache.cpp"

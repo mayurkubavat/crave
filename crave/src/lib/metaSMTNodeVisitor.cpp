@@ -33,6 +33,7 @@
 #include <metaSMT/BitBlast.hpp>
 #include <metaSMT/DirectSolver_Context.hpp>
 
+#include <mutex>
 #include <random>
 #include <string>
 
@@ -79,6 +80,19 @@ DEFINE_SOLVER(crave::SWORD, metaSMT::solver::SWORD_Backend);
 
 #ifdef metaSMT_USE_Z3
 #include <metaSMT/backend/Z3_Backend.hpp>
+namespace crave {
+template <>
+struct SolverMutexTraits<metaSMT::DirectSolver_Context<metaSMT::solver::Z3_Backend> > {
+  static std::recursive_mutex& mutex() {
+    static std::recursive_mutex* m = new std::recursive_mutex();
+    return *m;
+  }
+  struct Guard {
+    std::lock_guard<std::recursive_mutex> lock;
+    Guard() : lock(mutex()) {}
+  };
+};
+}
 DEFINE_SOLVER(crave::Z3, metaSMT::solver::Z3_Backend);
 #endif
 
@@ -93,7 +107,10 @@ class CUDD_Solver : public metaSMT::solver::CUDD_Distributed {
 
  protected:
   // use the random number generator of CRAVE, so that the solutions only depend on the global seed
-  double uniform01() override { return std::uniform_real_distribution<double>(0, 1)(*crave::rng.get()); }
+  double uniform01() override {
+    std::lock_guard<std::recursive_mutex> lock(RandomSeedManager::mutex());
+    return std::uniform_real_distribution<double>(0, 1)(*crave::rng.get());
+  }
 };
 
 // CUDD_Solver with a small computed table and a limit for the number of nodes
@@ -126,9 +143,17 @@ DEFINE_SOLVER(crave::CUDD, metaSMT::BitBlast<crave::CUDD_Solver>);
 
 namespace crave {
 
+namespace {
+std::recursive_mutex& factoryMutex() {
+  static std::recursive_mutex* m = new std::recursive_mutex();
+  return *m;
+}
+}  // namespace
+
 SolverTypes FactoryMetaSMT::solver_type_ = UNDEFINED_SOLVER;  // default solver
 
 void FactoryMetaSMT::setSolverType(std::string const& type) {
+  std::lock_guard<std::recursive_mutex> lock(factoryMutex());
   if (type == "Boolector")
     solver_type_ = BOOLECTOR;
   else if (type == "CVC4")
@@ -167,6 +192,7 @@ bool FactoryMetaSMT::isDefined(SolverTypes type) {
 }
 
 metaSMTVisitor* FactoryMetaSMT::getNewBddSampler(unsigned max_nodes) {
+  std::lock_guard<std::recursive_mutex> lock(factoryMutex());
 #ifdef metaSMT_USE_CUDD
   CUDD_Sampler::max_nodes = max_nodes;
   return new metaSMTVisitorImpl<metaSMT::DirectSolver_Context<metaSMT::BitBlast<CUDD_Sampler> > >();
@@ -192,6 +218,7 @@ metaSMTVisitor* FactoryMetaSMT::getNewBddSampler(unsigned max_nodes) {
   }
 
 metaSMTVisitor* FactoryMetaSMT::getNewInstance(SolverTypes type) {
+  std::lock_guard<std::recursive_mutex> lock(factoryMutex());
   switch (type) {
     case BOOLECTOR:
       TRY_GET_SOLVER(BOOLECTOR);
@@ -217,6 +244,16 @@ metaSMTVisitor* FactoryMetaSMT::getNewInstance(SolverTypes type) {
       TRY_GET_SOLVER_WHEN_UNDEFINED(CUDD);
       throw std::runtime_error("No solver has been defined.");  
   }
+}
+
+SolverTypes FactoryMetaSMT::effectiveSolverType() {
+  std::lock_guard<std::recursive_mutex> lock(factoryMutex());
+  if (solver_type_ != UNDEFINED_SOLVER && isDefined(solver_type_)) return solver_type_;
+  SolverTypes const candidates[] = {BOOLECTOR, SWORD, STP, YICES2, Z3, CVC4, CUDD};
+  for (SolverTypes s : candidates) {
+    if (isDefined(s)) return s;
+  }
+  return UNDEFINED_SOLVER;
 }
 
 }  // namespace crave

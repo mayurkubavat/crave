@@ -48,8 +48,26 @@ bool VariableGenerator::solve() {
   for (std::size_t i = 0; i < solvers_.size(); ++i) {
     if (!solvers_[i]->solve()) {
       undoRandc(i + 1);
+      for (VarSolverPtr const& vs : solvers_) vs->clearInactiveSofts();
       return false;
     }
+  }
+  return true;
+}
+
+bool VariableGenerator::nextCov(std::set<std::string> const& skip_covers, std::vector<std::string>* hit_names) {
+  refreshRandc();
+  clearOverrides();
+  if (hit_names) hit_names->clear();
+  for (std::size_t i = 0; i < solvers_.size(); ++i) {
+    std::string hit;
+    if (!solvers_[i]->solveCover(skip_covers, &hit)) {
+      undoRandc(i + 1);
+      for (VarSolverPtr const& vs : solvers_) vs->clearInactiveSofts();
+      if (hit_names) hit_names->clear();
+      return false;
+    }
+    if (!hit.empty() && hit_names) hit_names->push_back(hit);
   }
   return true;
 }

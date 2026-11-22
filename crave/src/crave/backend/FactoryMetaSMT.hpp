@@ -58,6 +58,12 @@ struct FactoryMetaSMT {
   static bool isDefined(SolverTypes type);
 
   /**
+    * returns the effective solver type that getNewInstance() will use, resolving UNDEFINED_SOLVER
+    * without mutating solver_type_.
+    **/
+  static SolverTypes effectiveSolverType();
+
+  /**
     * creates a new BDD solver to sample the solutions of constraints, which needs less memory than
     * a general purpose instance of the CUDD backend and gives up with an exception, if a BDD needs
     * more than max_nodes nodes. Returns NULL if CUDD is not available.

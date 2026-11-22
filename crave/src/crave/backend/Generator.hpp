@@ -27,15 +27,18 @@
 
 #pragma once
 
+#include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
 #include "../ir/UserConstraint.hpp"
 #include "VariableGenerator.hpp"
 #include "../backend/VectorGenerator.hpp"
 #include "Randc.hpp"
 #include "SolveOrder.hpp"
-
-#include <stdexcept>
 
 namespace crave {
 
@@ -48,8 +51,21 @@ namespace crave {
 struct Generator {
  public:
   Generator()
-    : constr_mng_(),
+    : owned_var_ctn_(),
+      constr_mng_(),
       var_ctn_(variable_container()),
+      ctx_(var_ctn_),
+      var_gen_(new VariableGenerator(*var_ctn_)),
+      var_cov_gen_(*var_ctn_),
+      vec_gen_(),
+      covered_(false),
+      cov_reset_needed_(false),
+      order_changed_(false) {}
+
+  explicit Generator(std::unique_ptr<VariableContainer> owned_vcon)
+    : owned_var_ctn_(std::move(owned_vcon)),
+      constr_mng_(),
+      var_ctn_(owned_var_ctn_ ? owned_var_ctn_.get() : variable_container()),
       ctx_(var_ctn_),
       var_gen_(new VariableGenerator(*var_ctn_)),
       var_cov_gen_(*var_ctn_),
@@ -60,7 +76,8 @@ struct Generator {
 
   template <typename Expr>
   explicit Generator(Expr expr)
-    : constr_mng_(),
+    : owned_var_ctn_(),
+      constr_mng_(),
       var_ctn_(variable_container()),
       ctx_(var_ctn_),
       var_gen_(new VariableGenerator(*var_ctn_)),
@@ -253,6 +270,11 @@ struct Generator {
 
   VariableContainer* getVarCtn ();
 
+  ConstraintManager const& constraintManager() const { return constr_mng_; }
+  std::set<int> const& vecIds() const { return to_be_generated_vec_ids_; }
+  SolveOrder const& solveOrder() const { return solve_order_; }
+  std::set<std::string> const& coveredSet() const { return covered_set_; }
+
   /**
    * \internal
    * Makes crave::reference(object) in the constraints, which are added to this generator afterwards, refer to the
@@ -284,9 +306,15 @@ struct Generator {
   }
 
  private:
-  void resetConstraints();
+  void resetConstraints(bool keep_coverage = false);
+  std::set<int> activeVarIds_() const;
+  void snapshotCoveredReadRefs_();
+  bool readRefsChangedSinceCovered_() const;
 
  private:
+  // optional owned variable container (must precede var_ctn_/ctx_/var_gen_)
+  std::unique_ptr<VariableContainer> owned_var_ctn_;
+
   // constraints
   ConstraintManager constr_mng_;
   ConstraintPartitioner constr_pttn_;
@@ -308,11 +336,17 @@ struct Generator {
   // coverage
   bool covered_;
   bool cov_reset_needed_;
+  bool has_cover_ = false;
+  std::size_t total_cover_count_ = 0;
+  std::set<std::string> covered_set_;
+  std::set<std::string> unachievable_covers_;
+  std::vector<std::pair<int, Constant> > covered_read_refs_;
 
   // the solve-before ordering of this generator, and the one of the merged generators
   SolveOrder solve_order_;
   SolveOrder merged_order_;
   bool order_changed_;
+  bool internal_size_exclusion_dirty_ = false;
 };
 
 }  // namespace crave

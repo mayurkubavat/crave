@@ -34,7 +34,10 @@
 #else
 
 #include <iostream>
+#include <mutex>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 
 namespace crave {
 enum severity_e {
@@ -45,16 +48,45 @@ enum severity_e {
 };
 
 extern int logging_severity;
+
+namespace detail {
+inline std::mutex& log_mutex() {
+  static std::mutex* m = new std::mutex();
+  return *m;
+}
+
+class LogMessage {
+ public:
+  LogMessage() = default;
+  ~LogMessage() {
+    std::string msg = stream_.str();
+    if (!msg.empty()) {
+      std::lock_guard<std::mutex> lock(log_mutex());
+      std::cerr << msg << std::endl;
+    }
+  }
+  std::ostream& stream() { return stream_; }
+
+ private:
+  std::ostringstream stream_;
+};
+
+struct LogMessageVoidify {
+  void operator&(std::ostream&) const {}
+};
+}  // namespace detail
 }
 
 #ifndef CRAVE_DISABLE_CONVENIENCE_MACROS
 
-#define LogStream(severity) if (severity < crave::logging_severity) {} else std::cerr
+#define LogStream(severity) \
+  ((severity) < crave::logging_severity) \
+      ? (void)0 \
+      : crave::detail::LogMessageVoidify() & crave::detail::LogMessage().stream()
 #define LOG(severity) \
-	LogStream(severity) << std::endl; \
-	if (severity == crave::FATAL) \
-	throw std::runtime_error("Execution terminated by LOG(FATAL), log message is lost"); \
-	LogStream(severity)
+  ((severity) == crave::FATAL) \
+      ? throw std::runtime_error("Execution terminated by LOG(FATAL), log message is lost") \
+      : LogStream(severity)
 
 #define CHECK(condition) if (!(condition)) throw std::runtime_error("check failed: " #condition)
 

@@ -43,6 +43,8 @@ struct VariableSolver {
   virtual ~VariableSolver(){}
   virtual bool solve() = 0;
 
+  virtual bool solveCover(std::set<std::string> const& skip_covers, std::string* hit_name);
+
   /**
    * gives the values of the cyclic random variables back to their cycles, which the last solve() has taken,
    * when the generation fails afterwards
@@ -71,9 +73,10 @@ struct VariableSolver {
   void setOverride(int id, std::string const& bits) { override_values_[id] = bits; }
   void clearOverrides() { override_values_.clear(); }
 
-  std::vector<std::vector<std::string> > getContradictions() const;
+  virtual std::vector<std::vector<std::string> > getContradictions() const;
 
-  std::vector<std::string> getInactiveSofts() const;
+  virtual std::vector<std::string> getInactiveSofts() const;
+  virtual void clearInactiveSofts() { inactive_softs_.clear(); }
 
  protected:
   VariableContainer var_ctn_;
@@ -82,7 +85,7 @@ struct VariableSolver {
   bool has_solution_ = false;
   std::map<int, std::string> override_values_;
 
-  std::vector<std::vector<std::string> > contradictions_;
-  std::vector<std::string> inactive_softs_;
+  mutable std::vector<std::vector<std::string> > contradictions_;
+  mutable std::vector<std::string> inactive_softs_;
 };
 }  // namespace crave

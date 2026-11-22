@@ -40,6 +40,8 @@
 
 namespace crave {
 
+class crv_sequence_item;
+
 /**
  * \ingroup newAPI
  * \brief A covergroup contains a set of bins for a variable
@@ -191,16 +193,23 @@ class crv_coverpoint : public crv_object {
  * A crv_covergroup is the top-level coverage construct that has one or more coverpoints as member variables.
  */
 class crv_covergroup : public crv_object {
+  friend class crv_sequence_item;
+
  public:
   /**
   * \brief Empty constructor.
   */
-  crv_covergroup() : points_(), vars_(), built_(false), eval_() {}
+  crv_covergroup() : points_(), vars_(), built_(false), eval_(), goal_items_() {}
 
   /**
    * \brief Deleted copy constructor.
    */
   crv_covergroup(crv_covergroup const&) = delete;
+  crv_covergroup& operator=(crv_covergroup const&) = delete;
+  crv_covergroup(crv_covergroup&&) = delete;
+  crv_covergroup& operator=(crv_covergroup&&) = delete;
+
+  ~crv_covergroup();
 
   std::string obj_kind() const override { return "crv_covergroup"; }
 
@@ -281,10 +290,14 @@ class crv_covergroup : public crv_object {
     }
   }
 
+  void attach_item_(crv_sequence_item* item);
+  void detach_item_(crv_sequence_item* item);
+
   std::vector<crv_coverpoint*> points_;
   std::vector<crv_variable_base_*> vars_;
   bool built_;
   Evaluator eval_;
+  std::vector<crv_sequence_item*> goal_items_;
 };
 
 }  // end namespace crave

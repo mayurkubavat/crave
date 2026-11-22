@@ -49,6 +49,7 @@ struct VariableGenerator {
   virtual void reset(std::vector<ConstraintPartition>& partitions);
 
   virtual bool solve();
+  virtual bool nextCov(std::set<std::string> const& skip_covers, std::vector<std::string>* hit_names);
 
   /**
    * Sets the solve-before ordering of the variables for the solvers created by reset().
