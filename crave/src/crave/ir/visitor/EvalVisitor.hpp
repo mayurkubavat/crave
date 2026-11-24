@@ -91,6 +91,10 @@ class EvalVisitor : NodeVisitor {
   virtual void visitForEach(ForEach const&);
   virtual void visitUnique(Unique const&);
   virtual void visitBitslice(Bitslice const&);
+  virtual void visitRangeExpr(RangeExpr const&);
+  virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
+  virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
+  virtual void visitVectorContains(VectorContains const&);
   void pop(stack_entry&);
   void pop2(stack_entry&, stack_entry&);
   void pop3(stack_entry&, stack_entry&, stack_entry&);

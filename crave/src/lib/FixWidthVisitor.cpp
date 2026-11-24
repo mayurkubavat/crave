@@ -29,6 +29,7 @@
 #include "../crave/frontend/bitsize_traits.hpp"
 #include "../crave/ConstrainedRandom.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace crave {
@@ -41,6 +42,8 @@ bool isBoolean(Node const& n) {
       dynamic_cast<NotEqualOpr const*>(&n) || dynamic_cast<LessOpr const*>(&n) ||
       dynamic_cast<LessEqualOpr const*>(&n) || dynamic_cast<GreaterOpr const*>(&n) ||
       dynamic_cast<GreaterEqualOpr const*>(&n) || dynamic_cast<Inside const*>(&n) ||
+      dynamic_cast<RangeExpr const*>(&n) || dynamic_cast<TolPlusMinusExpr const*>(&n) ||
+      dynamic_cast<TolPlusPctExpr const*>(&n) || dynamic_cast<VectorContains const*>(&n) ||
       dynamic_cast<ForEach const*>(&n) || dynamic_cast<Unique const*>(&n))
     return true;
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n)) return isBoolean(*ite->b());
@@ -73,79 +76,146 @@ bool svSigned(Node const& n) {
 
 typedef boost::intrusive_ptr<Node> NodeRef;
 
-NodeRef svInteger(NodeRef const& n, bool sign);
+// The test of an integer for zero, which stands for the integer where a boolean is expected, e.g. as an operand of
+// a logical operator. With the rules of SystemVerilog, the integer is self-determined there (IEEE 1800-2017
+// 11.6.1), so this test is not a comparison, whose operands are context-determined.
+class ZeroTest : public NotEqualOpr {
+ public:
+  ZeroTest(NodePtr lhs, NodePtr rhs) : NotEqualOpr(lhs, rhs) {}
+};
+
+NodeRef svInteger(NodeRef const& n, unsigned width, bool sign);
 NodeRef svBoolean(NodeRef const& n);
 
-// A self-determined operand has its own type.
-NodeRef svSelf(NodeRef const& n) { return svInteger(n, svSigned(*n)); }
+uint64_t svMask(unsigned width) { return width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1; }
 
-template <typename T>
-NodeRef svBinary(Node const& n, bool sign) {
-  T const& b = static_cast<T const&>(n);
-  return new T(svInteger(b.lhs(), sign), svInteger(b.rhs(), sign));
+bool isArithmetic(Node const& n) {
+  return is<PlusOpr>(n) || is<MinusOpr>(n) || is<MultipliesOpr>(n) || is<DevideOpr>(n) || is<ModuloOpr>(n) ||
+         is<AndOpr>(n) || is<OrOpr>(n) || is<XorOpr>(n);
+}
+
+// IEEE 1800-2017 11.6.1 (Table 11-21): the self-determined width of an expression. The operands of an
+// arithmetic or bitwise operator and the branches of crave::if_then_else have the width of the widest one,
+// a unary operator and a shift the width of its (left) operand, a bit slice its own width and a boolean,
+// like a comparison, one bit. The extensions, which were added to equalize the widths of the operands, are
+// not counted.
+unsigned svWidth(Node const& n) {
+  if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) return t->bitsize();
+  if (is<Placeholder>(n)) return placeholder_bitsize();
+  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&n)) return svWidth(*va->lhs());
+  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&n)) return b->r() - b->l() + 1;
+  if (isBoolean(n)) return 1;
+  if (is<ExtendExpression>(n) || is<NegOpr>(n) || is<ComplementOpr>(n))
+    return svWidth(*static_cast<UnaryExpression const&>(n).child());
+  if (is<ShiftLeftOpr>(n) || is<ShiftRightOpr>(n)) return svWidth(*static_cast<BinaryExpression const&>(n).lhs());
+  if (isArithmetic(n)) {
+    BinaryExpression const& b = static_cast<BinaryExpression const&>(n);
+    return std::max(svWidth(*b.lhs()), svWidth(*b.rhs()));
+  }
+  if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&n))
+    return std::max(svWidth(*ite->b()), svWidth(*ite->c()));
+  return 1;
+}
+
+// A self-determined operand has its own width and type.
+NodeRef svSelf(NodeRef const& n) { return svInteger(n, svWidth(*n), svSigned(*n)); }
+
+NodeRef svExtend(NodeRef const& n, unsigned from, unsigned to) {
+  return from < to ? NodeRef(new ExtendExpression(n, to - from)) : n;
 }
 
 template <typename T>
-NodeRef svShift(Node const& n, bool sign) {
+NodeRef svBinary(Node const& n, unsigned width, bool sign) {
   T const& b = static_cast<T const&>(n);
-  return new T(svInteger(b.lhs(), sign), svSelf(b.rhs()));
+  return new T(svInteger(b.lhs(), width, sign), svInteger(b.rhs(), width, sign));
 }
 
-// The operands of a relational or an equality operator are converted to a common type, which is unsigned
-// if one of them is unsigned (IEEE 1800-2017 11.8.1).
+// IEEE 1800-2017 11.4.10: the shift amount is self-determined and unsigned. As the solver shifts operands of
+// one width, the amount is zero-extended to the width of the shift. An amount, which is wider than the shift,
+// shifts out all bits if it is not less than the width of the shift.
+template <typename T>
+NodeRef svShift(Node const& n, unsigned width, bool sign) {
+  T const& b = static_cast<T const&>(n);
+  NodeRef value = svInteger(b.lhs(), width, sign);
+  unsigned const amountWidth = svWidth(*b.rhs());
+  NodeRef amount = svSelf(b.rhs());
+  if (svSigned(*b.rhs())) amount = new Bitslice(amount, amountWidth - 1, 0);
+  if (amountWidth <= width) return new T(value, svExtend(amount, amountWidth, width));
+  return new IfThenElse(new GreaterEqualOpr(amount, new Constant(width, amountWidth, false)),
+                        new Constant(0, width, sign), new T(value, new Bitslice(amount, width - 1, 0)));
+}
+
+// IEEE 1800-2017 11.6.1 and 11.8.1: the operands of a relational or an equality operator are
+// context-determined among themselves. They are extended to the width of the wider one and converted to a
+// common type, which is unsigned if one of them is unsigned. The result is a 1-bit unsigned value.
 template <typename T>
 NodeRef svCompare(Node const& n) {
   T const& b = static_cast<T const&>(n);
+  // A boolean compared with a boolean, e.g. a comparison in an equality, keeps its own rules. Integers are
+  // promoted from booleans before, so a boolean is compared with another boolean only.
+  if (isBoolean(*b.lhs()) && isBoolean(*b.rhs())) {
+    if (is<EqualOpr>(n) || is<NotEqualOpr>(n)) return new T(svBoolean(b.lhs()), svBoolean(b.rhs()));
+    // a relational operator compares the booleans as 1-bit unsigned values
+    return new T(new IfThenElse(svBoolean(b.lhs()), new Constant(1, 1, false), new Constant(0, 1, false)),
+                 new IfThenElse(svBoolean(b.rhs()), new Constant(1, 1, false), new Constant(0, 1, false)));
+  }
+  unsigned const width = std::max(svWidth(*b.lhs()), svWidth(*b.rhs()));
   bool const sign = svSigned(*b.lhs()) && svSigned(*b.rhs());
-  return new T(svInteger(b.lhs(), sign), svInteger(b.rhs(), sign));
+  return new T(svInteger(b.lhs(), width, sign), svInteger(b.rhs(), width, sign));
 }
 
-// IEEE 1800-2017 11.8.2: the type of an expression is propagated to its context-determined operands, an
-// operand is converted to that type and sign-extended only if that type is signed. A signed operand in an
-// unsigned context is converted by a bit-select of all its bits, which is unsigned. As every operand of an
-// unsigned context is unsigned then, an extension of an operand in it is a zero extension.
-NodeRef svInteger(NodeRef const& n, bool sign) {
+// IEEE 1800-2017 11.6.2 and 11.8.2: the width and the type of an expression are propagated to its
+// context-determined operands. Every operand is extended to that width before the operation, and it is
+// sign-extended only if that type is signed. A signed operand in an unsigned context is converted by a bit
+// slice of all its bits, which is unsigned, so every extension in an unsigned context is a zero extension.
+// The result has the given width, and it is signed if the given type is signed.
+NodeRef svInteger(NodeRef const& n, unsigned width, bool sign) {
   Node const& node = *n;
-  // A boolean operand, e.g. a comparison in an equality, is a 1-bit unsigned value, which keeps its own rules.
-  // Integers are promoted from booleans before, so it is compared with another boolean only.
   if (isBoolean(node)) return svBoolean(n);
-  if (Constant const* c = dynamic_cast<Constant const*>(&node)) {
-    if (sign || !c->sign()) return n;
-    uint64_t const mask = c->bitsize() >= 64 ? ~uint64_t(0) : (uint64_t(1) << c->bitsize()) - 1;
-    return new Constant(c->value() & mask, c->bitsize(), false);
-  }
-  if (Terminal const* t = dynamic_cast<Terminal const*>(&node)) {
-    if (sign || !t->sign()) return n;
-    return new Bitslice(n, t->bitsize() - 1, 0);
-  }
-  if (VectorAccess const* va = dynamic_cast<VectorAccess const*>(&node)) {
-    Terminal const* t = dynamic_cast<Terminal const*>(va->lhs().get());
-    if (sign || !t || !t->sign()) return n;
-    return new Bitslice(n, t->bitsize() - 1, 0);
-  }
-  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&node)) return new Bitslice(svSelf(b->child()), b->r(), b->l());
+  // the extensions of the default rules are replaced
   if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&node))
-    return new ExtendExpression(svInteger(e->child(), sign), e->value());
-  if (NegOpr const* o = dynamic_cast<NegOpr const*>(&node)) return new NegOpr(svInteger(o->child(), sign));
+    return svInteger(e->child(), width, sign);
+  if (Constant const* c = dynamic_cast<Constant const*>(&node)) {
+    uint64_t value = c->value() & svMask(c->bitsize());
+    if (sign) {
+      // a signed constant is kept sign-extended, as by crave::Context
+      if (c->bitsize() < 64 && ((value >> (c->bitsize() - 1)) & 1)) value |= ~svMask(c->bitsize());
+      return new Constant(value, width, true);
+    }
+    return new Constant(value, width, false);
+  }
+  if (is<Terminal>(node) || is<VectorAccess>(node) || is<Placeholder>(node)) {
+    unsigned const own = svWidth(node);
+    NodeRef operand = n;
+    if (!sign && svSigned(node)) operand = new Bitslice(n, own - 1, 0);
+    return svExtend(operand, own, width);
+  }
+  if (Bitslice const* b = dynamic_cast<Bitslice const*>(&node))
+    return svExtend(new Bitslice(svSelf(b->child()), b->r(), b->l()), b->r() - b->l() + 1, width);
+  if (NegOpr const* o = dynamic_cast<NegOpr const*>(&node)) return new NegOpr(svInteger(o->child(), width, sign));
   if (ComplementOpr const* o = dynamic_cast<ComplementOpr const*>(&node))
-    return new ComplementOpr(svInteger(o->child(), sign));
-  if (is<ShiftLeftOpr>(node)) return svShift<ShiftLeftOpr>(node, sign);
-  if (is<ShiftRightOpr>(node)) return svShift<ShiftRightOpr>(node, sign);
-  if (is<PlusOpr>(node)) return svBinary<PlusOpr>(node, sign);
-  if (is<MinusOpr>(node)) return svBinary<MinusOpr>(node, sign);
-  if (is<MultipliesOpr>(node)) return svBinary<MultipliesOpr>(node, sign);
-  if (is<DevideOpr>(node)) return svBinary<DevideOpr>(node, sign);
-  if (is<ModuloOpr>(node)) return svBinary<ModuloOpr>(node, sign);
-  if (is<AndOpr>(node)) return svBinary<AndOpr>(node, sign);
-  if (is<OrOpr>(node)) return svBinary<OrOpr>(node, sign);
-  if (is<XorOpr>(node)) return svBinary<XorOpr>(node, sign);
+    return new ComplementOpr(svInteger(o->child(), width, sign));
+  if (is<ShiftLeftOpr>(node)) return svShift<ShiftLeftOpr>(node, width, sign);
+  if (is<ShiftRightOpr>(node)) return svShift<ShiftRightOpr>(node, width, sign);
+  if (is<PlusOpr>(node)) return svBinary<PlusOpr>(node, width, sign);
+  if (is<MinusOpr>(node)) return svBinary<MinusOpr>(node, width, sign);
+  if (is<MultipliesOpr>(node)) return svBinary<MultipliesOpr>(node, width, sign);
+  if (is<DevideOpr>(node)) return svBinary<DevideOpr>(node, width, sign);
+  if (is<ModuloOpr>(node)) return svBinary<ModuloOpr>(node, width, sign);
+  if (is<AndOpr>(node)) return svBinary<AndOpr>(node, width, sign);
+  if (is<OrOpr>(node)) return svBinary<OrOpr>(node, width, sign);
+  if (is<XorOpr>(node)) return svBinary<XorOpr>(node, width, sign);
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
-    return new IfThenElse(svBoolean(ite->a()), svInteger(ite->b(), sign), svInteger(ite->c(), sign));
+    return new IfThenElse(svBoolean(ite->a()), svInteger(ite->b(), width, sign), svInteger(ite->c(), width, sign));
   return n;
 }
 
 NodeRef svBoolean(NodeRef const& n) {
   Node const& node = *n;
+  if (ZeroTest const* z = dynamic_cast<ZeroTest const*>(&node)) {
+    NodeRef const& e = z->lhs();
+    return new NotEqualOpr(svSelf(e), new Constant(0, svWidth(*e), svSigned(*e)));
+  }
   if (NotOpr const* o = dynamic_cast<NotOpr const*>(&node)) return new NotOpr(svBoolean(o->child()));
   if (LogicalAndOpr const* o = dynamic_cast<LogicalAndOpr const*>(&node))
     return new LogicalAndOpr(svBoolean(o->lhs()), svBoolean(o->rhs()));
@@ -160,6 +230,38 @@ NodeRef svBoolean(NodeRef const& n) {
   if (IfThenElse const* ite = dynamic_cast<IfThenElse const*>(&node))
     return new IfThenElse(svBoolean(ite->a()), svBoolean(ite->b()), svBoolean(ite->c()));
   if (Inside const* in = dynamic_cast<Inside const*>(&node)) return new Inside(svSelf(in->child()), in->collection());
+  auto svBoolToBv = [](NodeRef const& c, unsigned w) -> NodeRef {
+    return new IfThenElse(svBoolean(c), new Constant(1, w, false), new Constant(0, w, false));
+  };
+  auto svTernChild = [&svBoolToBv](NodeRef const& c, unsigned w) -> NodeRef {
+    if (isBoolean(*c)) return svBoolToBv(c, w);
+    return svInteger(c, w, svSigned(*c));
+  };
+  if (RangeExpr const* r = dynamic_cast<RangeExpr const*>(&node)) {
+    unsigned const w = std::max({svWidth(*r->a()), svWidth(*r->b()), svWidth(*r->c())});
+    return new RangeExpr(svTernChild(r->a(), w), svTernChild(r->b(), w), svTernChild(r->c(), w));
+  }
+  if (TolPlusMinusExpr const* t = dynamic_cast<TolPlusMinusExpr const*>(&node)) {
+    unsigned const w = std::max({svWidth(*t->a()), svWidth(*t->b()), svWidth(*t->c())});
+    return new TolPlusMinusExpr(svTernChild(t->a(), w), svTernChild(t->b(), w), svTernChild(t->c(), w));
+  }
+  if (TolPlusPctExpr const* t = dynamic_cast<TolPlusPctExpr const*>(&node)) {
+    unsigned const w = std::max(svWidth(*t->a()), svWidth(*t->b()));
+    unsigned const w_pct = svWidth(*t->c());
+    return new TolPlusPctExpr(svTernChild(t->a(), w), svTernChild(t->b(), w), svTernChild(t->c(), w_pct));
+  }
+  if (VectorContains const* vc = dynamic_cast<VectorContains const*>(&node)) {
+    bool const elem_is_bool = (vc->elem_bitsize() == 1 && vc->elem_sign());
+    if (elem_is_bool && isBoolean(*vc->child())) {
+      return new VectorContains(svBoolean(vc->child()), vc->vec_id(), 1, true, 1, true);
+    }
+    NodeRef child = isBoolean(*vc->child()) ? svBoolToBv(vc->child(), 1u) : svSelf(vc->child());
+    unsigned const ew = elem_is_bool ? 1u : vc->elem_bitsize();
+    bool const es = elem_is_bool ? false : vc->elem_sign();
+    unsigned const cw = std::max(svWidth(*child), ew);
+    bool const cs = svSigned(*child) && es;
+    return new VectorContains(svInteger(child, cw, cs), vc->vec_id(), vc->elem_bitsize(), vc->elem_sign(), cw, cs);
+  }
   if (ForEach const* fe = dynamic_cast<ForEach const*>(&node)) return new ForEach(fe->lhs(), svBoolean(fe->rhs()));
   return n;
 }
@@ -304,14 +406,15 @@ void FixWidthVisitor::visitRelationalBinExpr(const T& object) {
 // As in C++, an integer operand of a logical operator stands for its comparison with zero.
 FixWidthVisitor::result_type FixWidthVisitor::toBoolean(stack_entry const& e) {
   if (isBoolean(*e.first)) return e.first;
+  if (sv_signedness_) return new ZeroTest(e.first, new Constant(0, e.second, false));
   return new NotEqualOpr(e.first, new Constant(0, e.second, false));
 }
 
 // As in C++, a boolean promotes to the int 1 for true and 0 for false.
 void FixWidthVisitor::promoteToInteger(stack_entry& e) {
   if (!isBoolean(*e.first)) return;
-  unsigned const width = bitsize_traits<int>::value;
-  // A boolean is an unsigned bit in SystemVerilog, which is zero-extended.
+  // A boolean is a 1-bit unsigned value in SystemVerilog, which is zero-extended.
+  unsigned const width = sv_signedness_ ? 1 : bitsize_traits<int>::value;
   bool const sign = sv_signedness_ ? false : crave::is_signed<int>::value;
   e.first = new IfThenElse(e.first, new Constant(1, width, sign), new Constant(0, width, sign));
   e.second = width;
@@ -370,7 +473,7 @@ void FixWidthVisitor::visitExtendExpr(const ExtendExpression& e) {
   stack_entry entry;
   pop(entry);
 
-  exprStack_.push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second));
+  exprStack_.push(std::make_pair(new ExtendExpression(entry.first, e.value()), entry.second + e.value()));
 }
 
 void FixWidthVisitor::visitAndOpr(const AndOpr& a) { visitNumberResultBinExpr(a); }
@@ -492,6 +595,53 @@ void FixWidthVisitor::visitBitslice(const Bitslice& b) {
   pop(e);
 
   exprStack_.push(std::make_pair(new Bitslice(e.first, b.r(), b.l()), b.r() - b.l() + 1));
+}
+
+void FixWidthVisitor::visitRangeExpr(const RangeExpr& r) {
+  stack_entry a, b, c;
+  evalTernExpr(r, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new RangeExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new TolPlusMinusExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  promoteToInteger(a);
+  promoteToInteger(b);
+  promoteToInteger(c);
+  exprStack_.push(std::make_pair(new TolPlusPctExpr(a.first, b.first, c.first), 1));
+}
+
+void FixWidthVisitor::visitVectorContains(const VectorContains& vc) {
+  visitUnaryExpr(vc);
+  stack_entry e;
+  pop(e);
+  bool const elem_is_bool = (vc.elem_bitsize() == 1 && vc.elem_sign());
+  if (elem_is_bool && isBoolean(*e.first)) {
+    exprStack_.push(std::make_pair(new VectorContains(e.first, vc.vec_id(), 1, true, 1, true), 1));
+    return;
+  }
+  promoteToInteger(e);
+  unsigned const ew = elem_is_bool ? (sv_signedness_ ? 1u : bitsize_traits<int>::value) : vc.elem_bitsize();
+  bool const es = elem_is_bool ? (sv_signedness_ ? false : crave::is_signed<int>::value) : vc.elem_sign();
+  unsigned const cw = std::max(static_cast<unsigned>(e.second), ew);
+  NodeRef child = e.first;
+  if (static_cast<unsigned>(e.second) < cw) {
+    child = NodeRef(new ExtendExpression(child, cw - static_cast<unsigned>(e.second)));
+  }
+  exprStack_.push(std::make_pair(new VectorContains(child, vc.vec_id(), vc.elem_bitsize(), vc.elem_sign(), cw, es), 1));
 }
 
 }  // end namespace crave

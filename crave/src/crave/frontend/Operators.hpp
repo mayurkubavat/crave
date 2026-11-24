@@ -26,10 +26,20 @@
 
 
 #pragma once
+#include <cctype>
+#include <cstdint>
+#include <initializer_list>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
 #include "../frontend/PlaceHolder.hpp"
 #include "../frontend/ReadReference.hpp"
 #include "../frontend/VectorConstraint.hpp"
 #include "../frontend/WriteReference.hpp"
+#include "../frontend/WeightedRange.hpp"
 
 namespace crave {
 
@@ -108,12 +118,329 @@ struct operator_bitslice {};
 
 /**
  * \ingroup operators
- * \brief A special operator for constraining a variable to be within a collection of values.
- * 
- * The first parameter is the variable to be randomized.
- * The second parameter is a collection of values.
+ * \brief Tolerance range [val +/- tol] (closed [val - tol, val + tol]).
  */
-boost::proto::terminal<operator_inside>::type const inside = {};
+template <typename Val, typename Tol>
+struct tol_plusminus_expr {
+  template <typename V, typename T>
+  tol_plusminus_expr(V const& v, T const& t)
+      : val_(detail::range_capture<V>::capture(v)), tol_(detail::range_capture<T>::capture(t)) {}
+  Val val_;
+  Tol tol_;
+};
+
+template <typename Val, typename Tol>
+tol_plusminus_expr<typename detail::range_capture<Val>::type, typename detail::range_capture<Tol>::type>
+tol_plusminus(Val const& val, Tol const& tol) {
+  return tol_plusminus_expr<typename detail::range_capture<Val>::type,
+                            typename detail::range_capture<Tol>::type>(val, tol);
+}
+
+/**
+ * \ingroup operators
+ * \brief Relative percentage tolerance range [val +%- pct] (IEEE 1800-2023 11.4.13).
+ */
+template <typename Val, typename Pct>
+struct tol_pluspct_expr {
+  template <typename V, typename P>
+  tol_pluspct_expr(V const& v, P const& p)
+      : val_(detail::range_capture<V>::capture(v)), pct_(detail::range_capture<P>::capture(p)) {}
+  Val val_;
+  Pct pct_;
+};
+
+template <typename Val, typename Pct>
+tol_pluspct_expr<typename detail::range_capture<Val>::type, typename detail::range_capture<Pct>::type>
+tol_pluspct(Val const& val, Pct const& pct) {
+  return tol_pluspct_expr<typename detail::range_capture<Val>::type,
+                          typename detail::range_capture<Pct>::type>(val, pct);
+}
+
+/**
+ * \ingroup operators
+ * \brief Wildcard mask item (value, care_mask) where care_mask bit i==1 means bit i is compared.
+ */
+template <typename Val, typename Mask>
+struct inside_mask_expr {
+  template <typename V, typename M>
+  inside_mask_expr(V const& v, M const& m)
+      : val_(detail::range_capture<V>::capture(v)), mask_(detail::range_capture<M>::capture(m)) {}
+  Val val_;
+  Mask mask_;
+};
+
+/**
+ * \ingroup operators
+ * \brief Parsed SystemVerilog or bare bit-pattern wildcard mask item.
+ */
+struct inside_mask_pattern_expr {
+  uint64_t value_;
+  uint64_t care_mask_;
+  unsigned width_;
+  bool extend_dont_care_;
+};
+
+namespace detail {
+inline uint64_t inside_mask_bits(unsigned width) {
+  if (width == 0) return 0;
+  return width >= 64 ? ~uint64_t(0) : ((uint64_t(1) << width) - 1);
+}
+
+inline inside_mask_pattern_expr parse_inside_mask_pattern(std::string const& pat) {
+  if (pat.empty()) throw std::invalid_argument("inside_mask pattern must not be empty");
+
+  auto is_wildcard = [](char ch) {
+    char c = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return c == 'x' || c == 'z' || c == '?';
+  };
+
+  std::size_t quote = pat.find('\'');
+  uint64_t value = 0;
+  uint64_t care_mask = 0;
+  unsigned parsed_bits = 0;
+  bool has_explicit_width = false;
+  unsigned explicit_width = 0;
+  bool msb_dont_care = false;
+
+  if (quote == std::string::npos) {
+    // Bare binary pattern: [01xXzZ?_]+
+    for (char raw : pat) {
+      if (raw == '_') continue;
+      char c = static_cast<char>(std::tolower(static_cast<unsigned char>(raw)));
+      value <<= 1;
+      care_mask <<= 1;
+      if (c == '0') {
+        care_mask |= 1;
+      } else if (c == '1') {
+        value |= 1;
+        care_mask |= 1;
+      } else if (!is_wildcard(c)) {
+        throw std::invalid_argument("invalid character in bare inside_mask pattern: " + pat);
+      }
+      ++parsed_bits;
+      if (parsed_bits > 64) throw std::invalid_argument("inside_mask pattern exceeds 64 bits: " + pat);
+    }
+    if (parsed_bits == 0) throw std::invalid_argument("inside_mask pattern has no digits: " + pat);
+    return inside_mask_pattern_expr{value & care_mask, care_mask, parsed_bits, false};
+  }
+
+  // SystemVerilog literal: [width]'[s][b|o|h|d]<digits>
+  if (quote > 0) {
+    has_explicit_width = true;
+    uint64_t w = 0;
+    for (std::size_t i = 0; i < quote; ++i) {
+      unsigned char uc = static_cast<unsigned char>(pat[i]);
+      if (!std::isdigit(uc)) throw std::invalid_argument("invalid size in inside_mask pattern: " + pat);
+      w = w * 10 + static_cast<uint64_t>(uc - '0');
+      if (w > 64) throw std::invalid_argument("inside_mask pattern width exceeds 64 bits: " + pat);
+    }
+    if (w == 0) throw std::invalid_argument("inside_mask pattern width must be > 0: " + pat);
+    explicit_width = static_cast<unsigned>(w);
+  }
+
+  std::size_t pos = quote + 1;
+  if (pos >= pat.size()) throw std::invalid_argument("missing base in inside_mask pattern: " + pat);
+  if (std::tolower(static_cast<unsigned char>(pat[pos])) == 's') ++pos;
+  if (pos >= pat.size()) throw std::invalid_argument("missing base in inside_mask pattern: " + pat);
+  char base = static_cast<char>(std::tolower(static_cast<unsigned char>(pat[pos++])));
+
+  if (base == 'd') {
+    std::string digits;
+    for (; pos < pat.size(); ++pos) {
+      if (pat[pos] != '_') digits.push_back(pat[pos]);
+    }
+    if (digits.empty()) throw std::invalid_argument("missing digits in inside_mask pattern: " + pat);
+    if (digits.size() == 1 && is_wildcard(digits[0])) {
+      unsigned width = has_explicit_width ? explicit_width : 32u;
+      return inside_mask_pattern_expr{0, 0, width, !has_explicit_width};
+    }
+    uint64_t dec = 0;
+    for (char ch : digits) {
+      unsigned char uc = static_cast<unsigned char>(ch);
+      if (!std::isdigit(uc)) throw std::invalid_argument("invalid decimal digit in inside_mask pattern: " + pat);
+      dec = dec * 10 + static_cast<uint64_t>(uc - '0');
+    }
+    unsigned width = has_explicit_width ? explicit_width : 32u;
+    uint64_t m = inside_mask_bits(width);
+    return inside_mask_pattern_expr{dec & m, m, width, false};
+  }
+
+  unsigned bits_per_digit = 0;
+  if (base == 'b')
+    bits_per_digit = 1;
+  else if (base == 'o')
+    bits_per_digit = 3;
+  else if (base == 'h')
+    bits_per_digit = 4;
+  else
+    throw std::invalid_argument("invalid base in inside_mask pattern: " + pat);
+
+  for (; pos < pat.size(); ++pos) {
+    if (pat[pos] == '_') continue;
+    char c = static_cast<char>(std::tolower(static_cast<unsigned char>(pat[pos])));
+    if (parsed_bits == 0 && is_wildcard(c)) msb_dont_care = true;
+    value = (bits_per_digit >= 64) ? 0 : (value << bits_per_digit);
+    care_mask = (bits_per_digit >= 64) ? 0 : (care_mask << bits_per_digit);
+    if (is_wildcard(c)) {
+      // leave care bits 0
+    } else {
+      unsigned digit = 0;
+      if (c >= '0' && c <= '9')
+        digit = static_cast<unsigned>(c - '0');
+      else if (c >= 'a' && c <= 'f')
+        digit = static_cast<unsigned>(c - 'a' + 10);
+      else
+        throw std::invalid_argument("invalid digit in inside_mask pattern: " + pat);
+      if ((base == 'b' && digit >= 2) || (base == 'o' && digit >= 8))
+        throw std::invalid_argument("digit out of radix in inside_mask pattern: " + pat);
+      value |= static_cast<uint64_t>(digit);
+      care_mask |= inside_mask_bits(bits_per_digit);
+    }
+    parsed_bits += bits_per_digit;
+    if (!has_explicit_width && parsed_bits > 64)
+      throw std::invalid_argument("inside_mask pattern exceeds 64 bits: " + pat);
+  }
+  if (parsed_bits == 0) throw std::invalid_argument("inside_mask pattern has no digits: " + pat);
+
+  unsigned width = has_explicit_width ? explicit_width : parsed_bits;
+  if (has_explicit_width && parsed_bits < width && !msb_dont_care) {
+    care_mask |= inside_mask_bits(width) & ~inside_mask_bits(parsed_bits);
+  }
+  uint64_t m = inside_mask_bits(width);
+  care_mask &= m;
+  value &= care_mask;
+  bool extend_dont_care = !has_explicit_width && msb_dont_care;
+  return inside_mask_pattern_expr{value, care_mask, width, extend_dont_care};
+}
+}  // namespace detail
+
+template <typename Val, typename Mask,
+          typename std::enable_if<
+              !std::is_convertible<typename std::decay<Mask>::type, std::string>::value &&
+                  !std::is_convertible<typename std::decay<Mask>::type, char const*>::value,
+              int>::type = 0>
+inside_mask_expr<typename detail::range_capture<Val>::type, typename detail::range_capture<Mask>::type>
+inside_mask(Val const& val, Mask const& mask) {
+  return inside_mask_expr<typename detail::range_capture<Val>::type,
+                          typename detail::range_capture<Mask>::type>(val, mask);
+}
+
+inline inside_mask_pattern_expr inside_mask(std::string const& pattern) {
+  return detail::parse_inside_mask_pattern(pattern);
+}
+
+inline inside_mask_pattern_expr inside_mask(char const* pattern) {
+  if (!pattern) throw std::invalid_argument("inside_mask pattern must not be null");
+  return detail::parse_inside_mask_pattern(pattern);
+}
+
+namespace detail {
+template <typename T>
+struct is_inside_wrapper : std::false_type {};
+template <typename T, typename Hi>
+struct is_inside_wrapper<range<T, Hi> > : std::true_type {};
+template <typename Val, typename Tol>
+struct is_inside_wrapper<tol_plusminus_expr<Val, Tol> > : std::true_type {};
+template <typename Val, typename Pct>
+struct is_inside_wrapper<tol_pluspct_expr<Val, Pct> > : std::true_type {};
+template <typename Val, typename Mask>
+struct is_inside_wrapper<inside_mask_expr<Val, Mask> > : std::true_type {};
+template <>
+struct is_inside_wrapper<inside_mask_pattern_expr> : std::true_type {};
+
+template <typename T>
+struct inside_ref {
+  explicit inside_ref(T* p) : ptr(p) {}
+  T& get() const { return *ptr; }
+  T* ptr;
+};
+
+template <typename T,
+          bool IsExpr = boost::proto::is_expr<typename std::decay<T>::type>::value,
+          bool IsLvalRef = std::is_lvalue_reference<T>::value,
+          bool IsValueObj = is_inside_wrapper<typename std::decay<T>::type>::value ||
+                            is_distribution_scalar<typename std::decay<T>::type>::value>
+struct inside_capture {
+  typedef typename std::decay<T>::type type;
+  static type capture(T&& v) { return std::forward<T>(v); }
+};
+
+template <typename T, bool IsLvalRef, bool IsValueObj>
+struct inside_capture<T, true, IsLvalRef, IsValueObj> {
+  typedef typename boost::proto::result_of::deep_copy<typename std::decay<T>::type const&>::type type;
+  static type capture(T&& v) { return boost::proto::deep_copy(v); }
+};
+
+template <typename T>
+struct inside_capture<T, false, true, false> {
+  typedef inside_ref<typename std::remove_reference<T>::type const> type;
+  static type capture(T&& v) { return type(&v); }
+};
+
+template <typename T>
+using inside_capture_t = typename inside_capture<T>::type;
+}  // namespace detail
+
+template <typename Lhs, typename... Items>
+struct inside_expr_tag {
+  inside_expr_tag(Lhs l, std::tuple<Items...> its) : lhs(std::move(l)), items(std::move(its)) {}
+  Lhs lhs;
+  std::tuple<Items...> items;
+};
+
+/**
+ * \ingroup operators
+ * \brief Variadic set membership constraint (IEEE 1800-2023 18.5.3).
+ */
+template <typename Lhs, typename Item0, typename... Items>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    inside_expr_tag<detail::inside_capture_t<Lhs>, detail::inside_capture_t<Item0>,
+                    detail::inside_capture_t<Items>...> >::type
+inside(Lhs&& lhs, Item0&& item0, Items&&... items) {
+  typedef inside_expr_tag<detail::inside_capture_t<Lhs>, detail::inside_capture_t<Item0>,
+                          detail::inside_capture_t<Items>...>
+      tag_t;
+  tag_t tag(detail::inside_capture<Lhs>::capture(std::forward<Lhs>(lhs)),
+            std::tuple<detail::inside_capture_t<Item0>, detail::inside_capture_t<Items>...>(
+                detail::inside_capture<Item0>::capture(std::forward<Item0>(item0)),
+                detail::inside_capture<Items>::capture(std::forward<Items>(items))...));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+template <typename Lhs, typename Item>
+typename boost::proto::result_of::make_expr<
+    boost::proto::tag::terminal, Constraint_Domain,
+    inside_expr_tag<detail::inside_capture_t<Lhs>, std::vector<typename detail::range_capture<Item>::type> > >::type
+inside(Lhs&& lhs, std::initializer_list<Item> items) {
+  typedef typename detail::range_capture<Item>::type captured_item_t;
+  std::vector<captured_item_t> vec;
+  vec.reserve(items.size());
+  for (Item const& it : items) vec.push_back(detail::range_capture<Item>::capture(it));
+  typedef inside_expr_tag<detail::inside_capture_t<Lhs>, std::vector<captured_item_t> > tag_t;
+  tag_t tag(detail::inside_capture<Lhs>::capture(std::forward<Lhs>(lhs)), std::make_tuple(std::move(vec)));
+  return boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(std::move(tag));
+}
+
+template <typename Lhs, typename Val, typename Mask>
+auto inside_mask(Lhs&& lhs, Val const& val, Mask const& mask)
+    -> decltype(inside(std::forward<Lhs>(lhs), inside_mask(val, mask))) {
+  return inside(std::forward<Lhs>(lhs), inside_mask(val, mask));
+}
+
+template <typename Lhs,
+          typename std::enable_if<boost::proto::is_expr<typename std::decay<Lhs>::type>::value, int>::type = 0>
+auto inside_mask(Lhs&& lhs, std::string const& pattern)
+    -> decltype(inside(std::forward<Lhs>(lhs), inside_mask(pattern))) {
+  return inside(std::forward<Lhs>(lhs), inside_mask(pattern));
+}
+
+template <typename Lhs,
+          typename std::enable_if<boost::proto::is_expr<typename std::decay<Lhs>::type>::value, int>::type = 0>
+auto inside_mask(Lhs&& lhs, char const* pattern)
+    -> decltype(inside(std::forward<Lhs>(lhs), inside_mask(pattern))) {
+  return inside(std::forward<Lhs>(lhs), inside_mask(pattern));
+}
 
 /**
  * \ingroup operators
@@ -237,4 +564,26 @@ OUT& operator<<(OUT& out, operator_unique const& tag);
 */
 template <typename OUT>
 OUT& operator<<(OUT& out, operator_bitslice const& tag);
+
+template <typename Expr>
+struct soft_expr {
+  explicit soft_expr(Expr const& e) : expr(e) {}
+  Expr expr;
+};
+
+template <typename Expr>
+struct is_soft_expr : std::false_type {};
+
+template <typename Expr>
+struct is_soft_expr<soft_expr<Expr>> : std::true_type {};
+
+/**
+ * \ingroup operators
+ * \brief Marks an inline constraint expression as a soft constraint (IEEE 1800-2023 18.5.14).
+ */
+template <typename Expr>
+soft_expr<Expr> soft(Expr const& expr) {
+  static_assert(!is_soft_expr<Expr>::value, "nested crave::soft() is not allowed");
+  return soft_expr<Expr>(expr);
+}
 }  // namespace crave

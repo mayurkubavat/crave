@@ -595,6 +595,35 @@ BOOST_AUTO_TEST_CASE( from_integral_value_and_width )
   check_conversion_from_integer<32>(std::numeric_limits< int64_t>::min());
 }
 
+BOOST_AUTO_TEST_CASE( wide_bitvector_string_and_uint64 )
+{
+  std::string const hi_bits =
+      "1111111011011100101110101001100001110110010101000011001000010000"; // 0xFEDCBA9876543210
+  std::string const lo_bits =
+      "0000000100100011010001010110011110001001101010111100110111101111"; // 0x0123456789ABCDEF
+  result_wrapper rw128(hi_bits + lo_bits);
+
+  std::string s128 = rw128;
+  BOOST_REQUIRE_EQUAL(s128.size(), 128u);
+  BOOST_REQUIRE_EQUAL(s128, hi_bits + lo_bits);
+
+  uint64_t lo_u64 = rw128;
+  BOOST_REQUIRE_EQUAL(lo_u64, 0x0123456789ABCDEFULL);
+
+  int64_t lo_i64 = rw128;
+  BOOST_REQUIRE_EQUAL(lo_i64, static_cast<int64_t>(0x8123456789ABCDEFULL));
+
+  std::vector<bool> vb = rw128;
+  BOOST_REQUIRE_EQUAL(vb.size(), 128u);
+  BOOST_REQUIRE_EQUAL(vb[0], true);
+  BOOST_REQUIRE_EQUAL(vb[127], true);
+  BOOST_REQUIRE_EQUAL(vb[64], false);
+
+  result_wrapper rw_u64_wide(uint64_t(0x0123456789ABCDEFULL), 128);
+  std::string s_wide = rw_u64_wide;
+  BOOST_REQUIRE_EQUAL(s_wide, std::string(64, '0') + lo_bits);
+}
+
 BOOST_AUTO_TEST_SUITE_END() // result_wrapper
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

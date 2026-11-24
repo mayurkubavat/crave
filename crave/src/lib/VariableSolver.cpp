@@ -50,6 +50,18 @@ VariableSolver::VariableSolver(const VariableContainer& vcon, const ConstraintPa
   }
 }
 
+bool VariableSolver::read(int id, std::string& value) const {
+  auto ov = override_values_.find(id);
+  if (ov != override_values_.end()) {
+    value = ov->second;
+    return true;
+  }
+  if (!has_solution_) return false;
+  auto ite = var_ctn_.variables.find(id);
+  if (ite == var_ctn_.variables.end()) return false;
+  return solver_->read(*ite->second, value);
+}
+
 std::vector<std::vector<std::string> > VariableSolver::getContradictions() const { return contradictions_; }
 
 std::vector<std::string> VariableSolver::getInactiveSofts() const { return inactive_softs_; }

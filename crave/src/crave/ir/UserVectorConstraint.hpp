@@ -40,8 +40,8 @@ class UserVectorConstraint : public UserConstraint {
 
  public:
   UserVectorConstraint(unsigned const id, expression const expr, std::string const& name, std::set<int> support_vars,
-                       bool const unique, bool const soft = false, bool const cover = false, bool const enabled = true,
-                       bool const reduction = false);
+                       int const vector_id, bool const unique, bool const soft = false, bool const cover = false,
+                       bool const enabled = true, bool const reduction = false);
 
   bool isUnique();
   /**
@@ -53,6 +53,7 @@ class UserVectorConstraint : public UserConstraint {
   bool isVectorConstraint();
 
  protected:
+  int vector_id_;
   bool unique_;
   bool reduction_;
 };

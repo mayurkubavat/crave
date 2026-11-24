@@ -36,7 +36,19 @@ namespace crave {
 namespace {
 uint64_t mask(unsigned width) { return width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1; }
 
-bool isNegative(Constant const& c) { return c.sign() && (c.value() >> 63) != 0; }
+bool isNegative(Constant const& c) { return c.sign() && !c.isBool() && (c.value() >> 63) != 0; }
+
+__int128 toInt128(Constant const& c) {
+  if (c.isBool()) return c.value() ? 1 : 0;
+  unsigned w = c.bitsize();
+  unsigned __int128 raw = static_cast<unsigned __int128>(c.value());
+  if (w > 0 && w < 64) raw &= ((static_cast<unsigned __int128>(1) << w) - 1);
+  if (c.sign() && w > 0 && w <= 64) {
+    unsigned __int128 sign_bit = static_cast<unsigned __int128>(1) << (w - 1);
+    if (raw & sign_bit) raw |= (~static_cast<unsigned __int128>(0)) << w;
+  }
+  return static_cast<__int128>(raw);
+}
 
 // compares the values of the integers, also if one is signed and the other unsigned, as the solver does
 int compare(Constant const& a, Constant const& b) {
@@ -295,23 +307,6 @@ void EvalVisitor::visitXorOpr(const XorOpr& x) {
 }
 
 void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
-  // include tmp variable for inside operation
-  VariableExpr* v1 = exact_ ? dynamic_cast<VariableExpr*>(eq.lhs().get()) : static_cast<VariableExpr*>(eq.lhs().get());
-  VariableExpr* v2 = exact_ ? dynamic_cast<VariableExpr*>(eq.rhs().get()) : static_cast<VariableExpr*>(eq.rhs().get());
-
-  if (v1 && v2 && v1->id() != 0 && v2->id() != 0) {
-    // both operands are variables
-    eval_map::iterator ite1 = evalMap_->find(v1->id());
-    eval_map::iterator ite2 = evalMap_->find(v2->id());
-    if (ite1 != evalMap_->end() && ite2 == evalMap_->end()) {
-      evalMap_->insert(std::make_pair(v2->id(), ite1->second));
-    }
-    if (ite1 == evalMap_->end() && ite2 != evalMap_->end()) {
-      evalMap_->insert(std::make_pair(v1->id(), ite2->second));
-    }
-  }
-
-  // regular evaluation
   if (exactCompare(eq)) return;
   stack_entry lhs, rhs;
   evalBinExpr(eq, lhs, rhs);
@@ -480,10 +475,54 @@ void EvalVisitor::visitBitslice(const Bitslice& b) {
   pop(entry);
 
   Constant const& child = entry.first;
+  if (b.l() < 0 || b.r() < b.l() || b.r() >= 64) {
+    exprStack_.push(std::make_pair(Constant(), false));
+    return;
+  }
   unsigned long long v = 0;
-  for (int i = b.l(); i <= b.r(); i++) v |= (1LL << i);
+  for (int i = b.l(); i <= b.r(); i++) v |= (1ULL << i);
   Constant constant((v & child.value()) >> b.l(), b.r() - b.l() + 1, false);
   exprStack_.push(std::make_pair(constant, exact_ ? entry.second : false));
+}
+
+void EvalVisitor::visitRangeExpr(const RangeExpr& r) {
+  stack_entry a, b, c;
+  evalTernExpr(r, a, b, c);
+  __int128 const x = toInt128(a.first);
+  __int128 const lo = toInt128(b.first);
+  __int128 const hi = toInt128(c.first);
+  bool const res = (lo <= x) && (x <= hi);
+  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+}
+
+void EvalVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  __int128 const x = toInt128(a.first);
+  __int128 const val = toInt128(b.first);
+  __int128 const tol = toInt128(c.first);
+  bool const res = ((val - tol) <= x) && (x <= (val + tol));
+  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+}
+
+void EvalVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  __int128 const x = toInt128(a.first);
+  __int128 const val = toInt128(b.first);
+  __int128 const pct = toInt128(c.first);
+  bool res = false;
+  if (pct >= 0) {
+    unsigned __int128 const mag =
+        val < 0 ? static_cast<unsigned __int128>(-val) : static_cast<unsigned __int128>(val);
+    __int128 const delta = static_cast<__int128>((mag * static_cast<unsigned __int128>(pct)) / 100);
+    res = ((val - delta) <= x) && (x <= (val + delta));
+  }
+  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+}
+
+void EvalVisitor::visitVectorContains(const VectorContains&) {
+  throw std::runtime_error("VectorContains is not allowed in EvalVisitor.");
 }
 
 }  // end namespace crave

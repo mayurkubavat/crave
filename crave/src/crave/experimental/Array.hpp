@@ -135,6 +135,8 @@ class crv_array : public crv_object {
    * \return The value of type T
    */
   crv_variable<T>& operator[](unsigned pos) { return *arr_[pos]; }
+  crv_variable<T> const& operator[](unsigned pos) const { return *arr_[pos]; }
+  constexpr unsigned size() const { return N; }
 
  private:
   // The solver backends do not accept bitwise and arithmetic operators on booleans, so the

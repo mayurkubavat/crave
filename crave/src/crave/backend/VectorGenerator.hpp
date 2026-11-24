@@ -32,6 +32,7 @@
 #include <memory>
 #include <set>
 
+#include "Randc.hpp"
 #include "VariableGenerator.hpp"
 #include "../ir/visitor/ReplaceVisitor.hpp"
 
@@ -49,7 +50,7 @@ struct VectorSolver {
   explicit VectorSolver(int vector_id);
 
   void addConstraint(VectorConstraintPtr vc);
-  bool solve(const VariableGenerator& var_gen);
+  bool solve(VariableGenerator& var_gen);
 
   /**
    * Whether the last solve used a size of the vector, which has been solved with the other variables, and failed
@@ -58,6 +59,11 @@ struct VectorSolver {
   bool failedWithSolvedSize() const { return failed_with_solved_size_; }
   unsigned int size() const { return vec_elements_.size(); }
   int id() const { return vector_id_; }
+  std::set<int> const& scalarVars() const { return scalar_vars_; }
+  std::vector<VectorConstraintPtr> const& constraints() const { return constraints_; }
+  std::vector<std::vector<NodePtr> > const& elemConstraints() const { return elem_constraints_; }
+  std::map<int, std::shared_ptr<BddSampler> > const& elemSamplers() const { return elem_samplers_; }
+  unsigned int lastSize() const { return last_size_; }
 
  private:
   void resetSolver(unsigned int const size);
@@ -67,6 +73,7 @@ struct VectorSolver {
  private:
   std::vector<VectorConstraintPtr> constraints_;
   int vector_id_;
+  std::set<int> scalar_vars_;
   SolverPtr solver_;
   VectorElements vec_elements_;
   // hard constraints, which involve only a single element, for every element
@@ -76,6 +83,7 @@ struct VectorSolver {
   // the different samplers in elem_samplers_
   std::set<BddSampler*> samplers_;
   bool failed_with_solved_size_;
+  unsigned int last_size_ = 0;
 };
 
 /*
@@ -85,7 +93,8 @@ struct VectorGenerator {
   typedef std::map<int, VectorSolver> VectorSolverMap;
 
   VectorGenerator();
-  bool solve(const VariableGenerator& var_gen, const std::set<int>& vec_ids);
+  bool solve(VariableGenerator& var_gen, const std::set<int>& vec_ids,
+             std::vector<ConstraintPartition> const* partitions = nullptr);
   void reset(const std::vector<VectorConstraintPtr>& v);
 
   /**
@@ -96,10 +105,13 @@ struct VectorGenerator {
 
  private:
   void addConstraint(VectorConstraintPtr vc);
+  bool solveJoint(VariableGenerator& var_gen, std::vector<ConstraintPartition> const& partitions,
+                  int failed_vec_id, std::set<int>& solved_vecs);
 
  private:
   VectorSolverMap vector_solvers_;
   VectorSolver const* failed_;
+  std::vector<RandcUndo> joint_randc_undo_;
 };
 
 }  // namespace crave

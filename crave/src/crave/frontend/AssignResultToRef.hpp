@@ -27,6 +27,7 @@
 #pragma once
 
 #include <string>
+#include <type_traits>
 
 #include <functional>
 
@@ -70,7 +71,34 @@ struct AssignResultToRef : AssignResult {
 
  private:
   void set_value(std::string const& str, T* val) const {
-    *val = ((crave::is_signed<T>::value && str[0] == '1') ? -1 : 0);
+    set_value_impl(str, val, std::integral_constant<bool, std::is_integral<T>::value || std::is_enum<T>::value>{});
+  }
+
+  void set_value_impl(std::string const& str, T* val, std::true_type) const {
+    typedef typename std::make_unsigned<T>::type U;
+    U u = (!str.empty() && crave::is_signed<T>::value && str[0] == '1') ? static_cast<U>(~U(0)) : U(0);
+    for (std::string::const_iterator ite = str.begin(); ite != str.end(); ++ite) {
+      u = static_cast<U>(static_cast<unsigned long long>(u) << 1);
+      switch (*ite) {
+        case '0':
+          u &= static_cast<U>(~U(1));
+          break;
+        case '1':
+          u |= U(1);
+          break;
+        default:
+          if (random_bit && random_bit())
+            u |= U(1);
+          else
+            u &= static_cast<U>(~U(1));
+          break;
+      }
+    }
+    *val = static_cast<T>(u);
+  }
+
+  void set_value_impl(std::string const& str, T* val, std::false_type) const {
+    *val = ((!str.empty() && crave::is_signed<T>::value && str[0] == '1') ? -1 : 0);
     for (std::string::const_iterator ite = str.begin(); ite != str.end(); ++ite) {
       *val <<= 1;
       switch (*ite) {
@@ -115,7 +143,7 @@ struct AssignResultToRef<bool> : AssignResult {
 
  private:
   void set_value(std::string const& str, bool* val) const {
-    *val = ((crave::is_signed<bool>::value && str[0] == '1') ? true : false);
+    *val = (!str.empty() && (str == "true" || str[0] == '1'));
   }
 
  protected:

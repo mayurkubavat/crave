@@ -28,6 +28,7 @@
 #include "../crave/ir/visitor/GetSupportSetVisitor.hpp"
 #include "../crave/ir/visitor/ToDotNodeVisitor.hpp"
 #include "../crave/ir/visitor/ComplexityEstimationVisitor.hpp"
+#include "../crave/frontend/RandomBase.hpp"
 #include "../crave/utils/Logging.hpp"
 
 namespace crave {
@@ -104,18 +105,29 @@ ConstraintPtr ConstraintManager::makeConstraint(std::string const& name, int c_i
   ConstraintPtr c;
 
   // A reduction of the elements of a vector is solved by the solver of the vector, after the size of the
-  // vector has been solved. So a constraint with a reduction may refer to the elements of that vector only.
+  // vector has been solved. So a constraint with a reduction may refer to a single vector and scalar variables/references.
   bool const reduction = !gssv.getReducedVectors().empty();
-  if (reduction && gssv.getSupportVars().size() != 1)
-    throw std::runtime_error("Constraint " + name +
-                             ": a constraint with a reduction of a vector may refer to the elements of that vector only.");
-
-  if (boost::dynamic_pointer_cast<ForEach>(n) != 0) {
-    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), false, soft, cover);
-  } else if (boost::dynamic_pointer_cast<Unique>(n) != 0) {
-    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), true, soft, cover);
+  if (auto fe = boost::dynamic_pointer_cast<ForEach>(n)) {
+    auto vec = boost::dynamic_pointer_cast<VectorExpr>(fe->lhs());
+    if (!vec || gssv.getVectorVars().size() != 1 || *gssv.getVectorVars().begin() != static_cast<int>(vec->id()))
+      throw std::runtime_error("Constraint " + name + ": foreach may refer to the elements of one vector only.");
+    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), vec->id(), false, soft, cover);
+  } else if (auto u = boost::dynamic_pointer_cast<Unique>(n)) {
+    auto vec = boost::dynamic_pointer_cast<VectorExpr>(u->child());
+    if (!vec || gssv.getVectorVars().size() != 1 || *gssv.getVectorVars().begin() != static_cast<int>(vec->id()))
+      throw std::runtime_error("Constraint " + name + ": unique may refer to one vector only.");
+    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), vec->id(), true, soft, cover);
   } else if (reduction) {
-    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), false, soft, cover, true, true);
+    if (gssv.getReducedVectors().size() != 1 || gssv.getVectorVars().size() != 1)
+      throw std::runtime_error("Constraint " + name +
+                               ": a constraint with a reduction of a vector may refer to the elements of that vector only.");
+    int const vector_id = *gssv.getReducedVectors().begin();
+    auto vec_ite = vectorBaseMap.find(vector_id);
+    if (vec_ite != vectorBaseMap.end() && gssv.getSupportVars().count(vec_ite->second->size_var().id()))
+      throw std::runtime_error("Constraint " + name +
+                               ": a constraint with a reduction of a vector may not refer to the size of that vector.");
+    c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), vector_id, false, soft, cover,
+                                               true, true);
   } else {
     c = std::make_shared<UserConstraint>(c_id, n, name, gssv.getSupportVars(), soft, cover);
   }

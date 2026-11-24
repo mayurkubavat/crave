@@ -43,6 +43,7 @@ void VariableGeneratorMT::reset(std::vector<ConstraintPartition>& partitions) {
   partitions_ = &partitions;
   randc_epoch_ = randc_epoch();
   solvers_.resize(partitions.size());
+  override_values_.clear();
   std::vector<std::thread*> threads;
   for (unsigned i = 0; i < partitions.size(); i++) {
     std::thread* thread(
@@ -59,6 +60,7 @@ void VariableGeneratorMT::solve(VarSolverPtr vs) {
 
 bool VariableGeneratorMT::solve() {
   refreshRandc();
+  clearOverrides();
   result_ = true;
   std::vector<std::thread*> threads;
   for (unsigned i = 0; i < solvers_.size(); i++) {

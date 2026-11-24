@@ -54,7 +54,7 @@ const_iterator ConstraintPartition::end() const { return constraints_.end(); }
 
 void ConstraintPartition::add(ConstraintPtr c) {
   iterator ite = constraints_.begin();
-  while (ite != constraints_.end() && ((*ite)->id() > c->id())) ite++;
+  while (ite != constraints_.end() && ((*ite)->id() < c->id())) ite++;
   constraints_.insert(ite, c);
   // only add hard constraints to singleVariableConstraintMap
   if (!c->isSoft() && !c->isCover() && c->support_vars_.size() == 1) {

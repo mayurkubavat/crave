@@ -53,7 +53,14 @@ template <typename SolverType>
 class metaSMTVisitorImpl : public metaSMTVisitor {
  public:
   metaSMTVisitorImpl()
-      : metaSMTVisitor(), solver_(), exprStack_(), terminals_(), softs_(), assumptions_(), suggestions_() {}
+      : metaSMTVisitor(),
+        solver_(),
+        exprStack_(),
+        terminals_(),
+        softs_(),
+        assumptions_(),
+        suggestions_(),
+        last_inactive_softs_() {}
 
   virtual void visitNode(Node const &);
   virtual void visitTerminal(Terminal const &);
@@ -95,12 +102,18 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   virtual void visitForEach(ForEach const &);
   virtual void visitUnique(Unique const &);
   virtual void visitBitslice(Bitslice const &);
+  virtual void visitRangeExpr(RangeExpr const &);
+  virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const &);
+  virtual void visitTolPlusPctExpr(TolPlusPctExpr const &);
+  virtual void visitVectorContains(VectorContains const &);
 
   virtual void makeAssertion(Node const &);
   virtual void makeSoftAssertion(Node const &);
   virtual void makeSuggestion(Node const &);
   virtual void makeAssumption(Node const &);
   virtual std::vector<unsigned int> analyseSofts();
+  virtual std::vector<unsigned int> resolveSofts();
+  virtual std::vector<unsigned int> const& getInactiveSofts() const;
   virtual std::vector<std::vector<unsigned int> > analyseContradiction(std::map<unsigned int, NodePtr> const &);
   virtual bool solve(bool ignoreSofts);
   virtual bool read(Node const &var, AssignResult &);
@@ -118,6 +131,13 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   inline void pop3(stack_entry &fst, stack_entry &snd, stack_entry &trd);
   void evalBinExpr(BinaryExpression const &expr, stack_entry &fst, stack_entry &snd);
   void evalTernExpr(TernaryExpression const &expr, stack_entry &fst, stack_entry &snd, stack_entry &trd);
+  unsigned normalizeBv(stack_entry &se);
+  result_type extendToWideSigned(result_type const &bv, unsigned w, bool s, unsigned target_w);
+  static unsigned signedWidth(unsigned w, bool s) { return s ? w : w + 1; }
+  static __int128 constantToInt128(Constant const &c);
+  static unsigned unsignedBitsNeeded(unsigned __int128 v);
+  static unsigned signedBitsNeeded(__int128 v);
+  static std::string int128ToBvBin(__int128 v, unsigned width);
 
  private:  // data
   SolverType solver_;
@@ -126,6 +146,7 @@ class metaSMTVisitorImpl : public metaSMTVisitor {
   std::vector<result_type> softs_;
   std::vector<result_type> assumptions_;
   std::vector<result_type> suggestions_;
+  std::vector<unsigned int> last_inactive_softs_;
 };
 
 template <typename SolverType>
@@ -578,6 +599,228 @@ template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::visitUnique(Unique const &) {
   throw std::runtime_error("Unique is not allowed in metaSMTNodeVisitor.");
 }
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitVectorContains(VectorContains const &) {
+  throw std::runtime_error("VectorContains is not allowed in metaSMTNodeVisitor.");
+}
+
+template <typename SolverType>
+unsigned metaSMTVisitorImpl<SolverType>::normalizeBv(stack_entry &se) {
+  unsigned w = solver_.get_bv_width(se.first);
+  if (w == 0) {
+    se.first = evaluate(solver_, preds::Ite(preds::equal(se.first, preds::True), qf_bv::bvuint(1, 1),
+                                            qf_bv::bvuint(0, 1)));
+    se.second = false;
+    w = 1;
+  }
+  return w;
+}
+
+template <typename SolverType>
+typename metaSMTVisitorImpl<SolverType>::result_type metaSMTVisitorImpl<SolverType>::extendToWideSigned(
+    result_type const &bv, unsigned w, bool s, unsigned target_w) {
+  if (w >= target_w) return bv;
+  if (s) return evaluate(solver_, qf_bv::sign_extend(target_w - w, bv));
+  return evaluate(solver_, qf_bv::zero_extend(target_w - w, bv));
+}
+
+template <typename SolverType>
+__int128 metaSMTVisitorImpl<SolverType>::constantToInt128(Constant const &c) {
+  if (c.isBool()) return c.value() ? 1 : 0;
+  unsigned w = c.bitsize();
+  unsigned __int128 raw = static_cast<unsigned __int128>(c.value());
+  if (w > 0 && w < 64) raw &= ((static_cast<unsigned __int128>(1) << w) - 1);
+  if (c.sign() && w > 0 && w <= 64) {
+    unsigned __int128 sign_bit = static_cast<unsigned __int128>(1) << (w - 1);
+    if (raw & sign_bit) raw |= (~static_cast<unsigned __int128>(0)) << w;
+  }
+  return static_cast<__int128>(raw);
+}
+
+template <typename SolverType>
+unsigned metaSMTVisitorImpl<SolverType>::unsignedBitsNeeded(unsigned __int128 v) {
+  unsigned b = 0;
+  while (v > 0) {
+    v >>= 1;
+    ++b;
+  }
+  return b;
+}
+
+template <typename SolverType>
+unsigned metaSMTVisitorImpl<SolverType>::signedBitsNeeded(__int128 v) {
+  unsigned __int128 mag = v < 0 ? ~static_cast<unsigned __int128>(v) : static_cast<unsigned __int128>(v);
+  return 1u + unsignedBitsNeeded(mag);
+}
+
+template <typename SolverType>
+std::string metaSMTVisitorImpl<SolverType>::int128ToBvBin(__int128 v, unsigned width) {
+  std::string bits(width, v < 0 ? '1' : '0');
+  unsigned __int128 u = static_cast<unsigned __int128>(v);
+  unsigned limit = std::min(width, 128u);
+  for (unsigned i = 0; i < limit; ++i) {
+    bits[width - 1 - i] = ((u >> i) & 1) ? '1' : '0';
+  }
+  return bits;
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitRangeExpr(RangeExpr const &r) {
+  stack_entry e_p, lo_p, hi_p;
+  evalTernExpr(r, e_p, lo_p, hi_p);
+  unsigned const w_e = normalizeBv(e_p);
+  unsigned const w_l = normalizeBv(lo_p);
+  unsigned const w_h = normalizeBv(hi_p);
+  unsigned const w_wide = std::max(signedWidth(w_e, e_p.second),
+                                   std::max(signedWidth(w_l, lo_p.second), signedWidth(w_h, hi_p.second)));
+  result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+  result_type lo_w = extendToWideSigned(lo_p.first, w_l, lo_p.second, w_wide);
+  result_type hi_w = extendToWideSigned(hi_p.first, w_h, hi_p.second, w_wide);
+  result_type res = evaluate(solver_, preds::And(qf_bv::bvsle(lo_w, e_w), qf_bv::bvsle(e_w, hi_w)));
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitTolPlusMinusExpr(TolPlusMinusExpr const &t) {
+  stack_entry e_p, val_p, tol_p;
+  evalTernExpr(t, e_p, val_p, tol_p);
+  unsigned const w_e = normalizeBv(e_p);
+  unsigned const w_v = normalizeBv(val_p);
+  unsigned const w_t = normalizeBv(tol_p);
+  unsigned const w_vt = std::max(signedWidth(w_v, val_p.second), signedWidth(w_t, tol_p.second)) + 1;
+  unsigned const w_wide = std::max(signedWidth(w_e, e_p.second), w_vt);
+  result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+  result_type val_w = extendToWideSigned(val_p.first, w_v, val_p.second, w_wide);
+  result_type tol_w = extendToWideSigned(tol_p.first, w_t, tol_p.second, w_wide);
+  result_type lo_w = evaluate(solver_, qf_bv::bvsub(val_w, tol_w));
+  result_type hi_w = evaluate(solver_, qf_bv::bvadd(val_w, tol_w));
+  result_type res = evaluate(solver_, preds::And(qf_bv::bvsle(lo_w, e_w), qf_bv::bvsle(e_w, hi_w)));
+  exprStack_.push(std::make_pair(res, false));
+}
+
+template <typename SolverType>
+void metaSMTVisitorImpl<SolverType>::visitTolPlusPctExpr(TolPlusPctExpr const &t) {
+  Constant const *val_c = dynamic_cast<Constant const *>(t.b().get());
+  Constant const *pct_c = dynamic_cast<Constant const *>(t.c().get());
+
+  if (val_c && pct_c) {
+    __int128 const pct_i = constantToInt128(*pct_c);
+    if (pct_i < 0) {
+      exprStack_.push(std::make_pair(evaluate(solver_, preds::False), false));
+      return;
+    }
+    t.a()->visit(this);
+    stack_entry e_p;
+    pop(e_p);
+    unsigned const w_e = normalizeBv(e_p);
+    __int128 const val_i = constantToInt128(*val_c);
+    if (pct_i == 0) {
+      unsigned const w_wide = std::max(signedWidth(w_e, e_p.second), signedBitsNeeded(val_i));
+      result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+      result_type val_bv = evaluate(solver_, qf_bv::bvbin(int128ToBvBin(val_i, w_wide)));
+      exprStack_.push(std::make_pair(evaluate(solver_, preds::equal(e_w, val_bv)), false));
+      return;
+    }
+    unsigned __int128 const mag =
+        val_i < 0 ? static_cast<unsigned __int128>(-val_i) : static_cast<unsigned __int128>(val_i);
+    __int128 const delta = static_cast<__int128>((mag * static_cast<unsigned __int128>(pct_i)) / 100);
+    __int128 const lo_i = val_i - delta;
+    __int128 const hi_i = val_i + delta;
+    unsigned const w_wide =
+        std::max(signedWidth(w_e, e_p.second), std::max(signedBitsNeeded(lo_i), signedBitsNeeded(hi_i)));
+    result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+    result_type lo_bv = evaluate(solver_, qf_bv::bvbin(int128ToBvBin(lo_i, w_wide)));
+    result_type hi_bv = evaluate(solver_, qf_bv::bvbin(int128ToBvBin(hi_i, w_wide)));
+    result_type res = evaluate(solver_, preds::And(qf_bv::bvsle(lo_bv, e_w), qf_bv::bvsle(e_w, hi_bv)));
+    exprStack_.push(std::make_pair(res, false));
+    return;
+  }
+
+  if (pct_c) {
+    __int128 const pct_i = constantToInt128(*pct_c);
+    if (pct_i < 0) {
+      exprStack_.push(std::make_pair(evaluate(solver_, preds::False), false));
+      return;
+    }
+    t.a()->visit(this);
+    t.b()->visit(this);
+    stack_entry val_p, e_p;
+    pop2(val_p, e_p);
+    unsigned const w_e = normalizeBv(e_p);
+    unsigned const w_v = normalizeBv(val_p);
+    if (pct_i == 0) {
+      unsigned const w_wide = std::max(signedWidth(w_e, e_p.second), signedWidth(w_v, val_p.second));
+      result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+      result_type val_w = extendToWideSigned(val_p.first, w_v, val_p.second, w_wide);
+      exprStack_.push(std::make_pair(evaluate(solver_, preds::equal(e_w, val_w)), false));
+      return;
+    }
+    result_type mag = val_p.second
+                          ? evaluate(solver_, preds::Ite(qf_bv::bvslt(val_p.first, qf_bv::bvsint(0, w_v)),
+                                                         qf_bv::bvneg(val_p.first), val_p.first))
+                          : val_p.first;
+    if (pct_i == 100 || pct_i == 50 || pct_i == 25) {
+      unsigned const w_wide =
+          std::max(signedWidth(w_e, e_p.second), std::max(signedWidth(w_v, val_p.second), w_v + 1) + 1);
+      result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+      result_type val_w = extendToWideSigned(val_p.first, w_v, val_p.second, w_wide);
+      result_type mag_w = extendToWideSigned(mag, w_v, false, w_wide);
+      result_type delta_w = mag_w;
+      if (pct_i == 50)
+        delta_w = evaluate(solver_, qf_bv::bvshr(mag_w, qf_bv::bvuint(1, w_wide)));
+      else if (pct_i == 25)
+        delta_w = evaluate(solver_, qf_bv::bvshr(mag_w, qf_bv::bvuint(2, w_wide)));
+      result_type lo_w = evaluate(solver_, qf_bv::bvsub(val_w, delta_w));
+      result_type hi_w = evaluate(solver_, qf_bv::bvadd(val_w, delta_w));
+      result_type res = evaluate(solver_, preds::And(qf_bv::bvsle(lo_w, e_w), qf_bv::bvsle(e_w, hi_w)));
+      exprStack_.push(std::make_pair(res, false));
+      return;
+    }
+    unsigned const w_p_eff = std::max(1u, unsignedBitsNeeded(static_cast<unsigned __int128>(pct_i)));
+    unsigned const w_mul = std::max(w_v + w_p_eff, 7u);
+    result_type mag_m = extendToWideSigned(mag, w_v, false, w_mul);
+    result_type pct_m = evaluate(solver_, qf_bv::bvbin(int128ToBvBin(pct_i, w_mul)));
+    result_type div_100 = evaluate(solver_, qf_bv::bvuint(100, w_mul));
+    result_type delta = evaluate(solver_, qf_bv::bvudiv(qf_bv::bvmul(mag_m, pct_m), div_100));
+    unsigned const w_wide =
+        std::max(signedWidth(w_e, e_p.second), std::max(signedWidth(w_v, val_p.second), w_mul + 1) + 1);
+    result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+    result_type val_w = extendToWideSigned(val_p.first, w_v, val_p.second, w_wide);
+    result_type delta_w = extendToWideSigned(delta, w_mul, false, w_wide);
+    result_type lo_w = evaluate(solver_, qf_bv::bvsub(val_w, delta_w));
+    result_type hi_w = evaluate(solver_, qf_bv::bvadd(val_w, delta_w));
+    result_type res = evaluate(solver_, preds::And(qf_bv::bvsle(lo_w, e_w), qf_bv::bvsle(e_w, hi_w)));
+    exprStack_.push(std::make_pair(res, false));
+    return;
+  }
+
+  stack_entry e_p, val_p, pct_p;
+  evalTernExpr(t, e_p, val_p, pct_p);
+  unsigned const w_e = normalizeBv(e_p);
+  unsigned const w_v = normalizeBv(val_p);
+  unsigned const w_p = normalizeBv(pct_p);
+  unsigned const w_mul = std::max(w_v + w_p, 7u);
+  result_type mag = val_p.second
+                        ? evaluate(solver_, preds::Ite(qf_bv::bvslt(val_p.first, qf_bv::bvsint(0, w_v)),
+                                                       qf_bv::bvneg(val_p.first), val_p.first))
+                        : val_p.first;
+  result_type mag_m = extendToWideSigned(mag, w_v, false, w_mul);
+  result_type pct_m = extendToWideSigned(pct_p.first, w_p, false, w_mul);
+  result_type div_100 = evaluate(solver_, qf_bv::bvuint(100, w_mul));
+  result_type delta = evaluate(solver_, qf_bv::bvudiv(qf_bv::bvmul(mag_m, pct_m), div_100));
+  unsigned const w_wide =
+      std::max(signedWidth(w_e, e_p.second), std::max(signedWidth(w_v, val_p.second), w_mul + 1) + 1);
+  result_type e_w = extendToWideSigned(e_p.first, w_e, e_p.second, w_wide);
+  result_type val_w = extendToWideSigned(val_p.first, w_v, val_p.second, w_wide);
+  result_type delta_w = extendToWideSigned(delta, w_mul, false, w_wide);
+  result_type lo_w = evaluate(solver_, qf_bv::bvsub(val_w, delta_w));
+  result_type hi_w = evaluate(solver_, qf_bv::bvadd(val_w, delta_w));
+  result_type in_bounds = evaluate(solver_, preds::And(qf_bv::bvsle(lo_w, e_w), qf_bv::bvsle(e_w, hi_w)));
+  result_type res =
+      pct_p.second ? evaluate(solver_, preds::And(qf_bv::bvsge(pct_p.first, qf_bv::bvsint(0, w_p)), in_bounds))
+                   : in_bounds;
+  exprStack_.push(std::make_pair(res, false));
+}
 
 template <typename SolverType>
 void metaSMTVisitorImpl<SolverType>::makeAssertion(Node const &expr) {
@@ -596,7 +839,7 @@ void metaSMTVisitorImpl<SolverType>::makeSoftAssertion(Node const &expr) {
   stack_entry entry;
   pop(entry);
 
-  softs_.push_back(entry.first);
+  softs_.push_back(evaluate(solver_, preds::equal(entry.first, preds::True)));
 }
 
 template <typename SolverType>
@@ -622,19 +865,68 @@ void metaSMTVisitorImpl<SolverType>::makeAssumption(Node const &expr) {
 template <typename SolverType>
 std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::analyseSofts() {
   std::vector<unsigned int> result;
-  // implements soft constraint semantics of the HVL e
-  for (unsigned int i = 0; i < softs_.size(); i++) {
-    metaSMT::assumption(solver_, preds::equal(softs_[i], preds::True));
+  // IEEE 1800-2023 18.5.14: last-added soft constraint has highest priority
+  for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+    unsigned int const i = static_cast<unsigned int>(idx - 1);
+    metaSMT::assumption(solver_, softs_[i]);
     if (metaSMT::solve(solver_)) {
       // accept
-      metaSMT::assertion(solver_, preds::equal(softs_[i], preds::True));
+      metaSMT::assertion(solver_, softs_[i]);
     } else {
       // reject
       result.push_back(i);
     }
   }
+  std::reverse(result.begin(), result.end());
+  last_inactive_softs_ = result;
   softs_.clear();
   return result;
+}
+
+template <typename SolverType>
+std::vector<unsigned int> metaSMTVisitorImpl<SolverType>::resolveSofts() {
+  last_inactive_softs_.clear();
+  if (softs_.empty()) {
+    assumptions_.clear();
+    return last_inactive_softs_;
+  }
+
+  for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+  if (metaSMT::solve(solver_)) {
+    assumptions_.clear();
+    return last_inactive_softs_;
+  }
+
+  if (!assumptions_.empty()) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    if (!metaSMT::solve(solver_)) {
+      assumptions_.clear();
+      return last_inactive_softs_;
+    }
+  }
+
+  std::vector<result_type> active_softs;
+  active_softs.reserve(softs_.size());
+  for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+    unsigned int const i = static_cast<unsigned int>(idx - 1);
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+    metaSMT::assumption(solver_, softs_[i]);
+    if (metaSMT::solve(solver_)) {
+      active_softs.push_back(softs_[i]);
+    } else {
+      last_inactive_softs_.push_back(i);
+    }
+  }
+  std::reverse(last_inactive_softs_.begin(), last_inactive_softs_.end());
+  assumptions_.clear();
+  return last_inactive_softs_;
+}
+
+template <typename SolverType>
+std::vector<unsigned int> const& metaSMTVisitorImpl<SolverType>::getInactiveSofts() const {
+  return last_inactive_softs_;
 }
 
 template <typename SolverType>
@@ -668,14 +960,90 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
   crave::random_shuffle(assumptions_.begin(), assumptions_.end());
   crave::random_shuffle(suggestions_.begin(), suggestions_.end());
 
-  while (true) {
-    for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  if (ignoreSofts || softs_.empty()) {
+    while (true) {
+      for(result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
 
-    for(result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
+      for(result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
 
-    if (!ignoreSofts) {
-      for(result_type const & item : softs_) { metaSMT::assumption(solver_, preds::equal(item, preds::True)); }
+      if (metaSMT::solve(solver_)) {
+        result = true;
+        break;
+      }
+
+      if (suggestions_.empty()) break;
+
+      // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
+      // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
+      unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
+      for (unsigned i = 0; i < drop; i++) {
+        unsigned select = crave::random_unsigned(suggestions_.size());
+        std::swap(suggestions_[select], suggestions_.back());
+        suggestions_.pop_back();
+      }
     }
+
+    assumptions_.clear();
+    suggestions_.clear();
+
+    return result;
+  }
+
+  last_inactive_softs_.clear();
+
+  // Fast path: try assumptions_ + suggestions_ + all softs_
+  for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
+  for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+  if (metaSMT::solve(solver_)) {
+    assumptions_.clear();
+    suggestions_.clear();
+    return true;
+  }
+
+  // Slow path: resolve soft constraints against assumptions_ alone so suggestions_ are preserved
+  std::vector<result_type> active_softs;
+  bool all_softs_sat = false;
+  if (!suggestions_.empty()) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : softs_) { metaSMT::assumption(solver_, item); }
+    if (metaSMT::solve(solver_)) {
+      active_softs = softs_;
+      all_softs_sat = true;
+    }
+  }
+
+  if (!all_softs_sat) {
+    if (!assumptions_.empty()) {
+      for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+      if (!metaSMT::solve(solver_)) {
+        assumptions_.clear();
+        suggestions_.clear();
+        return false;
+      }
+    }
+
+    active_softs.reserve(softs_.size());
+    for (std::size_t idx = softs_.size(); idx > 0; --idx) {
+      unsigned int const i = static_cast<unsigned int>(idx - 1);
+      for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+      for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+      metaSMT::assumption(solver_, softs_[i]);
+      if (metaSMT::solve(solver_)) {
+        active_softs.push_back(softs_[i]);
+      } else {
+        last_inactive_softs_.push_back(i);
+      }
+    }
+    std::reverse(last_inactive_softs_.begin(), last_inactive_softs_.end());
+  }
+
+  // Run suggestion pruning loop (or single solve when suggestions_.empty()) so the solver stores a model
+  // consistent with assumptions_ + all active_softs.
+  while (true) {
+    for (result_type const & item : assumptions_) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : active_softs) { metaSMT::assumption(solver_, item); }
+    for (result_type const & item : suggestions_) { metaSMT::assumption(solver_, item); }
 
     if (metaSMT::solve(solver_)) {
       result = true;
@@ -684,8 +1052,6 @@ bool metaSMTVisitorImpl<SolverType>::solve(bool ignoreSofts) {
 
     if (suggestions_.empty()) break;
 
-    // Suggestions are dropped until the rest holds. To bound the number of calls of the solver, only
-    // the first failures drop a single suggestion, after that half of the remaining ones are dropped.
     unsigned drop = ++failures <= 4 ? 1 : (suggestions_.size() + 1) / 2;
     for (unsigned i = 0; i < drop; i++) {
       unsigned select = crave::random_unsigned(suggestions_.size());

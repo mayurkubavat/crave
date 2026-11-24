@@ -221,4 +221,38 @@ void ComplexityEstimationVisitor::visitBitslice(const Bitslice& b) {
   exprStack_.push(std::make_pair(new Bitslice(e.first, b.r(), b.l()), b.r() - b.l() + 1));
 }
 
+void ComplexityEstimationVisitor::visitRangeExpr(const RangeExpr& r) {
+  stack_entry a, b, c;
+  evalTernExpr(r, a, b, c);
+  exprStack_.push(std::make_pair(new RangeExpr(a.first, b.first, c.first), a.second + b.second + c.second));
+}
+
+void ComplexityEstimationVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  exprStack_.push(std::make_pair(new TolPlusMinusExpr(a.first, b.first, c.first), a.second + b.second + c.second));
+}
+
+void ComplexityEstimationVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
+  stack_entry a, b, c;
+  evalTernExpr(t, a, b, c);
+  unsigned mul_c = b.second + c.second;
+  if (b.second > 0 && c.second > 0) {
+    mul_c = b.second * c.second * 2;
+  } else if (b.second > 0 && c.second == 0) {
+    Constant const* pct_c = dynamic_cast<Constant const*>(c.first.get());
+    bool is_simple_pct = false;
+    if (pct_c) {
+      uint64_t pct_u = pct_c->value();
+      is_simple_pct = (!pct_c->sign() || static_cast<int64_t>(pct_u) >= 0) && (pct_u == 0 || pct_u == 100);
+    }
+    if (!is_simple_pct) mul_c = b.second * b.second;
+  }
+  exprStack_.push(std::make_pair(new TolPlusPctExpr(a.first, b.first, c.first), a.second + mul_c));
+}
+
+void ComplexityEstimationVisitor::visitVectorContains(const VectorContains&) {
+  throw std::runtime_error("VectorContains is not allowed in ComplexityEstimationVisitor.");
+}
+
 }  // end namespace crave

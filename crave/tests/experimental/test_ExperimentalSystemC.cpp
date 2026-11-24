@@ -151,6 +151,206 @@ BOOST_AUTO_TEST_CASE(scope_randomize_systemc) {
   BOOST_REQUIRE_EQUAL(i.to_int(), -1);
 }
 
+struct inside_sc_exp_item : public crv_sequence_item {
+  inside_sc_exp_item(crv_object_name) {}
+  crv_variable<sc_int<8> > a;
+  crv_variable<sc_bigint<40> > b;
+  crv_variable<bool> flag;
+  std::set<sc_int<8> > sa{-10, -1, 5, 10};
+  std::vector<long long> sb{-5, 7, 1LL << 35};
+  crv_constraint con_a{"con_a"};
+  crv_constraint con_b{"con_b"};
+};
+
+BOOST_AUTO_TEST_CASE(inside_sc_experimental) {
+  inside_sc_exp_item item("item");
+  item.con_a = {item.a() == -1, !inside(item.a(), item.sa)};
+  item.con_b = {inside(item.b(), item.sb)};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con_a = {item.a() == -1, if_then(inside(item.a(), item.sa), item.flag() == true), item.flag() == false};
+  BOOST_REQUIRE(!item.randomize());
+
+  item.con_a = {!inside(item.a(), item.sa), item.a() >= -2, item.a() <= 2};
+  item.con_b = {item.b() == (1LL << 35), inside(item.b(), item.sb)};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_NE(static_cast<sc_int<8> >(item.a), -1);
+    BOOST_REQUIRE_EQUAL(static_cast<sc_bigint<40> >(item.b).to_int64(), 1LL << 35);
+  }
+}
+
+struct sc_bv_exp_item : public crv_sequence_item {
+  sc_bv_exp_item(crv_object_name) {}
+  crv_variable<sc_bv<8> > bv;
+  crv_array<sc_bv<8>, 3> arr;
+  crv_vector<sc_bv<8> > vec;
+  crv_constraint c_arr{arr[0]() == sc_bv<8>(0x11), arr[1]() == sc_bv<8>(0x22), arr[2]() == sc_bv<8>(0x33)};
+  crv_constraint c_vec{vec().size() == 2,
+                       foreach (vec(), if_then(_i == 0u, vec()[_i] == sc_bv<8>(0x44))),
+                       foreach (vec(), if_then(_i == 1u, vec()[_i] == sc_bv<8>(0x55)))};
+  crv_constraint con{"con"};
+};
+
+struct sc_bv16_vec_item : public crv_sequence_item {
+  sc_bv16_vec_item(crv_object_name) {}
+  crv_variable<sc_bv<16> > bv;
+  crv_vector<sc_bv<16> > vec;
+  crv_constraint c_vec{vec().size() == 2,
+                       foreach (vec(), if_then(_i == 0u, vec()[_i] == sc_bv<16>(0x1357))),
+                       foreach (vec(), if_then(_i == 1u, vec()[_i] == sc_bv<16>(0x8ACE)))};
+  crv_constraint con{inside(bv(), vec)};
+};
+
+struct sc_bv64_vec_item : public crv_sequence_item {
+  sc_bv64_vec_item(crv_object_name) {}
+  crv_variable<sc_bv<64> > bv;
+  crv_vector<sc_bv<64> > vec;
+  crv_constraint c_vec{vec().size() == 3,
+                       foreach (vec(), if_then(_i == 0u, vec()[_i] == sc_bv<64>(0x8000000000000000ULL))),
+                       foreach (vec(), if_then(_i == 1u, vec()[_i] == sc_bv<64>(0xFFFFFFFFFFFFFFFFULL))),
+                       foreach (vec(), if_then(_i == 2u, vec()[_i] == sc_bv<64>(0x123456789ABCDEF0ULL)))};
+  crv_constraint con{inside(bv(), vec)};
+};
+
+BOOST_AUTO_TEST_CASE(sc_bv_experimental_inside_dist_eval) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    {
+      sc_bv_exp_item item("item");
+      item.con = {inside(item.bv(), item.arr)};
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        uint64_t v = static_cast<sc_bv<8> >(item.bv).to_uint64();
+        BOOST_REQUIRE(v == 0x11u || v == 0x22u || v == 0x33u);
+      }
+
+      item.con = {inside(item.bv(), item.vec)};
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        uint64_t v = static_cast<sc_bv<8> >(item.bv).to_uint64();
+        BOOST_REQUIRE(v == 0x44u || v == 0x55u);
+      }
+
+      item.con = {dist(item.bv(), make_distribution(range(sc_bv<8>(100), sc_bv<8>(105))))};
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        uint64_t v = static_cast<sc_bv<8> >(item.bv).to_uint64();
+        BOOST_REQUIRE(v >= 100u && v <= 105u);
+      }
+    }
+
+    {
+      sc_bv16_vec_item item16("item16");
+      for (int i = 0; i < 8; ++i) {
+        BOOST_REQUIRE(item16.randomize());
+        uint64_t v = static_cast<sc_bv<16> >(item16.bv).to_uint64();
+        BOOST_REQUIRE(v == 0x1357u || v == 0x8ACEu);
+      }
+    }
+
+    if (std::string(backend) == "Z3") {
+      sc_bv64_vec_item item64("item64");
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(item64.randomize());
+        uint64_t v = static_cast<sc_bv<64> >(item64.bv).to_uint64();
+        BOOST_REQUIRE(v == 0x8000000000000000ULL || v == 0xFFFFFFFFFFFFFFFFULL || v == 0x123456789ABCDEF0ULL);
+      }
+    }
+
+    {
+      sc_bv<8> sbv(0);
+      for (int i = 0; i < 10; ++i) {
+        BOOST_REQUIRE(crave::randomize(sbv).with(inside(reference(sbv), range(sc_bv<8>(10), sc_bv<8>(20)))));
+        BOOST_REQUIRE(sbv.to_uint64() >= 10u && sbv.to_uint64() <= 20u);
+      }
+    }
+
+    {
+      Variable<sc_bv<8> > v;
+      Evaluator eval;
+      eval.assign(v, sc_bv<8>(0xA5));
+      BOOST_REQUIRE(eval.evaluate(inside(v, inside_mask("8'hA?"))));
+      BOOST_REQUIRE(eval.result<bool>());
+      BOOST_REQUIRE(eval.evaluate(inside(v, range(sc_bv<8>(0xA0), sc_bv<8>(0xAF)))));
+      BOOST_REQUIRE(eval.result<bool>());
+      eval.assign(v, sc_bv<8>(0x10));
+      BOOST_REQUIRE(eval.evaluate(!inside(v, range(sc_bv<8>(0xA0), sc_bv<8>(0xAF)))));
+      BOOST_REQUIRE(eval.result<bool>());
+    }
+  }
+}
+
+struct wide_sc_bv_item : public crv_sequence_item {
+  wide_sc_bv_item(crv_object_name) {}
+  crv_variable<sc_bv<128> > w;
+  crv_constraint con{bitslice(127, 64, w()) == 0x123456789ABCDEF0ULL,
+                     bitslice(63, 0, w()) == 0x0FEDCBA987654321ULL};
+};
+
+struct wide_sc_bv_mask_item : public crv_sequence_item {
+  wide_sc_bv_mask_item(crv_object_name) {}
+  crv_variable<sc_bv<128> > w;
+  crv_constraint con{bitslice(127, 64, w()) == 0xCAFEBABE00000001ULL,
+                     inside(bitslice(7, 0, w()), inside_mask("8'hA?"))};
+};
+
+BOOST_AUTO_TEST_CASE(crv_variable_wide_sc_bv_128) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    if (std::string(backend) == "Z3") {
+      wide_sc_bv_item item("wide");
+      BOOST_REQUIRE(item.randomize());
+      sc_bv<128> val = item.w;
+      BOOST_REQUIRE_EQUAL(val.range(127, 64).to_uint64(), 0x123456789ABCDEF0ULL);
+      BOOST_REQUIRE_EQUAL(val.range(63, 0).to_uint64(), 0x0FEDCBA987654321ULL);
+
+      wide_sc_bv_mask_item mitem("wide_mask");
+      for (int i = 0; i < 4; ++i) {
+        BOOST_REQUIRE(mitem.randomize());
+        sc_bv<128> mval = mitem.w;
+        BOOST_REQUIRE_EQUAL(mval.range(127, 64).to_uint64(), 0xCAFEBABE00000001ULL);
+        uint64_t lo8 = mval.range(7, 0).to_uint64();
+        BOOST_REQUIRE(lo8 >= 0xA0ULL && lo8 <= 0xAFULL);
+      }
+    } else {
+      // On CUDD, constrain top bit and bottom byte of 128-bit crv_variable to keep BDD tiny
+      sc_item<sc_bv<128> > item128("cudd128");
+      item128.con = {bitslice(127, 120, item128.x()) == 0x5Au,
+                     inside(bitslice(7, 0, item128.x()), 0x11u, 0x22u)};
+      for (int i = 0; i < 4; ++i) {
+        BOOST_REQUIRE(item128.randomize());
+        sc_bv<128> val = item128.x;
+        BOOST_REQUIRE_EQUAL(val.range(127, 120).to_uint64(), 0x5Au);
+        uint64_t lo8 = val.range(7, 0).to_uint64();
+        BOOST_REQUIRE(lo8 == 0x11u || lo8 == 0x22u);
+      }
+    }
+
+    // Standalone crv_variable<sc_bv<128>>::randomize() produces nonzero upper bits
+    crv_variable<sc_bv<128> > standalone("standalone128");
+    bool saw_nonzero_upper = false;
+    for (int i = 0; i < 4; ++i) {
+      BOOST_REQUIRE(standalone.randomize());
+      sc_bv<128> val = standalone;
+      if (val.range(127, 64).to_uint64() != 0ULL) saw_nonzero_upper = true;
+    }
+    BOOST_REQUIRE(saw_nonzero_upper);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Ex_SystemC_t
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

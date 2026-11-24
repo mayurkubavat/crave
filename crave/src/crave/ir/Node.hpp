@@ -476,4 +476,67 @@ class Bitslice : public UnaryExpression {
   int r_, l_;
 };
 
+class RangeExpr : public TernaryExpression {
+ public:
+  RangeExpr(NodePtr expr, NodePtr lo, NodePtr hi) : TernaryExpression(expr, lo, hi) {}
+  RangeExpr(RangeExpr const& r) : TernaryExpression(r) {}
+
+  void visit(NodeVisitor* v) const { v->visitRangeExpr(*this); }
+};
+
+class TolPlusMinusExpr : public TernaryExpression {
+ public:
+  TolPlusMinusExpr(NodePtr expr, NodePtr val, NodePtr tol) : TernaryExpression(expr, val, tol) {}
+  TolPlusMinusExpr(TolPlusMinusExpr const& t) : TernaryExpression(t) {}
+
+  void visit(NodeVisitor* v) const { v->visitTolPlusMinusExpr(*this); }
+};
+
+class TolPlusPctExpr : public TernaryExpression {
+ public:
+  TolPlusPctExpr(NodePtr expr, NodePtr val, NodePtr pct) : TernaryExpression(expr, val, pct) {}
+  TolPlusPctExpr(TolPlusPctExpr const& t) : TernaryExpression(t) {}
+
+  void visit(NodeVisitor* v) const { v->visitTolPlusPctExpr(*this); }
+};
+
+class VectorContains : public UnaryExpression {
+ public:
+  VectorContains(NodePtr child, unsigned int vec_id, unsigned int elem_bs, bool elem_sign,
+                 unsigned int cmp_width = 0, bool cmp_sign = false)
+      : UnaryExpression(child),
+        vec_id_(vec_id),
+        elem_bitsize_(elem_bs),
+        elem_sign_(elem_sign),
+        cmp_width_(cmp_width),
+        cmp_sign_(cmp_sign) {}
+  VectorContains(VectorContains const& vc)
+      : UnaryExpression(vc),
+        vec_id_(vc.vec_id_),
+        elem_bitsize_(vc.elem_bitsize_),
+        elem_sign_(vc.elem_sign_),
+        cmp_width_(vc.cmp_width_),
+        cmp_sign_(vc.cmp_sign_) {}
+
+  void visit(NodeVisitor* v) const { v->visitVectorContains(*this); }
+
+  unsigned int vec_id() const { return vec_id_; }
+  unsigned int elem_bitsize() const { return elem_bitsize_; }
+  bool elem_sign() const { return elem_sign_; }
+  unsigned int cmp_width() const { return cmp_width_; }
+  bool cmp_sign() const { return cmp_sign_; }
+
+ private:
+  unsigned int vec_id_;
+  unsigned int elem_bitsize_;
+  bool elem_sign_;
+  unsigned int cmp_width_;
+  bool cmp_sign_;
+};
+
+inline void NodeVisitor::visitRangeExpr(RangeExpr const& r) { visitTernaryExpr(r); }
+inline void NodeVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const& t) { visitTernaryExpr(t); }
+inline void NodeVisitor::visitTolPlusPctExpr(TolPlusPctExpr const& t) { visitTernaryExpr(t); }
+inline void NodeVisitor::visitVectorContains(VectorContains const& vc) { visitUnaryExpr(vc); }
+
 }  // end namespace crave

@@ -29,16 +29,19 @@
 namespace crave {
 
 UserVectorConstraint::UserVectorConstraint(unsigned const id, UserVectorConstraint::expression const expr,
-                                           std::string const& name, std::set<int> support_vars, bool const unique,
-                                           bool const soft, bool const cover, bool const enabled,
+                                           std::string const& name, std::set<int> support_vars, int const vector_id,
+                                           bool const unique, bool const soft, bool const cover, bool const enabled,
                                            bool const reduction)
-    : UserConstraint(id, expr, name, support_vars, soft, cover, enabled), unique_(unique), reduction_(reduction) {}
+    : UserConstraint(id, expr, name, support_vars, soft, cover, enabled),
+      vector_id_(vector_id),
+      unique_(unique),
+      reduction_(reduction) {}
 
 bool UserVectorConstraint::isUnique() { return unique_; }
 
 bool UserVectorConstraint::isReduction() { return reduction_; }
 
-int UserVectorConstraint::getVectorId() { return *support_vars_.begin(); }
+int UserVectorConstraint::getVectorId() { return vector_id_; }
 
 bool UserVectorConstraint::isVectorConstraint() { return true; }
 }

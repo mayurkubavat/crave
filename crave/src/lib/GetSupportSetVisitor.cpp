@@ -56,11 +56,15 @@ void GetSupportSetVisitor::visitVariableExpr(const VariableExpr& v) { support_va
 
 void GetSupportSetVisitor::visitConstant(const Constant&) {}
 
-void GetSupportSetVisitor::visitVectorExpr(const VectorExpr& v) { support_vars.insert(v.id()); }
+void GetSupportSetVisitor::visitVectorExpr(const VectorExpr& v) {
+  support_vars.insert(v.id());
+  vector_vars.insert(v.id());
+}
 
 void GetSupportSetVisitor::visitVectorReduction(const VectorReduction& r) {
   support_vars.insert(r.id());
   reduced_vectors.insert(r.id());
+  vector_vars.insert(r.id());
 }
 
 void GetSupportSetVisitor::visitNotOpr(const NotOpr& n) { visitUnaryExpr(n); }
@@ -118,5 +122,18 @@ void GetSupportSetVisitor::visitUnique(const Unique& u) { visitUnaryExpr(u); }
 void GetSupportSetVisitor::visitIfThenElse(const IfThenElse& ite) { visitTernaryExpr(ite); }
 
 void GetSupportSetVisitor::visitBitslice(const Bitslice& b) { visitUnaryExpr(b); }
+
+void GetSupportSetVisitor::visitRangeExpr(const RangeExpr& r) { visitTernaryExpr(r); }
+
+void GetSupportSetVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) { visitTernaryExpr(t); }
+
+void GetSupportSetVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) { visitTernaryExpr(t); }
+
+void GetSupportSetVisitor::visitVectorContains(const VectorContains& vc) {
+  visitUnaryExpr(vc);
+  support_vars.insert(vc.vec_id());
+  reduced_vectors.insert(vc.vec_id());
+  vector_vars.insert(vc.vec_id());
+}
 
 }  // end namespace crave

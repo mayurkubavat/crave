@@ -34,6 +34,7 @@ void VariableGenerator::reset(std::vector<ConstraintPartition>& partitions) {
   partitions_ = &partitions;
   randc_epoch_ = randc_epoch();
   solvers_.clear();
+  override_values_.clear();
 
   for(ConstraintPartition & partition : partitions) {
     VarSolverPtr vs(new VariableDefaultSolver(var_ctn_, partition, solve_levels_));
@@ -43,6 +44,7 @@ void VariableGenerator::reset(std::vector<ConstraintPartition>& partitions) {
 
 bool VariableGenerator::solve() {
   refreshRandc();
+  clearOverrides();
   for (std::size_t i = 0; i < solvers_.size(); ++i) {
     if (!solvers_[i]->solve()) {
       undoRandc(i + 1);
@@ -59,6 +61,17 @@ void VariableGenerator::refreshRandc() {
 
 void VariableGenerator::undoRandc(std::size_t count) {
   for (std::size_t i = 0; i < count && i < solvers_.size(); ++i) solvers_[i]->undoRandc();
+}
+
+void VariableGenerator::undoRandc(std::set<int> const& ids) {
+  for (VarSolverPtr const& vs : solvers_) vs->undoRandc(ids);
+}
+
+std::string VariableGenerator::randcSignature(int id) const {
+  for (VarSolverPtr const& vs : solvers_) {
+    if (vs->containsVar(id)) return vs->randcSignature(id);
+  }
+  return std::string();
 }
 
 std::vector<std::vector<std::string> > VariableGenerator::analyseContradiction() {

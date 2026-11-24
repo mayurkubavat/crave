@@ -69,6 +69,8 @@ class UserConstraint {
 
   unsigned complexity() const;
 
+  std::set<int> const& supportVars() const { return support_vars_; }
+
   template <typename ostream>
   friend ostream& operator<<(ostream& os, const UserConstraint& constr);
 

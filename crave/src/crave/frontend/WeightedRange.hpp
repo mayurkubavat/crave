@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <boost/proto/core.hpp>
+
 #include <cstdint>
 #include <type_traits>
 
@@ -64,9 +66,13 @@ struct weighted_range {
    * \return true if this range is less than the other range, false otherwise.
    */
   bool operator<(const weighted_range<T>& other) const {
-    if (left_ < other.left_) return true;
-    if (left_ > other.left_) return false;
-    if (right_ < other.right_) return true;
+    auto const l = distribution_value_type<T>::value(left_);
+    auto const ol = distribution_value_type<T>::value(other.left_);
+    if (l < ol) return true;
+    if (l > ol) return false;
+    auto const r = distribution_value_type<T>::value(right_);
+    auto const or_ = distribution_value_type<T>::value(other.right_);
+    if (r < or_) return true;
     return false;
   }
 
@@ -77,8 +83,12 @@ struct weighted_range {
    * \return true if this range overlaps the other range, false otherwise.
    */
   bool overlap(const weighted_range<T>& other) const {
-    if (left_ < other.left_) return right_ >= other.left_;
-    if (left_ > other.left_) return left_ <= other.right_;
+    auto const l = distribution_value_type<T>::value(left_);
+    auto const r = distribution_value_type<T>::value(right_);
+    auto const ol = distribution_value_type<T>::value(other.left_);
+    auto const or_ = distribution_value_type<T>::value(other.right_);
+    if (l < ol) return r >= ol;
+    if (l > ol) return l <= or_;
     return false;
   }
 
@@ -87,6 +97,23 @@ struct weighted_range {
   uint64_t weight_;
   uint64_t accumWeight_;
 };
+
+namespace detail {
+template <typename T, bool IsExpr = boost::proto::is_expr<typename std::decay<T>::type>::value>
+struct range_capture {
+  typedef typename std::decay<T>::type type;
+  static type capture(T const& v) { return v; }
+};
+
+template <typename T>
+struct range_capture<T, true> {
+  typedef typename boost::proto::result_of::deep_copy<T const&>::type type;
+  static type capture(T const& v) { return boost::proto::deep_copy(v); }
+};
+}  // namespace detail
+
+template <typename T, typename Hi = void>
+struct range;
 
 /**
  * \ingroup oldAPI
@@ -97,7 +124,7 @@ struct weighted_range {
  * For details about the weight see the base class crave::weighted_range.
  */
 template <typename T>
-struct range : weighted_range<T> {
+struct range<T, void> : weighted_range<T> {
   /*!
    * \brief Defines a new range from a left value to a right value.
    * 
@@ -105,6 +132,9 @@ struct range : weighted_range<T> {
    * \param r Right value of the range (inclusive)
    */
   range(T l, T r) : weighted_range<T>(l, r, weight(l, r)) {}
+
+  T const& lo() const { return this->left_; }
+  T const& hi() const { return this->right_; }
 
  private:
   // the number of values, computed in the unsigned type of the arithmetic of the values to avoid an overflow
@@ -115,6 +145,38 @@ struct range : weighted_range<T> {
                                       static_cast<unsigned_type>(distribution_value_type<T>::value(l)) + 1u);
   }
 };
+
+/**
+ * \ingroup newAPI
+ * \brief A closed symbolic or mixed-type range [lo, hi] for use in crave::inside.
+ */
+template <typename Lo, typename Hi>
+struct range {
+  template <typename L, typename H>
+  range(L const& l, H const& h)
+      : lo_(detail::range_capture<L>::capture(l)), hi_(detail::range_capture<H>::capture(h)) {}
+
+  Lo const& lo() const { return lo_; }
+  Hi const& hi() const { return hi_; }
+
+  Lo lo_;
+  Hi hi_;
+};
+
+#if __cplusplus >= 201703L
+template <typename T>
+range(T const&, T const&) -> range<
+    typename std::conditional<!boost::proto::is_expr<typename std::decay<T>::type>::value &&
+                                  is_distribution_scalar<typename std::decay<T>::type>::value,
+                              typename std::decay<T>::type, typename detail::range_capture<T>::type>::type,
+    typename std::conditional<!boost::proto::is_expr<typename std::decay<T>::type>::value &&
+                                  is_distribution_scalar<typename std::decay<T>::type>::value,
+                              void, typename detail::range_capture<T>::type>::type>;
+
+template <typename Lo, typename Hi>
+range(Lo const&, Hi const&) -> range<typename detail::range_capture<Lo>::type,
+                                     typename detail::range_capture<Hi>::type>;
+#endif
 
 /**
  * \ingroup oldAPI

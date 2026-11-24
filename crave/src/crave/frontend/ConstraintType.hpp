@@ -28,6 +28,7 @@
 #pragma once
 
 #include <boost/proto/core.hpp>
+#include <type_traits>
 
 namespace crave {
 struct Constraint_Domain;
@@ -46,7 +47,10 @@ struct Constraint : boost::proto::extends<Expr, Constraint<Expr>, Constraint_Dom
    * constructor
    * @param expr
    */
-  explicit Constraint(Expr const& expr = Expr()) : base_type(expr) {}
+  template <typename E = Expr, typename std::enable_if<std::is_default_constructible<E>::value, int>::type = 0>
+  explicit Constraint() : base_type(Expr()) {}
+
+  explicit Constraint(Expr const& expr) : base_type(expr) {}
 
   /**
    * Internal implementation details

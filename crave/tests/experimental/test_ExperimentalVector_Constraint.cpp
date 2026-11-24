@@ -490,6 +490,145 @@ BOOST_AUTO_TEST_CASE(vector_reduction_size_retry) {
   }
 }
 
+struct UniqueStandaloneItem : public crv_sequence_item {
+  UniqueStandaloneItem(crv_object_name) {}
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 5, unique(v())};
+};
+
+struct UniqueBeforeForeachItem : public crv_sequence_item {
+  UniqueBeforeForeachItem(crv_object_name) {}
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 5, unique(v()), foreach (v(), v()[_i] < 50u)};
+};
+
+BOOST_AUTO_TEST_CASE(unique_standalone_experimental) {
+  UniqueStandaloneItem it{"it"};
+  bool non_trivial = false;
+  for (int n = 0; n < 5; ++n) {
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.v.size(), 5u);
+    BOOST_REQUIRE(check_unique(it.v));
+    for (unsigned i = 0; i < it.v.size(); ++i)
+      if (it.v[i] > 1u) non_trivial = true;
+  }
+  BOOST_REQUIRE(non_trivial);
+
+  UniqueBeforeForeachItem it2{"it2"};
+  BOOST_REQUIRE(it2.randomize());
+  BOOST_REQUIRE_EQUAL(it2.v.size(), 5u);
+  BOOST_REQUIRE(check_unique(it2.v));
+  for (unsigned i = 0; i < it2.v.size(); ++i) BOOST_REQUIRE_LT(it2.v[i], 50u);
+}
+
+struct ScalarBeforeVectorForeachItem : public crv_sequence_item {
+  ScalarBeforeVectorForeachItem(crv_object_name) {}
+  crv_variable<unsigned int> val;
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 3, val() == 7u, foreach (v(), v()[_i] == val())};
+};
+
+struct ScalarBeforeVectorItem : public crv_sequence_item {
+  ScalarBeforeVectorItem(crv_object_name) {}
+  crv_variable<unsigned int> total;
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 3, total() >= 10u && total() <= 30u, v().sum() == total()};
+};
+
+struct RefBeforeVectorItem : public crv_sequence_item {
+  RefBeforeVectorItem(crv_object_name) {}
+  unsigned int ext = 15u;
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 3, v().sum() == reference(ext)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_scalar_before_vector) {
+  {
+    ScalarBeforeVectorForeachItem fit{"fit"};
+    BOOST_REQUIRE(fit.randomize());
+    for (unsigned i = 0; i < fit.v.size(); ++i) BOOST_REQUIRE_EQUAL(fit.v[i], 7u);
+  }
+  {
+    ScalarBeforeVectorItem it{"it"};
+    std::set<unsigned int> seen;
+    for (int n = 0; n < 10; ++n) {
+      BOOST_REQUIRE(it.randomize());
+      BOOST_REQUIRE_EQUAL(it.v.size(), 3u);
+      BOOST_REQUIRE_EQUAL(it.v[0] + it.v[1] + it.v[2], it.total);
+      seen.insert(it.total);
+    }
+    BOOST_REQUIRE_GT(seen.size(), 1u);
+
+    it.total.rand_mode(false);
+    it.total = 18u;
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.total, 18u);
+    BOOST_REQUIRE_EQUAL(it.v[0] + it.v[1] + it.v[2], 18u);
+
+    it.total.rand_mode(true);
+    BOOST_REQUIRE(it.randomize_with(it.v.sum() == 24u, it.total() == 24u));
+    BOOST_REQUIRE_EQUAL(it.v[0] + it.v[1] + it.v[2], 24u);
+  }
+  {
+    RefBeforeVectorItem rit{"rit"};
+    BOOST_REQUIRE(rit.randomize());
+    BOOST_REQUIRE_EQUAL(rit.v[0] + rit.v[1] + rit.v[2], 15u);
+    rit.ext = 27u;
+    BOOST_REQUIRE(rit.randomize());
+    BOOST_REQUIRE_EQUAL(rit.v[0] + rit.v[1] + rit.v[2], 27u);
+  }
+}
+
+struct VectorInsideMemberItem : public crv_sequence_item {
+  VectorInsideMemberItem(crv_object_name) {}
+  crv_variable<unsigned int> x;
+  crv_vector<unsigned int> v;
+  crv_constraint con = {v().size() == 4, foreach (v(), v()[_i] < 5u), inside(x(), v)};
+};
+
+struct VectorInsideBoolItem : public crv_sequence_item {
+  VectorInsideBoolItem(crv_object_name) {}
+  crv_variable<bool> flag;
+  crv_vector<bool> bv;
+  crv_constraint con = {bv().size() == 3, foreach (bv(), bv()[_i] == true), inside(flag(), bv)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_inside_experimental) {
+  struct Guard {
+    ~Guard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    {
+      VectorInsideMemberItem item("item");
+      for (int i = 0; i < 5; ++i) {
+        BOOST_REQUIRE(item.randomize());
+        BOOST_REQUIRE_EQUAL(item.v.size(), 4u);
+        BOOST_REQUIRE_LT(item.x, 5u);
+        bool found = false;
+        for (unsigned j = 0; j < item.v.size(); ++j)
+          if (item.v[j] == item.x) found = true;
+        BOOST_REQUIRE(found);
+      }
+
+      BOOST_REQUIRE(item.randomize_with(item.x() == 3u));
+      BOOST_REQUIRE_EQUAL(item.x, 3u);
+      BOOST_REQUIRE(item.v[0] == 3u || item.v[1] == 3u || item.v[2] == 3u || item.v[3] == 3u);
+
+      BOOST_REQUIRE(!item.randomize_with(item.x() == 9u));
+    }
+
+    {
+      VectorInsideBoolItem bitem("bitem");
+      BOOST_REQUIRE(bitem.randomize());
+      BOOST_REQUIRE(bitem.flag);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context
 
 //  vim: ft=cpp:ts=2:sw=2:expandtab

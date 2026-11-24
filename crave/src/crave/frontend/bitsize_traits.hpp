@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <type_traits>
 #include <boost/mpl/int.hpp>
 #include <boost/mpl/sizeof.hpp>
 #include <boost/mpl/times.hpp>
@@ -150,6 +151,10 @@ struct distribution_value_type {
   typedef T type;
   static type value(T const& v) { return v; }
 };
+
+template <typename T, typename Enable = void>
+struct is_distribution_scalar
+    : std::integral_constant<bool, std::is_arithmetic<T>::value || std::is_enum<T>::value> {};
 
 }  // namespace crave
 

@@ -98,6 +98,10 @@ class ShapeVisitor : public NodeVisitor {
   void visitForEach(ForEach const& n) override;
   void visitUnique(Unique const& n) override;
   void visitBitslice(Bitslice const& n) override;
+  void visitRangeExpr(RangeExpr const& n) override;
+  void visitTolPlusMinusExpr(TolPlusMinusExpr const& n) override;
+  void visitTolPlusPctExpr(TolPlusPctExpr const& n) override;
+  void visitVectorContains(VectorContains const& n) override;
 
  private:
   template <typename T>
@@ -193,6 +197,10 @@ void ShapeVisitor::visitVectorAccess(VectorAccess const& n) { binary(n); }
 void ShapeVisitor::visitIfThenElse(IfThenElse const& n) { ternary(n); }
 void ShapeVisitor::visitForEach(ForEach const& n) { binary(n); }
 void ShapeVisitor::visitUnique(Unique const& n) { unary(n); }
+void ShapeVisitor::visitRangeExpr(RangeExpr const& n) { ternary(n); }
+void ShapeVisitor::visitTolPlusMinusExpr(TolPlusMinusExpr const& n) { ternary(n); }
+void ShapeVisitor::visitTolPlusPctExpr(TolPlusPctExpr const& n) { ternary(n); }
+void ShapeVisitor::visitVectorContains(VectorContains const&) { okay_ = false; }
 
 // restores the state of a random number generator, also if an exception is thrown
 class GeneratorGuard {

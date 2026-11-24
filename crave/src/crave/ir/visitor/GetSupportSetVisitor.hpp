@@ -36,7 +36,7 @@ namespace crave {
 
 class GetSupportSetVisitor : public NodeVisitor {
  public:
-  GetSupportSetVisitor() : NodeVisitor(), support_vars(), reduced_vectors() {}
+  GetSupportSetVisitor() : NodeVisitor(), support_vars(), reduced_vectors(), vector_vars() {}
 
  private:
   virtual void visitNode(Node const&);
@@ -79,6 +79,10 @@ class GetSupportSetVisitor : public NodeVisitor {
   virtual void visitForEach(ForEach const&);
   virtual void visitUnique(Unique const&);
   virtual void visitBitslice(Bitslice const&);
+  virtual void visitRangeExpr(RangeExpr const&);
+  virtual void visitTolPlusMinusExpr(TolPlusMinusExpr const&);
+  virtual void visitTolPlusPctExpr(TolPlusPctExpr const&);
+  virtual void visitVectorContains(VectorContains const&);
 
  public:
   std::set<int>& getSupportVars() { return support_vars; }
@@ -86,10 +90,12 @@ class GetSupportSetVisitor : public NodeVisitor {
    * Gets the ids of the vectors, whose elements are reduced in the expression.
    */
   std::set<int>& getReducedVectors() { return reduced_vectors; }
+  std::set<int>& getVectorVars() { return vector_vars; }
 
  private:
   std::set<int> support_vars;
   std::set<int> reduced_vectors;
+  std::set<int> vector_vars;
 };
 
 }  // end namespace crave

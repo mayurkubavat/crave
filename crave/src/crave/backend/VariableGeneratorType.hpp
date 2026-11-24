@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,11 +58,45 @@ struct VariableGenerator {
 
   template <typename T>
   bool read(const Variable<T>& var, T* value) const {
+    auto ov = override_values_.find(var.id());
+    if (ov != override_values_.end()) {
+      AssignResultToRef<T> result(value);
+      result.set_value(ov->second);
+      return true;
+    }
     for(VarSolverPtr vs : solvers_) {
       if (vs->read(var, value)) return true;
     }
     return false;
   }
+
+  bool read(int id, std::string& value) const {
+    auto ov = override_values_.find(id);
+    if (ov != override_values_.end()) {
+      value = ov->second;
+      return true;
+    }
+    for (VarSolverPtr vs : solvers_) {
+      if (vs->read(id, value)) return true;
+    }
+    return false;
+  }
+
+  void setOverride(int id, std::string const& bits) {
+    override_values_[id] = bits;
+    for (VarSolverPtr const& vs : solvers_) {
+      if (vs->containsVar(id)) vs->setOverride(id, bits);
+    }
+  }
+
+  void clearOverrides() {
+    override_values_.clear();
+    for (VarSolverPtr const& vs : solvers_) vs->clearOverrides();
+  }
+
+  void undoRandc() { undoRandc(solvers_.size()); }
+  void undoRandc(std::set<int> const& ids);
+  std::string randcSignature(int id) const;
 
   std::vector<std::vector<std::string> > analyseContradiction();
 
@@ -78,5 +113,6 @@ struct VariableGenerator {
   const VariableContainer& var_ctn_;
   std::vector<VarSolverPtr> solvers_;
   std::vector<std::vector<int> > solve_levels_;
+  std::map<int, std::string> override_values_;
 };
 }  // namespace crave

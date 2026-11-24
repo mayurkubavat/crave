@@ -29,7 +29,9 @@
 #include <crave/experimental/Variable.hpp>
 #include <crave/experimental/Coverage.hpp>
 #include <crave/experimental/Constraint.hpp>
+#include <crave/experimental/Experimental.hpp>
 
+#include <algorithm>
 #include <ostream>
 #include <set>
 using std::ostream;
@@ -296,6 +298,232 @@ BOOST_AUTO_TEST_CASE(analyse_contradiction_hierarchy) {
   std::set<std::string> mus(conflicts[0].begin(), conflicts[0].end());
   std::set<std::string> expected{"top.sub.bound#0", "top.randomize_with#0"};
   BOOST_REQUIRE(mus == expected);
+}
+
+struct dyn_soft_item : public crv_sequence_item {
+  dyn_soft_item(crv_object_name) {}
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  crv_constraint bound{"bound", a() < 100u};
+  crv_soft_constraint s1{"s1", a() == 10u};
+  crv_soft_constraint s2{"s2", a() == 20u};
+  crv_soft_constraint s3{"s3", b() == 55u};
+};
+
+BOOST_AUTO_TEST_CASE(dynamic_rand_mode_soft_experimental) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    dyn_soft_item item("it");
+    item.a = 10;
+    item.a.rand_mode(false);
+
+    // 1. rand_mode(false) value 10 conflicts with higher-priority s2 (a==20): s2 drops, s1 & s3 hold
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 10u);
+    BOOST_REQUIRE_EQUAL(item.b, 55u);
+    {
+      auto inact = item.inactive_soft_constraints();
+      std::sort(inact.begin(), inact.end());
+      BOOST_REQUIRE(inact == std::vector<std::string>({"it.s2#0"}));
+    }
+
+    // 2. Change disabled value to 30 without rebuilding: both s1 & s2 drop, s3 remains active
+    item.a = 30;
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 30u);
+    BOOST_REQUIRE_EQUAL(item.b, 55u);
+    {
+      auto inact = item.inactive_soft_constraints();
+      std::sort(inact.begin(), inact.end());
+      BOOST_REQUIRE(inact == std::vector<std::string>({"it.s1#0", "it.s2#0"}));
+    }
+
+    // 3. Change disabled value back to 20: s2 re-activates!
+    item.a = 20;
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 20u);
+    BOOST_REQUIRE_EQUAL(item.b, 55u);
+    {
+      auto inact = item.inactive_soft_constraints();
+      std::sort(inact.begin(), inact.end());
+      BOOST_REQUIRE(inact == std::vector<std::string>({"it.s1#0"}));
+    }
+
+    // 4. Re-enable rand_mode: s2 wins over s1
+    item.a.rand_mode(true);
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.a, 20u);
+    BOOST_REQUIRE_EQUAL(item.b, 55u);
+    {
+      auto inact = item.inactive_soft_constraints();
+      std::sort(inact.begin(), inact.end());
+      BOOST_REQUIRE(inact == std::vector<std::string>({"it.s1#0"}));
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(bypass_constraint_analysis_experimental) {
+  struct Guard {
+    bool prev;
+    Guard() : prev(VariableDefaultSolver::bypass_constraint_analysis) {
+      VariableDefaultSolver::bypass_constraint_analysis = true;
+    }
+    ~Guard() { VariableDefaultSolver::bypass_constraint_analysis = prev; }
+  } guard;
+
+  dyn_soft_item item("it");
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 20u);
+  BOOST_REQUIRE_EQUAL(item.b, 55u);
+}
+
+struct inline_soft_item : public crv_sequence_item {
+  inline_soft_item(crv_object_name) {}
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  crv_constraint bound{"bound", a() < 100u};
+  crv_soft_constraint s_mem{"s_mem", a() == 10u};
+};
+
+BOOST_AUTO_TEST_CASE(inline_soft_randomize_with_priority_and_diagnostics) {
+  inline_soft_item item("it");
+
+  // Single inline soft overrides member crv_soft_constraint
+  BOOST_REQUIRE(item.randomize_with(soft(item.a() == 20u)));
+  BOOST_REQUIRE_EQUAL(item.a, 20u);
+  BOOST_REQUIRE(item.inactive_soft_constraints() == std::vector<std::string>({"it.s_mem#0"}));
+
+  // Multi-clause comma-separated inline softs: last-wins (randomize_with#1 overrides #0 & s_mem)
+  BOOST_REQUIRE(item.randomize_with(crave::soft(item.a() == 20u), crave::soft(item.a() == 30u), soft(item.b() == 77u)));
+  BOOST_REQUIRE_EQUAL(item.a, 30u);
+  BOOST_REQUIRE_EQUAL(item.b, 77u);
+  {
+    auto inact = item.inactive_soft_constraints();
+    std::sort(inact.begin(), inact.end());
+    BOOST_REQUIRE(inact == std::vector<std::string>({"it.randomize_with#0", "it.s_mem#0"}));
+  }
+
+  // Mixed hard + soft: hard randomize_with#0 blocks soft randomize_with#1, so s_mem (a==10) stays active
+  BOOST_REQUIRE(item.randomize_with(item.a() < 25u, soft(item.a() == 30u), soft(item.b() == 88u)));
+  BOOST_REQUIRE_EQUAL(item.a, 10u);
+  BOOST_REQUIRE_EQUAL(item.b, 88u);
+  BOOST_REQUIRE(item.inactive_soft_constraints() == std::vector<std::string>({"it.randomize_with#1"}));
+
+  // Hard contradiction with inline soft present: analyse_contradiction() excludes inline soft and preserves indices
+  BOOST_REQUIRE(!item.randomize_with(item.a() > 200u, soft(item.a() == 50u), item.b() == 5u));
+  auto conflicts = item.analyse_contradiction();
+  BOOST_REQUIRE_GE(conflicts.size(), 1u);
+  std::set<std::string> mus(conflicts[0].begin(), conflicts[0].end());
+  BOOST_REQUIRE_EQUAL(mus.count("it.bound#0"), 1u);
+  BOOST_REQUIRE_EQUAL(mus.count("it.randomize_with#0"), 1u);
+  BOOST_REQUIRE_EQUAL(mus.count("it.randomize_with#1"), 0u);
+}
+
+struct crv_constraint_inline_soft_item : public crv_sequence_item {
+  crv_constraint_inline_soft_item(crv_object_name) {}
+  crv_variable<unsigned> a;
+  crv_variable<unsigned> b;
+  crv_constraint c{"c", a() < 10u, soft(a() == 5u)};
+};
+
+BOOST_AUTO_TEST_CASE(inline_soft_crv_constraint_and_solve) {
+  crv_constraint_inline_soft_item item("it");
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 5u);
+  BOOST_REQUIRE(item.inactive_soft_constraints().empty());
+
+  // Assignment (=) and conjunction (&=) with inline soft
+  item.c = {item.a() < 10u, crave::soft(item.a() == 20u)};
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_LT(item.a, 10u);
+  BOOST_REQUIRE(item.inactive_soft_constraints() == std::vector<std::string>({"it.c#1"}));
+
+  item.c &= {crave::soft(item.a() == 7u), crave::soft(item.b() == 9u)};
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.a, 7u);
+  BOOST_REQUIRE_EQUAL(item.b, 9u);
+
+  // crave::solve(...) with inline soft
+  crv_variable<unsigned> x("x");
+  crv_variable<unsigned> y("y");
+  BOOST_REQUIRE(crave::solve(x() < 10u, crave::soft(x() == 20u), crave::soft(y() == 33u)));
+  BOOST_REQUIRE_LT(x, 10u);
+  BOOST_REQUIRE_EQUAL(y, 33u);
+
+  BOOST_REQUIRE(crave::solve(x() < 10u, crave::soft(x() == 4u), crave::soft(x() == 8u)));
+  BOOST_REQUIRE_EQUAL(x, 8u);
+
+  // crave::soft() is rejected as a coverage bin
+  crv_coverpoint cp("cp");
+  BOOST_REQUIRE_THROW(cp.add_simple_bins(expression_list(crave::soft(x() == 1u))), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(inline_soft_rand_mode_and_reference) {
+  struct BackendGuard {
+    ~BackendGuard() { set_solver_backend("Z3"); }
+  } guard;
+
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    inline_soft_item item("it");
+    unsigned ext = 44;
+
+    // Inline soft with crave::reference across changing ext
+    BOOST_REQUIRE(item.randomize_with(crave::soft(item.a() == crave::reference(ext))));
+    BOOST_REQUIRE_EQUAL(item.a, 44u);
+
+    ext = 250;  // conflicts with bound (a < 100) -> drops inline soft, s_mem (a == 10) wins
+    BOOST_REQUIRE(item.randomize_with(crave::soft(item.a() == crave::reference(ext))));
+    BOOST_REQUIRE_EQUAL(item.a, 10u);
+    BOOST_REQUIRE(item.inactive_soft_constraints() == std::vector<std::string>({"it.randomize_with#0"}));
+
+    // rand_mode(false) + inline soft
+    item.a = 42;
+    item.a.rand_mode(false);
+    BOOST_REQUIRE(item.randomize_with(crave::soft(item.a() == 5u), crave::soft(item.b() == 99u)));
+    BOOST_REQUIRE_EQUAL(item.a, 42u);
+    BOOST_REQUIRE_EQUAL(item.b, 99u);
+    {
+      auto inact = item.inactive_soft_constraints();
+      std::sort(inact.begin(), inact.end());
+      BOOST_REQUIRE(inact == std::vector<std::string>({"it.randomize_with#0", "it.s_mem#0"}));
+    }
+  }
+}
+
+struct inline_soft_vec_item : public crv_sequence_item {
+  inline_soft_vec_item(crv_object_name) {}
+  crv_vector<unsigned> v;
+  crv_constraint c_size{"c_size", v().size() == 3u};
+  crv_constraint c_elem{"c_elem", foreach (v(), v()[_i] < 10u)};
+};
+
+BOOST_AUTO_TEST_CASE(inline_soft_vector_constraints) {
+  inline_soft_vec_item item("it");
+
+  // unique + sum inside soft(...)
+  BOOST_REQUIRE(item.randomize_with(soft(unique(item.v())), soft(item.v().sum() == 6u)));
+  BOOST_REQUIRE_EQUAL(item.v.size(), 3u);
+  BOOST_REQUIRE_NE(item.v[0], item.v[1]);
+  BOOST_REQUIRE_NE(item.v[0], item.v[2]);
+  BOOST_REQUIRE_NE(item.v[1], item.v[2]);
+  BOOST_REQUIRE_EQUAL(item.v[0] + item.v[1] + item.v[2], 6u);
+
+  // Conflicting vector softs: sum == 50 impossible with elem < 10 -> drops; foreach == 2 overrides unique
+  BOOST_REQUIRE(item.randomize_with(soft(unique(item.v())), soft(foreach (item.v(), item.v()[_i] == 2u)),
+                                    soft(item.v().sum() == 50u)));
+  BOOST_REQUIRE_EQUAL(item.v.size(), 3u);
+  BOOST_REQUIRE_EQUAL(item.v[0], 2u);
+  BOOST_REQUIRE_EQUAL(item.v[1], 2u);
+  BOOST_REQUIRE_EQUAL(item.v[2], 2u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // ConstraintManagement
