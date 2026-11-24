@@ -41,7 +41,12 @@ bool Generator::disableConstraint(std::string const& name) { return constr_mng_.
 
 bool Generator::isConstraintEnabled(std::string const& name) { return constr_mng_.isConstraintEnabled(name); }
 
-bool Generator::isChanged() { return constr_mng_.isChanged(); }
+bool Generator::isChanged() { return constr_mng_.isChanged() || order_changed_; }
+
+void Generator::addSolveOrder(int before, int after) {
+  solve_order_.add(before, after);
+  order_changed_ = true;
+}
 
 Generator& Generator::operator()() {
   if (!next()) {
@@ -50,12 +55,21 @@ Generator& Generator::operator()() {
   return *this;
 }
 
-void Generator::merge(const Generator& other) { constr_pttn_.mergeConstraints(other.constr_mng_); }
+void Generator::merge(const Generator& other) {
+  constr_pttn_.mergeConstraints(other.constr_mng_);
+  merged_order_.merge(other.solve_order_);
+}
 
 void Generator::reset() {
-  constr_mng_.resetChanged();
-  constr_pttn_.reset();
+  resetConstraints();
   to_be_generated_vec_ids_.clear();
+}
+
+void Generator::resetConstraints() {
+  constr_mng_.resetChanged();
+  order_changed_ = false;
+  constr_pttn_.reset();
+  merged_order_.clear();
   resetCoverage();
 }
 
@@ -64,22 +78,51 @@ void Generator::rebuild(bool selfInclude) {
   constr_pttn_.partition();
   // currently, every hard/soft/cover constraint is considered for
   // partitioning, this is suboptimal.
+  try {
+    var_gen_->setSolveOrder(merged_order_);
+  } catch (...) {
+    order_changed_ = true;  // the ordering is checked again by the next generation
+    throw;
+  }
   var_gen_->reset(constr_pttn_.getPartitions());
   vec_gen_.reset(constr_pttn_.getVectorConstraints());
   var_cov_gen_.reset(constr_pttn_.getPartitions());
 }
 
 bool Generator::next() {
-  if (constr_mng_.isChanged()) {
-    reset();
+  if (isChanged()) {
+    // keep the vectors without constraints, which have been added with addVecId()
+    resetConstraints();
     rebuild(true);
   }
-  return var_gen_->solve() && vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_);
+  // The size of a vector is solved before its elements. If a constraint on a reduction of the elements does not
+  // hold for the size, the other variables are solved again without that size, up to a bound of sizes.
+  static unsigned const max_excluded_sizes = 64;
+  std::vector<std::string> excluded;
+  bool result = false;
+  while (var_gen_->solve()) {
+    if (vec_gen_.solve(*var_gen_, to_be_generated_vec_ids_)) {
+      result = true;
+      break;
+    }
+    int id;
+    unsigned size;
+    if (excluded.size() >= max_excluded_sizes || !vec_gen_.failedSize(&id, &size)) break;
+    std::string const name = "vector_" + std::to_string(id) + "_size_not_" + std::to_string(size);
+    if (!constr_mng_.enableConstraint(name)) constr_mng_.makeConstraint(name, vectorBaseMap[id]->size_var() != size, &ctx_);
+    excluded.push_back(name);
+    resetConstraints();
+    rebuild(true);
+  }
+  // the excluded sizes may hold after the constraints are changed
+  for (std::string const& name : excluded) constr_mng_.disableConstraint(name);
+  return result;
 }
 
 bool Generator::nextCov() {
-  if (constr_mng_.isChanged()) {
-    reset();
+  if (isChanged()) {
+    // keep the vectors without constraints, which have been added with addVecId()
+    resetConstraints();
     rebuild(true);
   }
   if (!covered_) {
@@ -105,8 +148,20 @@ std::ostream& Generator::printDotGraph(std::ostream& os, bool root) {
   return os;
 }
 
-std::vector<std::vector<std::string> > Generator::analyseContradiction() { return var_gen_->analyseContradiction(); }
+std::vector<std::vector<std::string> > Generator::analyseContradiction() {
+  if (isChanged()) {
+    resetConstraints();
+    rebuild(true);
+  }
+  return var_gen_->analyseContradiction();
+}
 
-std::vector<std::string> Generator::getInactiveSofts() { return var_gen_->getInactiveSofts(); }
+std::vector<std::string> Generator::getInactiveSofts() {
+  if (isChanged()) {
+    resetConstraints();
+    rebuild(true);
+  }
+  return var_gen_->getInactiveSofts();
+}
 VariableContainer* Generator:: getVarCtn () {return var_ctn_;}
 }

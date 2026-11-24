@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <type_traits>
 #include <vector>
 #include "Distribution.hpp"
 #include "RandomBase.hpp"
@@ -148,5 +149,80 @@ struct randv<sc_dt::sc_uint<N> > : public randv_base<sc_dt::sc_uint<N> > {
 };
 RANDV_SCDT_VALUE_OPERATORS(sc_dt::sc_uint);
 RANDV_SCDT_COMPARISON_OPERATORS(sc_dt::sc_uint);
+
+/**
+ * binary operators for randv of sc_bigint and sc_biguint, whose results are converted to 64 bit integers, and
+ * comparison operators; the other operand is a builtin arithmetic type or the type of the randv
+ */
+#define RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, BinOp, Result, Convert)                                     \
+  template <int N, typename T>                                                                               \
+  typename std::enable_if<std::is_arithmetic<T>::value, Result>::type operator BinOp(                       \
+      randv<Typename<N> > const& r, T const& i) {                                                            \
+    return Convert(((Typename<N>)r)BinOp i);                                                                 \
+  }                                                                                                          \
+  template <int N, typename T>                                                                               \
+  typename std::enable_if<std::is_arithmetic<T>::value, Result>::type operator BinOp(                       \
+      T const& i, randv<Typename<N> > const& r) {                                                            \
+    return Convert(i BinOp((Typename<N>)r));                                                                 \
+  }                                                                                                          \
+  template <int N, int M>                                                                                    \
+  Result operator BinOp(randv<Typename<N> > const& r, randv<Typename<M> > const& s) {                       \
+    return Convert(((Typename<N>)r)BinOp((Typename<M>)s));                                                   \
+  }
+
+namespace detail {
+inline sc_dt::int64 randv_big_value(sc_dt::sc_signed const& v) { return v.to_int64(); }
+inline sc_dt::int64 randv_big_value(sc_dt::sc_unsigned const& v) { return v.to_int64(); }
+inline bool randv_big_value(bool v) { return v; }
+}  // namespace detail
+
+/**
+ * arithmetic and comparison operators for randv of sc_bigint and sc_biguint
+ */
+#define RANDV_SCDT_BIG_OPERATORS(Typename)                                                         \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, +, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, -, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, *, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, /, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, %, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, &, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, |, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, ^, sc_dt::int64, detail::randv_big_value);              \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, ==, bool, detail::randv_big_value);                     \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, !=, bool, detail::randv_big_value);                     \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, <, bool, detail::randv_big_value);                      \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, <=, bool, detail::randv_big_value);                     \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, >, bool, detail::randv_big_value);                      \
+  RANDV_SCDT_BIG_BINARY_OPERATOR(Typename, >=, bool, detail::randv_big_value);                     \
+  template <int N>                                                                                 \
+  sc_dt::int64 operator~(randv<Typename<N> > const& r) {                                           \
+    return (~((Typename<N>)r)).to_int64();                                                         \
+  }
+
+/**
+ * Define randv variables for sc_bigint types of up to 64 bits
+ */
+template <int N>
+struct randv<sc_dt::sc_bigint<N> > : public randv_base<sc_dt::sc_bigint<N> > {
+  typedef sc_dt::sc_bigint<N> sc_bigint;
+  RANDV_COMMON_INTERFACE(sc_bigint);
+  RANDV_ARITHMETIC_INTERFACE(sc_bigint);
+  RANDV_BITWISE_INTERFACE(sc_bigint);
+  RANDV_SCDT_PRIM_INTERFACE(sc_bigint);
+};
+RANDV_SCDT_BIG_OPERATORS(sc_dt::sc_bigint);
+
+/**
+ * Define randv variables for sc_biguint types of up to 64 bits
+ */
+template <int N>
+struct randv<sc_dt::sc_biguint<N> > : public randv_base<sc_dt::sc_biguint<N> > {
+  typedef sc_dt::sc_biguint<N> sc_biguint;
+  RANDV_COMMON_INTERFACE(sc_biguint);
+  RANDV_ARITHMETIC_INTERFACE(sc_biguint);
+  RANDV_BITWISE_INTERFACE(sc_biguint);
+  RANDV_SCDT_PRIM_INTERFACE(sc_biguint);
+};
+RANDV_SCDT_BIG_OPERATORS(sc_dt::sc_biguint);
 
 }  // namespace crave

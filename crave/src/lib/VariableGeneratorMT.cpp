@@ -32,7 +32,7 @@ namespace crave {
 VariableGeneratorMT::VariableGeneratorMT(VariableContainer const& vcon) : VariableGenerator(vcon) {}
 
 void VariableGeneratorMT::createNewSolver(ConstraintPartition& partition, unsigned int index) {
-  solvers_[index] = std::make_shared<VariableDefaultSolver>(var_ctn_, partition);
+  solvers_[index] = std::make_shared<VariableDefaultSolver>(var_ctn_, partition, solve_levels_);
 }
 
 void joinAll(std::vector<std::thread*> threads) {
@@ -40,6 +40,8 @@ void joinAll(std::vector<std::thread*> threads) {
 }
 
 void VariableGeneratorMT::reset(std::vector<ConstraintPartition>& partitions) {
+  partitions_ = &partitions;
+  randc_epoch_ = randc_epoch();
   solvers_.resize(partitions.size());
   std::vector<std::thread*> threads;
   for (unsigned i = 0; i < partitions.size(); i++) {
@@ -56,6 +58,7 @@ void VariableGeneratorMT::solve(VarSolverPtr vs) {
 }
 
 bool VariableGeneratorMT::solve() {
+  refreshRandc();
   result_ = true;
   std::vector<std::thread*> threads;
   for (unsigned i = 0; i < solvers_.size(); i++) {
@@ -64,6 +67,7 @@ bool VariableGeneratorMT::solve() {
     threads.push_back(thread);
   }
   joinAll(threads);
+  if (!result_) undoRandc(threads.size());
   return result_;
 }
 }

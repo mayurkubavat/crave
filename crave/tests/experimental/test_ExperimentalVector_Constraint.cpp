@@ -28,6 +28,8 @@
 
 #include <boost/format.hpp>
 
+#include <lib/BddSampler.hpp>
+
 #include <set>
 #include <iostream>
 
@@ -298,6 +300,194 @@ BOOST_AUTO_TEST_CASE(bool_rand_vec) {
   BOOST_REQUIRE(item.randomize());
   BOOST_REQUIRE(item.a.size() == 10);
   for (unsigned i = 1; i < item.a.size(); i++) BOOST_REQUIRE(item.a[i] != item.a[i - 1]);
+}
+
+struct s_vector_element_spread : public crv_sequence_item {
+  s_vector_element_spread(crv_object_name) {}
+
+  crv_vector<unsigned int> v;
+  crv_constraint constraint = {v().size() == 4, foreach (v(), v()[_i] <= 0x7f)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_element_spread) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  s_vector_element_spread item("item");
+  std::set<unsigned int> values;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.v.size(), 4);
+    for (unsigned j = 0; j < item.v.size(); j++) {
+      BOOST_REQUIRE_LE(item.v[j], 0x7f);
+      values.insert(item.v[j]);
+    }
+  }
+  // 800 values out of 128 possible ones
+  BOOST_REQUIRE_GE(values.size(), 100);
+}
+
+struct s_vector_element_spread_64_bits : public crv_sequence_item {
+  s_vector_element_spread_64_bits(crv_object_name) {}
+
+  crv_vector<uint64_t> v;
+  crv_constraint constraint = {v().size() == 4, foreach (v(), v()[_i] >= 100)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_element_spread_64_bits) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  s_vector_element_spread_64_bits item("item");
+  std::set<uint32_t> low_words;
+  for (int i = 0; i < 50; i++) {
+    BOOST_REQUIRE(item.randomize());
+    for (unsigned j = 0; j < item.v.size(); j++) {
+      BOOST_REQUIRE_GE(item.v[j], 100);
+      low_words.insert(static_cast<uint32_t>(item.v[j]));
+    }
+  }
+  BOOST_REQUIRE_GE(low_words.size(), 190);
+}
+
+// The elements of a vector share the BDD sampler for their constraints.
+
+struct s_vector_shared_sampler : public crv_sequence_item {
+  s_vector_shared_sampler(crv_object_name) {}
+
+  crv_vector<unsigned int> v;
+  crv_constraint constraint = {v().size() == 300, foreach (v(), v()[_i] <= 0x7e)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_shared_sampler) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  std::size_t count = BddSampler::count();
+  s_vector_shared_sampler item("item");
+  BOOST_REQUIRE(item.randomize());
+  BOOST_REQUIRE_EQUAL(item.v.size(), 300);
+  for (unsigned j = 0; j < item.v.size(); j++) BOOST_REQUIRE_LE(item.v[j], 0x7e);
+  BOOST_REQUIRE_LE(BddSampler::count(), count + 1);
+}
+
+// Constraints which depend on the index need a sampler per element, their number is limited.
+
+struct s_vector_index_constraint : public crv_sequence_item {
+  s_vector_index_constraint(crv_object_name) {}
+
+  crv_vector<unsigned int> v;
+  crv_constraint constraint = {v().size() == 100, foreach (v(), v()[_i] <= _i + 1000)};
+};
+
+BOOST_AUTO_TEST_CASE(vector_index_constraint) {
+  if (!FactoryMetaSMT::isDefined(CUDD)) return;
+
+  std::size_t count = BddSampler::count();
+  s_vector_index_constraint item("item");
+  for (int i = 0; i < 3; i++) {
+    BOOST_REQUIRE(item.randomize());
+    for (unsigned j = 0; j < item.v.size(); j++) BOOST_REQUIRE_LE(item.v[j], j + 1000);
+  }
+  BOOST_REQUIRE_LE(BddSampler::count(), count + 16);
+}
+
+// The sampled values of the elements contradict each other for most of the elements here.
+
+struct s_vector_sorted : public crv_sequence_item {
+  s_vector_sorted(crv_object_name) {}
+
+  crv_vector<unsigned int> v;
+  crv_constraint constraint = {v().size() == 100, foreach (v(), v()[_i] <= 100000),
+                               foreach (v(), if_then(_i > 0, v()[_i] > v()[_i - 1]))};
+};
+
+BOOST_AUTO_TEST_CASE(vector_sorted) {
+  s_vector_sorted item("item");
+  for (int i = 0; i < 3; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.v.size(), 100);
+    for (unsigned j = 0; j < item.v.size(); j++) {
+      BOOST_REQUIRE_LE(item.v[j], 100000);
+      if (j > 0) BOOST_REQUIRE_GT(item.v[j], item.v[j - 1]);
+    }
+  }
+}
+
+struct s_vector_size_only : public crv_sequence_item {
+  s_vector_size_only(crv_object_name) {}
+
+  crv_variable<unsigned int> length;
+  crv_vector<unsigned int> v;
+  crv_constraint c_length = {1 <= length() && length() <= 8};
+  crv_constraint c_size = {v().size() == length()};
+};
+
+BOOST_AUTO_TEST_CASE(vector_size_only) {
+  s_vector_size_only item("item");
+  std::set<unsigned int> values;
+  unsigned total = 0;
+  for (int i = 0; i < 200; i++) {
+    BOOST_REQUIRE(item.randomize());
+    BOOST_REQUIRE_EQUAL(item.v.size(), item.length);
+    for (unsigned j = 0; j < item.v.size(); j++) values.insert(item.v[j]);
+    total += item.v.size();
+  }
+  // the elements are not constrained, so nearly all of them differ
+  BOOST_REQUIRE_GE(values.size(), total * 9 / 10);
+}
+
+struct ReductionItem : public crv_sequence_item {
+  ReductionItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_vector<unsigned int> w;
+  crv_constraint con = {v().size() == 4, foreach (v(), v()[_i] >= 100), v.sum() == 144u,
+                        w().size() >= 2 && w().size() <= 5, foreach (w(), w()[_i] > 1 && w()[_i] < 50),
+                        w.product() == 360u, w.or_() != 0u, w.and_() == w.and_(), w.xor_() == w.xor_()};
+};
+
+// The reductions of crv_vector, which have the type of the elements as in SystemVerilog
+BOOST_AUTO_TEST_CASE(vector_reductions) {
+  ReductionItem it{"item"};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.v.size(), 4u);
+    unsigned sum = 0;
+    for (unsigned i = 0; i < it.v.size(); i++) sum += it.v[i];
+    BOOST_REQUIRE_EQUAL(sum % 256, 144u);
+    BOOST_REQUIRE(2 <= it.w.size() && it.w.size() <= 5);
+    unsigned product = 1;
+    for (unsigned i = 0; i < it.w.size(); i++) product *= it.w[i];
+    BOOST_REQUIRE_EQUAL(product, 360u);
+  }
+}
+
+struct ReductionOutsideItem : public crv_sequence_item {
+  ReductionOutsideItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_constraint con = {v().size() == 2, v.sum() == 10u && v()[2] == 7u};
+};
+
+// randomize() fails if the reduction accesses an element outside the vector
+BOOST_AUTO_TEST_CASE(vector_reduction_element_outside) {
+  ReductionOutsideItem out{"out"};
+  BOOST_REQUIRE(!out.randomize());
+}
+
+struct ReductionRetryItem : public crv_sequence_item {
+  ReductionRetryItem(crv_object_name) {}
+
+  crv_vector<unsigned char> v;
+  crv_constraint con = {v().size() <= 3, foreach (v(), v()[_i] < 5), v.sum() == 10u};
+};
+
+// randomize() succeeds if a size satisfies the reduction
+BOOST_AUTO_TEST_CASE(vector_reduction_size_retry) {
+  ReductionRetryItem it{"item"};
+  for (int n = 0; n < 10; ++n) {
+    BOOST_REQUIRE(it.randomize());
+    BOOST_REQUIRE_EQUAL(it.v.size(), 3u);
+    BOOST_REQUIRE_EQUAL(it.v[0] + it.v[1] + it.v[2], 10);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // Context

@@ -52,9 +52,25 @@ struct FactoryMetaSMT {
     **/
   static metaSMTVisitor* getNewInstance(SolverTypes type = solver_type_);
 
+  /**
+    * returns true if CRAVE has been built with support for the given backend.
+    **/
+  static bool isDefined(SolverTypes type);
+
+  /**
+    * creates a new BDD solver to sample the solutions of constraints, which needs less memory than
+    * a general purpose instance of the CUDD backend and gives up with an exception, if a BDD needs
+    * more than max_nodes nodes. Returns NULL if CUDD is not available.
+    **/
+  static metaSMTVisitor* getNewBddSampler(unsigned max_nodes);
+
   static SolverTypes solver_type_;
 };
 
+// FactorySolver is specialized for the available backends in the source files
+// of the CRAVE library only. Code outside of these files has to use
+// FactoryMetaSMT::isDefined() and FactoryMetaSMT::getNewInstance() instead,
+// since it would silently get the primary template.
 template <SolverTypes solver_type>
 struct FactorySolver {
   static bool isDefined() { return false; }

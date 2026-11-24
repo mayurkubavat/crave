@@ -31,6 +31,8 @@
 #include <sysc/datatypes/bit/sc_lv.h>
 #include <sysc/datatypes/int/sc_int.h>
 #include <sysc/datatypes/int/sc_uint.h>
+#include <sysc/datatypes/int/sc_bigint.h>
+#include <sysc/datatypes/int/sc_biguint.h>
 
 #include "bitsize_traits.hpp"
 
@@ -49,6 +51,12 @@ template <int N>
 struct is_signed<sc_dt::sc_uint<N> > : boost::mpl::false_ {};
 
 template <int N>
+struct is_signed<sc_dt::sc_bigint<N> > : boost::mpl::true_ {};
+
+template <int N>
+struct is_signed<sc_dt::sc_biguint<N> > : boost::mpl::false_ {};
+
+template <int N>
 struct is_unsigned<sc_dt::sc_bv<N> > : boost::mpl::true_ {};
 
 template <int N>
@@ -56,6 +64,12 @@ struct is_unsigned<sc_dt::sc_int<N> > : boost::mpl::false_ {};
 
 template <int N>
 struct is_unsigned<sc_dt::sc_uint<N> > : boost::mpl::true_ {};
+
+template <int N>
+struct is_unsigned<sc_dt::sc_bigint<N> > : boost::mpl::false_ {};
+
+template <int N>
+struct is_unsigned<sc_dt::sc_biguint<N> > : boost::mpl::true_ {};
 
 template <typename T, int N = 0>
 struct is_sysc_dt : boost::mpl::false_ {};
@@ -69,13 +83,54 @@ struct is_sysc_dt<sc_dt::sc_int<N> > : boost::mpl::true_ {};
 template <int N>
 struct is_sysc_dt<sc_dt::sc_uint<N> > : boost::mpl::true_ {};
 
+template <int N>
+struct is_sysc_dt<sc_dt::sc_bigint<N> > : boost::mpl::true_ {};
+
+template <int N>
+struct is_sysc_dt<sc_dt::sc_biguint<N> > : boost::mpl::true_ {};
+
 template <class SCDT>
 struct sc_dt_width {};
 
 template <template <int> class SCDT, int N>
 struct sc_dt_width<SCDT<N> > : boost::mpl::int_<N> {};
 
+// values of SystemC types are converted from and to 64 bit integers
+template <int N>
+struct sc_dt_width<sc_dt::sc_bigint<N> > : boost::mpl::int_<N> {
+  static_assert(N <= 64, "sc_bigint wider than 64 bits is not supported");
+};
+
+template <int N>
+struct sc_dt_width<sc_dt::sc_biguint<N> > : boost::mpl::int_<N> {
+  static_assert(N <= 64, "sc_biguint wider than 64 bits is not supported");
+};
+
 template <typename T>
 struct bitsize_traits<T, typename boost::enable_if<is_sysc_dt<T> >::type> : sc_dt_width<T> {};
+
+template <int N>
+struct distribution_value_type<sc_dt::sc_int<N> > {
+  typedef int64_t type;
+  static type value(sc_dt::sc_int<N> const& v) { return v.to_int64(); }
+};
+
+template <int N>
+struct distribution_value_type<sc_dt::sc_uint<N> > {
+  typedef uint64_t type;
+  static type value(sc_dt::sc_uint<N> const& v) { return v.to_uint64(); }
+};
+
+template <int N>
+struct distribution_value_type<sc_dt::sc_bigint<N> > {
+  typedef int64_t type;
+  static type value(sc_dt::sc_bigint<N> const& v) { return v.to_int64(); }
+};
+
+template <int N>
+struct distribution_value_type<sc_dt::sc_biguint<N> > {
+  typedef uint64_t type;
+  static type value(sc_dt::sc_biguint<N> const& v) { return v.to_uint64(); }
+};
 
 }  // namespace crave

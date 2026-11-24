@@ -134,6 +134,34 @@ class VectorExpr : public Terminal {
   unsigned int id_;
 };
 
+/**
+ * The reduction of the elements of a vector by an operator, like the reduction methods of the arrays of
+ * SystemVerilog (IEEE 1800-2017 7.12.3). It has the width and the signedness of the elements. The vector solver
+ * replaces it by the reduction of the elements, whose number is given by the size of the vector.
+ */
+class VectorReduction : public Terminal {
+ public:
+  enum Kind { Sum, Product, And, Or, Xor };
+
+  VectorReduction(unsigned int id, unsigned int bs, bool s, Kind k) : Terminal(bs, s), id_(id), kind_(k) {}
+  VectorReduction(VectorReduction const& r) : Terminal(r.bitsize(), r.sign()), id_(r.id()), kind_(r.kind()) {}
+
+  void visit(NodeVisitor* v) const { v->visitVectorReduction(*this); }
+
+  /**
+   * The id of the vector.
+   */
+  unsigned int id() const { return id_; }
+
+  Kind kind() const { return kind_; }
+
+ private:
+  unsigned int id_;
+  Kind kind_;
+};
+
+inline void NodeVisitor::visitVectorReduction(VectorReduction const& r) { visitTerminal(r); }
+
 class UnaryExpression : public Node {
  protected:
   explicit UnaryExpression(NodePtr c) : Node(), child_(c) {}

@@ -51,6 +51,7 @@ class ToDotVisitor : public NodeVisitor {
   void visitVariableExpr(VariableExpr const&);
   void visitConstant(Constant const&);
   void visitVectorExpr(VectorExpr const&);
+  void visitVectorReduction(VectorReduction const&);
   void visitNotOpr(NotOpr const&);
   void visitNegOpr(NegOpr const&);
   void visitComplementOpr(ComplementOpr const&);

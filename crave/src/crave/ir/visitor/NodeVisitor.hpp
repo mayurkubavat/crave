@@ -35,6 +35,7 @@ class Terminal;
 class VariableExpr;
 class Constant;
 class VectorExpr;
+class VectorReduction;
 class UnaryExpression;
 class UnaryOperator;
 class BinaryOperator;
@@ -98,6 +99,8 @@ class NodeVisitor {
   virtual void visitVariableExpr(VariableExpr const&) = 0;
   virtual void visitConstant(Constant const&) = 0;
   virtual void visitVectorExpr(VectorExpr const&) = 0;
+  // A visitor, which does not handle the reductions of vectors, visits them as terminals.
+  virtual void visitVectorReduction(VectorReduction const&);
   virtual void visitNotOpr(NotOpr const&) = 0;
   virtual void visitNegOpr(NegOpr const&) = 0;
   virtual void visitComplementOpr(ComplementOpr const&) = 0;

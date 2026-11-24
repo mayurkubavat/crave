@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "VariableSolver.hpp"
+#include "SolveOrder.hpp"
 
 namespace crave {
 
@@ -48,6 +49,12 @@ struct VariableGenerator {
 
   virtual bool solve();
 
+  /**
+   * Sets the solve-before ordering of the variables for the solvers created by reset().
+   * Throws std::runtime_error if the ordering is cyclic.
+   */
+  void setSolveOrder(SolveOrder const& order) { solve_levels_ = order.levels(); }
+
   template <typename T>
   bool read(const Variable<T>& var, T* value) const {
     for(VarSolverPtr vs : solvers_) {
@@ -61,7 +68,15 @@ struct VariableGenerator {
   std::vector<std::string> getInactiveSofts() const;
 
  protected:
+  // makes the solvers again, if a variable has been made cyclic or not since they have been made
+  void refreshRandc();
+  // gives the values back to the cycles of the randc variables, which the first count solvers have taken
+  void undoRandc(std::size_t count);
+  std::vector<ConstraintPartition>* partitions_ = nullptr;
+  unsigned randc_epoch_ = 0;
+
   const VariableContainer& var_ctn_;
   std::vector<VarSolverPtr> solvers_;
+  std::vector<std::vector<int> > solve_levels_;
 };
 }  // namespace crave

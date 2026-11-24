@@ -143,6 +143,14 @@ struct distribution {
    */
   std::vector<weighted_range<T> > const& ranges() const { return ranges_; }
 
+  /*!
+   * \brief Returns true if this is the default distribution of a variable.
+   * \see implicit_distribution
+   */
+  bool isImplicit() const { return implicit_; }
+
+  void setImplicit(bool implicit = true) { implicit_ = implicit; }
+
   /**
    * \brief Generate next random distribution value.
    * 
@@ -182,6 +190,7 @@ struct distribution {
 
  protected:
   std::vector<weighted_range<T> > ranges_;
+  bool implicit_ = false;
 };
 
 template <>
@@ -194,8 +203,13 @@ struct distribution<bool> {
 
   std::vector<weighted_range<bool> > const& ranges() const;
 
+  bool isImplicit() const { return implicit_; }
+
+  void setImplicit(bool implicit = true) { implicit_ = implicit; }
+
  private:
   double prob_;
+  bool implicit_ = false;
 };
 
 template <typename T>
@@ -208,5 +222,19 @@ struct distribution_tag : public Constraint<typename boost::proto::terminal<dist
     return *this;
   }
 };
+
+/*!
+ * \brief Marks a distribution as the default distribution of a variable.
+ *
+ * A default distribution is not specified by the user. It only says that the
+ * values of the variable should be spread over its complete range. So in
+ * contrast to a distribution of the user, it does not keep the solver from
+ * sampling the solutions of the constraints on the variable instead.
+ */
+template <typename T>
+distribution_tag<T> implicit_distribution(distribution_tag<T> dist) {
+  boost::proto::value(dist).setImplicit();
+  return dist;
+}
 
 }  // namespace crave

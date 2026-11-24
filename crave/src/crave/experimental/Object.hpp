@@ -118,6 +118,27 @@ class crv_object {
   virtual bool randomize() { return false; }
 
   /**
+   * \brief Called by randomize() before new random values are computed.
+   *
+   * As pre_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
+   * objects in its hierarchy, a parent before its children. Override it to set up state that the
+   * constraints use. Objects whose randomization is disabled with rand_mode(false) and their
+   * children are skipped, until a variable of them is enabled again. The default implementation
+   * does nothing.
+   */
+  virtual void pre_randomize() {}
+
+  /**
+   * \brief Called by randomize() after new random values have been computed.
+   *
+   * As post_randomize() in SystemVerilog, randomize() calls it on the randomized object and on all
+   * objects in its hierarchy, a parent before its children, but only if a solution has been found.
+   * Objects whose randomization is disabled with rand_mode(false) and their children are skipped,
+   * until a variable of them is enabled again. The default implementation does nothing.
+   */
+  virtual void post_randomize() {}
+
+  /**
    * \brief Get the name of the object.
    * \return Name of the object as a string.
    */
@@ -128,6 +149,20 @@ class crv_object {
    * \return Fullname of the object as a string.
    */
   std::string fullname() const { return fullname_; }
+
+  /**
+   * \brief Enables or disables the randomization of all variables in this object.
+   *
+   * As rand_mode() of an object in SystemVerilog, it sets the rand_mode of all random variables
+   * of this object and of the objects in its hierarchy, see crv_variable_base_::rand_mode(bool).
+   * The variables of a crv_vector are not affected.
+   *
+   * \param on true to enable, false to disable the randomization.
+   */
+  virtual void rand_mode(bool on) {
+    object_rand_mode_ = on;
+    for (auto obj : children_) obj->rand_mode(on);
+  }
 
   /**
    * outputs the object hierarchy (i.e. children and their children, etc.) to std::cout
@@ -163,6 +198,16 @@ class crv_object {
 
   virtual void recursive_build(Generator& gen) const;
 
+  /**
+   * calls pre_randomize() on this object and its children
+   */
+  void recursive_pre_randomize();
+
+  /**
+   * calls post_randomize() on this object and its children
+   */
+  void recursive_post_randomize();
+
   virtual VariableContainer* check_default_constraints(Generator& gen);
 
   std::string name_;                                         /** < name of the object*/
@@ -171,6 +216,7 @@ class crv_object {
   std::list<crv_object*> children_;                          /** < children nodes*/
   std::string fullname_;                                     /** < fullname*/
   std::unordered_map<std::string, unsigned> local_name_map_; /** < names of children in a map*/
+  bool object_rand_mode_ = true;                             /** < set by rand_mode(bool) of this object*/
 
  private:
   /**

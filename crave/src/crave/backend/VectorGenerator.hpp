@@ -29,11 +29,15 @@
 
 #include <vector>
 #include <map>
+#include <memory>
+#include <set>
 
 #include "VariableGenerator.hpp"
 #include "../ir/visitor/ReplaceVisitor.hpp"
 
 namespace crave {
+
+class BddSampler;
 
 /*
  *
@@ -47,15 +51,31 @@ struct VectorSolver {
   void addConstraint(VectorConstraintPtr vc);
   bool solve(const VariableGenerator& var_gen);
 
+  /**
+   * Whether the last solve used a size of the vector, which has been solved with the other variables, and failed
+   * with a constraint on a reduction of the elements, which may hold for another size.
+   */
+  bool failedWithSolvedSize() const { return failed_with_solved_size_; }
+  unsigned int size() const { return vec_elements_.size(); }
+  int id() const { return vector_id_; }
+
  private:
   void resetSolver(unsigned int const size);
   void buildSolver(unsigned int const size);
+  void makeSuggestions();
 
  private:
   std::vector<VectorConstraintPtr> constraints_;
   int vector_id_;
   SolverPtr solver_;
   VectorElements vec_elements_;
+  // hard constraints, which involve only a single element, for every element
+  std::vector<std::vector<NodePtr> > elem_constraints_;
+  // BDD samplers for the solutions of these constraints, by variable id (null if there is none)
+  std::map<int, std::shared_ptr<BddSampler> > elem_samplers_;
+  // the different samplers in elem_samplers_
+  std::set<BddSampler*> samplers_;
+  bool failed_with_solved_size_;
 };
 
 /*
@@ -68,11 +88,18 @@ struct VectorGenerator {
   bool solve(const VariableGenerator& var_gen, const std::set<int>& vec_ids);
   void reset(const std::vector<VectorConstraintPtr>& v);
 
+  /**
+   * After a failed solve, gets the vector and its size, if the solver of the vector failed with a solved size and
+   * a constraint on a reduction, see VectorSolver::failedWithSolvedSize().
+   */
+  bool failedSize(int* id, unsigned int* size) const;
+
  private:
   void addConstraint(VectorConstraintPtr vc);
 
  private:
   VectorSolverMap vector_solvers_;
+  VectorSolver const* failed_;
 };
 
 }  // namespace crave

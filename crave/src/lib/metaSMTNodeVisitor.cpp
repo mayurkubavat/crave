@@ -33,6 +33,7 @@
 #include <metaSMT/BitBlast.hpp>
 #include <metaSMT/DirectSolver_Context.hpp>
 
+#include <random>
 #include <string>
 
 #define DEFINE_SOLVER(SOLVER_ENUM, SOLVER_T)                                                     \
@@ -88,8 +89,35 @@ namespace crave {
 extern RandomSeedManager rng;
 class CUDD_Solver : public metaSMT::solver::CUDD_Distributed {
  public:
-  CUDD_Solver() { gen.seed((*crave::rng.get())()); }
+  explicit CUDD_Solver(unsigned cache_slots = CUDD_CACHE_SLOTS) : metaSMT::solver::CUDD_Distributed(cache_slots) {}
+
+ protected:
+  // use the random number generator of CRAVE, so that the solutions only depend on the global seed
+  double uniform01() override { return std::uniform_real_distribution<double>(0, 1)(*crave::rng.get()); }
 };
+
+// CUDD_Solver with a small computed table and a limit for the number of nodes
+class CUDD_Sampler : public CUDD_Solver {
+ public:
+  CUDD_Sampler() : CUDD_Solver(1u << 12), max_nodes_(max_nodes) {
+    // CUDD checks this whenever it needs memory for more nodes, the operation then fails with an exception.
+    // Cudd_SetMaxLive() cannot be used instead: the C++ interface of CUDD does not report that this limit
+    // is exceeded, it returns a BDD without node.
+    _manager.RegisterTerminationCallback(&CUDD_Sampler::tooManyNodes, this);
+  }
+
+  static thread_local unsigned max_nodes;
+
+ private:
+  static int tooManyNodes(const void* arg) {
+    const CUDD_Sampler* self = static_cast<const CUDD_Sampler*>(arg);
+    DdManager* manager = self->_manager.getManager();
+    return Cudd_ReadKeys(manager) - Cudd_ReadDead(manager) > self->max_nodes_;
+  }
+
+  unsigned max_nodes_;
+};
+thread_local unsigned CUDD_Sampler::max_nodes = ~0u;
 }
 DEFINE_SOLVER(crave::CUDD, metaSMT::BitBlast<crave::CUDD_Solver>);
 #endif
@@ -115,6 +143,36 @@ void FactoryMetaSMT::setSolverType(std::string const& type) {
     solver_type_ = Z3;
   else if (type == "Cudd")
     solver_type_ = CUDD;
+}
+
+bool FactoryMetaSMT::isDefined(SolverTypes type) {
+  switch (type) {
+    case BOOLECTOR:
+      return FactorySolver<BOOLECTOR>::isDefined();
+    case SWORD:
+      return FactorySolver<SWORD>::isDefined();
+    case STP:
+      return FactorySolver<STP>::isDefined();
+    case YICES2:
+      return FactorySolver<YICES2>::isDefined();
+    case Z3:
+      return FactorySolver<Z3>::isDefined();
+    case CVC4:
+      return FactorySolver<CVC4>::isDefined();
+    case CUDD:
+      return FactorySolver<CUDD>::isDefined();
+    default:
+      return false;
+  }
+}
+
+metaSMTVisitor* FactoryMetaSMT::getNewBddSampler(unsigned max_nodes) {
+#ifdef metaSMT_USE_CUDD
+  CUDD_Sampler::max_nodes = max_nodes;
+  return new metaSMTVisitorImpl<metaSMT::DirectSolver_Context<metaSMT::BitBlast<CUDD_Sampler> > >();
+#else
+  return NULL;
+#endif
 }
 
 #define TRY_GET_SOLVER(solver)                                                        \

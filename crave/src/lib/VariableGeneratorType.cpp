@@ -31,19 +31,34 @@ namespace crave {
 VariableGenerator::VariableGenerator(const VariableContainer& vcon) : var_ctn_(vcon), solvers_() {}
 
 void VariableGenerator::reset(std::vector<ConstraintPartition>& partitions) {
+  partitions_ = &partitions;
+  randc_epoch_ = randc_epoch();
   solvers_.clear();
 
   for(ConstraintPartition & partition : partitions) {
-    VarSolverPtr vs(new VariableDefaultSolver(var_ctn_, partition));
+    VarSolverPtr vs(new VariableDefaultSolver(var_ctn_, partition, solve_levels_));
     solvers_.push_back(vs);
   }
 }
 
 bool VariableGenerator::solve() {
-  for(VarSolverPtr vs : solvers_) {
-    if (!vs->solve()) return false;
+  refreshRandc();
+  for (std::size_t i = 0; i < solvers_.size(); ++i) {
+    if (!solvers_[i]->solve()) {
+      undoRandc(i + 1);
+      return false;
+    }
   }
   return true;
+}
+
+// A variable can be made cyclic by another generator, the solvers decide how to solve it when they are made.
+void VariableGenerator::refreshRandc() {
+  if (partitions_ && randc_epoch_ != randc_epoch()) reset(*partitions_);
+}
+
+void VariableGenerator::undoRandc(std::size_t count) {
+  for (std::size_t i = 0; i < count && i < solvers_.size(); ++i) solvers_[i]->undoRandc();
 }
 
 std::vector<std::vector<std::string> > VariableGenerator::analyseContradiction() {

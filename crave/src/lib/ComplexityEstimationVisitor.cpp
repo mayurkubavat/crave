@@ -106,16 +106,13 @@ template <typename T>
 void ComplexityEstimationVisitor::visitComplexBinExpr(const T& object) {
   stack_entry lhs, rhs;
   evalBinExpr(object, lhs, rhs);
-  unsigned int complexity = 0;
-  if (lhs.second > 0) {
-    if (rhs.second > 0) {
-      complexity = lhs.second * rhs.second;
-    } else {
-      complexity = lhs.second;
-    }
-  } else {
-    complexity = rhs.second;
-  }
+  // The BDDs of these operations grow exponentially with the bitsize of the operands. A constant
+  // operand does not make them simple, see e.g. x * 12345 == c, so it counts like the other operand.
+  // Two non-constant operands, like in x * x == c, count twice.
+  unsigned int lhs_complexity = lhs.second > 0 ? lhs.second : rhs.second;
+  unsigned int rhs_complexity = rhs.second > 0 ? rhs.second : lhs.second;
+  unsigned int complexity = lhs_complexity * rhs_complexity;
+  if (lhs.second > 0 && rhs.second > 0) complexity *= 2;
   exprStack_.push(std::make_pair(new T(lhs.first, rhs.first), complexity));
 }
 
@@ -133,6 +130,10 @@ void ComplexityEstimationVisitor::visitConstant(const Constant& c) {
 
 void ComplexityEstimationVisitor::visitVectorExpr(const VectorExpr& v) {
   exprStack_.push(std::make_pair(new VectorExpr(v), v.bitsize()));
+}
+
+void ComplexityEstimationVisitor::visitVectorReduction(const VectorReduction& r) {
+  exprStack_.push(std::make_pair(new VectorReduction(r), r.bitsize()));
 }
 
 void ComplexityEstimationVisitor::visitNotOpr(const NotOpr& n) { visitSimpleUnaryExpr(n); }
