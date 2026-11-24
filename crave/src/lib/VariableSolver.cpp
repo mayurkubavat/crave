@@ -62,6 +62,11 @@ bool VariableSolver::read(int id, std::string& value) const {
   return solver_->read(*ite->second, value);
 }
 
+bool VariableSolver::solveCover(std::set<std::string> const&, std::string* hit_name) {
+  if (hit_name) hit_name->clear();
+  return solve();
+}
+
 std::vector<std::vector<std::string> > VariableSolver::getContradictions() const { return contradictions_; }
 
 std::vector<std::string> VariableSolver::getInactiveSofts() const { return inactive_softs_; }

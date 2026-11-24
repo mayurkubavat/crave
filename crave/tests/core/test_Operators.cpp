@@ -1685,4 +1685,253 @@ BOOST_AUTO_TEST_CASE(inside_two_item_variadic_types) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(variadic_scalar_unique_and_expr) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      // 4-arg scalar unique with expressions, WriteReference, ReadReference, and constants
+      {
+        Variable<uint8_t> a, b, c;
+        uint8_t wval = 0;
+        WriteReference<uint8_t> wr(&wval);
+        uint8_t rval = 7;
+        Generator gen;
+        gen(a < 4u)(b < 4u)(c < 4u)(wr < 4u);
+        gen(unique(a, b + 0u, wr, reference(rval)));
+        for (int i = 0; i < 10; ++i) {
+          BOOST_REQUIRE(gen.next());
+          uint8_t av = gen[a], bv = gen[b];
+          BOOST_REQUIRE_NE(av, bv);
+          BOOST_REQUIRE_NE(av, wval);
+          BOOST_REQUIRE_NE(av, rval);
+          BOOST_REQUIRE_NE(bv, wval);
+          BOOST_REQUIRE_NE(bv, rval);
+          BOOST_REQUIRE_NE(wval, rval);
+        }
+      }
+
+      // 0-arg and 1-arg unique are vacuously true; negated unique forces collision
+      {
+        Variable<uint8_t> a, b;
+        Generator g0(a == 3u && unique());
+        BOOST_REQUIRE(g0.next());
+        BOOST_REQUIRE_EQUAL(g0[a], 3u);
+
+        Generator g1(a == 4u && unique(a));
+        BOOST_REQUIRE(g1.next());
+        BOOST_REQUIRE_EQUAL(g1[a], 4u);
+
+        Generator gneg(a < 4u && b < 4u && !unique(a, b));
+        for (int i = 0; i < 6; ++i) {
+          BOOST_REQUIRE(gneg.next());
+          BOOST_REQUIRE_EQUAL(gneg[a], gneg[b]);
+        }
+      }
+
+      // Heterogeneous widths + bitslice + if_then + soft(unique) + Evaluator
+      {
+        Variable<int8_t> s8;
+        Variable<uint16_t> u16;
+        Variable<bool> fl;
+        Generator gen(fl == true && s8 == -1 && if_then(fl, unique(s8, u16, bitslice(3, 0, u16) + 100u)));
+        BOOST_REQUIRE(gen.next());
+        if (sv) {
+          // In SV mode, int8_t(-1) zero-extends to 255 in mixed-sign comparison
+          BOOST_REQUIRE_NE(gen[u16], 255u);
+        } else {
+          BOOST_REQUIRE_NE(gen[u16], static_cast<uint16_t>(0xFFFFu));
+        }
+
+        Variable<uint8_t> x, y;
+        Generator gsoft(x == 5u && y == 5u);
+        gsoft.soft(unique(x, y));
+        BOOST_REQUIRE(gsoft.next());
+        BOOST_REQUIRE_EQUAL(gsoft[x], 5u);
+
+        Evaluator eval;
+        eval.assign(x, uint8_t(1));
+        eval.assign(y, uint8_t(2));
+        BOOST_REQUIRE(eval.evaluate(unique(x, y, uint8_t(3))));
+        BOOST_REQUIRE(eval.result<bool>());
+        eval.assign(y, uint8_t(1));
+        BOOST_REQUIRE(eval.evaluate(unique(x, y, uint8_t(3))));
+        BOOST_REQUIRE(!eval.result<bool>());
+      }
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(logical_iff_operator) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      // Multi-bit non-zero truthiness: iff(2, -5) is true; iff(0, 5) is false
+      {
+        Variable<int8_t> x, y;
+        Generator g1(x == 2 && y == -5 && iff(x, y));
+        BOOST_REQUIRE(g1.next());
+
+        Generator g2(x == 0 && y == 5 && iff(x, y));
+        BOOST_REQUIRE(!g2.next());
+
+        Generator g3(x == 0 && y == 0 && iff(x, y));
+        BOOST_REQUIRE(g3.next());
+
+        Generator g4(x == 0 && y == 5 && !iff(x, y));
+        BOOST_REQUIRE(g4.next());
+      }
+
+      // Compound comparisons, arithmetic promotion, inside(iff(...), 1), and Evaluator parity
+      {
+        Variable<uint8_t> a, b;
+        Variable<bool> c;
+        Generator gen(a < 6u && b < 6u && c == true && if_then(c, iff(a == 1u, b > 2u)));
+        for (int i = 0; i < 15; ++i) {
+          BOOST_REQUIRE(gen.next());
+          BOOST_REQUIRE_EQUAL((gen[a] == 1u), (gen[b] > 2u));
+        }
+
+        Generator garith(a == 2u && b == 4u && (iff(a == 2u, b > 3u) + 1u == 2u) && inside(iff(a, b), 1));
+        BOOST_REQUIRE(garith.next());
+
+        Evaluator eval;
+        eval.assign(a, uint8_t(3));
+        eval.assign(b, uint8_t(7));
+        BOOST_REQUIRE(eval.evaluate(iff(a, b)));
+        BOOST_REQUIRE(eval.result<bool>());
+        eval.assign(b, uint8_t(0));
+        BOOST_REQUIRE(eval.evaluate(iff(a, b)));
+        BOOST_REQUIRE(!eval.result<bool>());
+      }
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(onehot_onehot0_countones_clog2_core) {
+  struct Guard {
+    ~Guard() {
+      set_solver_backend("Z3");
+      set_sv_signedness(false);
+    }
+  } guard;
+
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    for (const char* backend : {"Z3", "Cudd"}) {
+      if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+      set_solver_backend(backend);
+
+      // Signed negative bit-pattern: int8_t(-128) == 0x80 (1 bit set), int8_t(-1) == 0xFF (8 bits set)
+      {
+        Variable<int8_t> s8;
+        Generator g_oh(s8 == int8_t(-128) && onehot(s8));
+        BOOST_REQUIRE(g_oh.next());
+        BOOST_REQUIRE_EQUAL(static_cast<int>(g_oh[s8]), -128);
+
+        Generator g_oh_fail(s8 == int8_t(-1) && onehot(s8));
+        BOOST_REQUIRE(!g_oh_fail.next());
+
+        Generator g_oh0_zero(s8 == int8_t(0) && onehot0(s8));
+        BOOST_REQUIRE(g_oh0_zero.next());
+
+        Generator g_oh0_neg(s8 == int8_t(-128) && onehot0(s8));
+        BOOST_REQUIRE(g_oh0_neg.next());
+
+        Generator g_oh0_three(s8 == int8_t(3) && onehot0(s8));
+        BOOST_REQUIRE(!g_oh0_three.next());
+
+        Generator g_cnt1(s8 == int8_t(-128) && countones(s8) == 1u);
+        BOOST_REQUIRE(g_cnt1.next());
+
+        Generator g_cnt8(s8 == int8_t(-1) && countones(s8) == 8u);
+        BOOST_REQUIRE(g_cnt8.next());
+
+        Generator g_cl_m128(s8 == int8_t(-128) && clog2(s8) == 7u);
+        BOOST_REQUIRE(g_cl_m128.next());
+
+        Generator g_cl_m1(s8 == int8_t(-1) && clog2(s8) == 8u);
+        BOOST_REQUIRE(g_cl_m1.next());
+      }
+
+      // Compound expressions, bitslice, ReadReference, and clog2 boundary values
+      {
+        Variable<uint8_t> a, b;
+        uint8_t ext = 0x55u;
+        Generator g_expr(a < 16u && b < 16u && onehot(a + b) && countones(a + b) == 1u &&
+                         countones(reference(ext)) == 4u && countones(bitslice(3, 0, a)) <= 4u);
+        for (int i = 0; i < 8; ++i) {
+          BOOST_REQUIRE(g_expr.next());
+          uint8_t sum = static_cast<uint8_t>(g_expr[a] + g_expr[b]);
+          BOOST_REQUIRE(sum != 0 && (sum & (sum - 1)) == 0);
+        }
+
+        Generator g_clog(a == 0u && clog2(a) == 0u && clog2(uint8_t(1)) == 0u && clog2(uint8_t(2)) == 1u &&
+                         clog2(uint8_t(3)) == 2u && clog2(uint8_t(4)) == 2u && clog2(uint8_t(5)) == 3u &&
+                         clog2(uint8_t(255)) == 8u);
+        BOOST_REQUIRE(g_clog.next());
+      }
+
+      // Evaluator parity
+      {
+        Variable<int8_t> s8;
+        Variable<uint8_t> u8;
+        Evaluator eval;
+        eval.assign(s8, int8_t(-128));
+        BOOST_REQUIRE(eval.evaluate(onehot(s8)));
+        BOOST_REQUIRE(eval.result<bool>());
+        BOOST_REQUIRE(eval.evaluate(onehot0(s8)));
+        BOOST_REQUIRE(eval.result<bool>());
+        BOOST_REQUIRE(eval.evaluate(countones(s8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 1u);
+        BOOST_REQUIRE(eval.evaluate(clog2(s8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 7u);
+
+        eval.assign(s8, int8_t(-1));
+        BOOST_REQUIRE(eval.evaluate(onehot(s8)));
+        BOOST_REQUIRE(!eval.result<bool>());
+        BOOST_REQUIRE(eval.evaluate(countones(s8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 8u);
+        BOOST_REQUIRE(eval.evaluate(clog2(s8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 8u);
+
+        eval.assign(u8, uint8_t(0));
+        BOOST_REQUIRE(eval.evaluate(onehot(u8)));
+        BOOST_REQUIRE(!eval.result<bool>());
+        BOOST_REQUIRE(eval.evaluate(onehot0(u8)));
+        BOOST_REQUIRE(eval.result<bool>());
+        BOOST_REQUIRE(eval.evaluate(clog2(u8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 0u);
+
+        eval.assign(u8, uint8_t(1));
+        BOOST_REQUIRE(eval.evaluate(clog2(u8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 0u);
+
+        eval.assign(u8, uint8_t(3));
+        BOOST_REQUIRE(eval.evaluate(clog2(u8)));
+        BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 2u);
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()  // Context

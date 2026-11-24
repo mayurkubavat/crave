@@ -130,4 +130,22 @@ std::shared_ptr<RandcState> randc_state(int id);
  */
 unsigned randc_epoch();
 
+/**
+ * \internal
+ * Snapshots the RandcState of the variable with the given id, if active.
+ */
+bool snapshot_randc_state(int id, RandcState& out);
+
+/**
+ * \internal
+ * Restores the RandcState of the variable with the given id.
+ */
+void restore_randc_state(int id, bool active, RandcState const& state);
+
+/**
+ * \internal
+ * Resets the RandcState of the variable with the given id back to an unstarted cycle, if active.
+ */
+void reset_randc_state(int id);
+
 }  // namespace crave

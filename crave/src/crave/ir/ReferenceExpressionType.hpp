@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <memory>
+#include <string>
+
 #include "Node.hpp"
 
 namespace crave {
@@ -36,5 +39,10 @@ struct ReferenceExpression {
   typedef NodePtr result_type;
   virtual ~ReferenceExpression() {}
   virtual result_type expr() const = 0;
+  virtual Constant constantValue() const { return Constant(); }
+  virtual std::string distSignature() const { return std::string(); }
+  virtual std::shared_ptr<ReferenceExpression> cloneWithVar(result_type const&) const {
+    return std::shared_ptr<ReferenceExpression>();
+  }
 };
 }

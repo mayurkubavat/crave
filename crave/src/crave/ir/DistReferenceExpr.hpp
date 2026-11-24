@@ -27,9 +27,41 @@
 
 #pragma once
 
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <type_traits>
+
 #include "../frontend/Distribution.hpp"
 
 namespace crave {
+
+template <typename Integer, typename DistValue>
+inline std::string dist_signature_impl(distribution<DistValue> const& dist) {
+  std::ostringstream os;
+  os << "int:" << bitsize_traits<Integer>::value << ":" << crave::is_signed<Integer>::value << ":"
+     << dist.isImplicit() << ":" << dist.hasItems() << ":" << dist.isAllZero();
+  for (weighted_range<DistValue> const& r : dist.items()) {
+    os << ":[";
+    if (std::is_signed<typename distribution_value_type<DistValue>::type>::value) {
+      os << static_cast<int64_t>(distribution_value_type<DistValue>::value(r.left_)) << ","
+         << static_cast<int64_t>(distribution_value_type<DistValue>::value(r.right_));
+    } else {
+      os << static_cast<uint64_t>(distribution_value_type<DistValue>::value(r.left_)) << ","
+         << static_cast<uint64_t>(distribution_value_type<DistValue>::value(r.right_));
+    }
+    os << "," << static_cast<int>(r.kind_) << "," << r.raw_weight_ << "]";
+  }
+  return os.str();
+}
+
+template <typename Integer>
+inline std::string dist_signature_impl(distribution<bool> const& dist) {
+  std::ostringstream os;
+  os << std::setprecision(17) << "bool:" << dist.prob() << ":" << dist.isImplicit();
+  return os.str();
+}
 
 /**
  * get a distribution of T as a distribution of the builtin integer type that holds the values of T
@@ -47,9 +79,10 @@ typename std::enable_if<!std::is_same<T, typename distribution_value_type<T>::ty
 value_distribution(distribution<T> const& dist) {
   typedef distribution_value_type<T> value_type;
   distribution<typename value_type::type> result;
-  for (weighted_range<T> const& r : dist.ranges())
+  for (weighted_range<T> const& r : dist.items())
     result(weighted_range<typename value_type::type>(value_type::value(r.left_), value_type::value(r.right_),
-                                                     r.weight_));
+                                                     r.raw_weight_, r.kind_));
+  if (dist.hasItems()) result.markHasItems();
   result.setImplicit(dist.isImplicit());
   return result;
 }
@@ -60,10 +93,19 @@ struct DistReferenceExpr : ReferenceExpression {
 
   DistReferenceExpr(distribution<value_type> dist, ReferenceExpression::result_type expr) : dist_(dist), expr_(expr) {}
 
-  virtual ReferenceExpression::result_type expr() const {
+  ReferenceExpression::result_type expr() const override {
+    if (dist_.isAllZero()) {
+      return new Constant(true);
+    }
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
     return new EqualOpr(expr_, new Constant(dist_.nextValue(), width, sign));
+  }
+
+  std::string distSignature() const override { return dist_signature_impl<Integer>(dist_); }
+
+  std::shared_ptr<ReferenceExpression> cloneWithVar(ReferenceExpression::result_type const& new_var) const override {
+    return std::make_shared<DistReferenceExpr<Integer> >(dist_, new_var);
   }
 
  private:

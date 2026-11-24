@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <vector>
 #include <map>
 #include <memory>
@@ -44,25 +45,34 @@ struct VariableDefaultSolver : VariableSolver {
   static bool bypass_constraint_analysis;
   static unsigned complexity_limit_for_bdd;
 
+  static std::size_t analyse_hards_count();
+  static void reset_analyse_hards_count();
+  static std::size_t solver_build_count();
+  static void reset_solver_build_count();
+
   /**
    * \param solve_levels the variables, which are solved before others, by level, see SolveOrder::levels()
    */
   VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
                         std::vector<std::vector<int> > const& solve_levels = std::vector<std::vector<int> >());
 
-  virtual bool solve();
+  bool solve() override;
+  bool solveCover(std::set<std::string> const& skip_covers, std::string* hit_name) override;
 
-  virtual void undoRandc();
-  virtual void undoRandc(std::set<int> const& ids);
-  virtual std::string randcSignature(int id);
+  std::vector<std::vector<std::string> > getContradictions() const override;
+  std::vector<std::string> getInactiveSofts() const override;
+
+  void undoRandc() override;
+  void undoRandc(std::set<int> const& ids) override;
+  std::string randcSignature(int id) override;
 
  private:
   typedef std::map<int, std::shared_ptr<RandcState> > RandcMap;
 
-  void analyseConstraints();
-  void analyseHards();
-  void analyseSofts();
-  void updateInactiveSofts(std::vector<unsigned int> const& inactive_indices);
+  void analyseHards() const;
+  void analyseSofts() const;
+  bool readRefsUnchanged() const;
+  void updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) const;
   bool solveWith(std::vector<NodePtr> const& assumptions, RandcMap const& randc, bool ignore_softs = false);
   bool solveRandc(int id, RandcState& state, std::vector<NodePtr>& assumptions, RandcMap const& randc);
   void listWindows(NodePtr const& var, RandcState const& state, std::vector<NodePtr>& assumptions,
@@ -89,5 +99,9 @@ struct VariableDefaultSolver : VariableSolver {
   std::vector<std::pair<uint64_t, uint64_t> > first_level_bounds_;  // the bounds of their keys
   bool first_level_unordered_ = false;  // whether the first level has too many sparse values to be ordered
   std::set<int> unordered_vars_;        // the ordered variables, which are solved without the ordering this time
+  mutable bool hards_analysed_ = false;
+  mutable bool softs_analysed_ = false;
+  bool solve_attempted_ = false;
+  mutable std::vector<Constant> analysed_read_refs_;
 };
 }  // namespace crave

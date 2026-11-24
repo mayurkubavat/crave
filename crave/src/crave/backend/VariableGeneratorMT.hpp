@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "VariableGeneratorType.hpp"
 
 namespace crave {
@@ -34,12 +35,13 @@ class VariableGeneratorMT : public VariableGenerator {
   explicit VariableGeneratorMT(VariableContainer const& vcon);
   virtual ~VariableGeneratorMT() {}
 
-  virtual void reset(std::vector<ConstraintPartition>& partitions);
-  virtual bool solve();
+  void reset(std::vector<ConstraintPartition>& partitions) override;
+  bool solve() override;
+  bool nextCov(std::set<std::string> const& skip_covers, std::vector<std::string>* hit_names) override;
 
  private:
   void createNewSolver(ConstraintPartition& partition, unsigned int index);
   void solve(VarSolverPtr vs);
-  bool result_;
+  std::atomic<bool> result_{true};
 };
 }

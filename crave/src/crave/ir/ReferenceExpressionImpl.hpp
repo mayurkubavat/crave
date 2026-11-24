@@ -54,10 +54,16 @@ struct ReferenceExpressionImpl : public ReferenceExpression {
   virtual ~ReferenceExpressionImpl() {}
 
  public:
-  virtual ReferenceExpression::result_type expr() const {
+  ReferenceExpression::result_type expr() const override {
     unsigned width = bitsize_traits<Integer>::value;
     bool sign = crave::is_signed<Integer>::value;
     return new EqualOpr(expr_, new Constant(reference_constant(value_, width, sign, 0)));
+  }
+
+  Constant constantValue() const override {
+    unsigned width = bitsize_traits<Integer>::value;
+    bool sign = crave::is_signed<Integer>::value;
+    return reference_constant(value_, width, sign, 0);
   }
 
  private:

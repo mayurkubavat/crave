@@ -57,7 +57,8 @@ class crv_variable<T, typename std::enable_if<is_sysc_dt<T>::value>::type> : pub
    */
   bool randomize() override {
     if (!this->rand_mode()) return true;
-    static distribution<uint64_t> dist;
+    ScopedRngGuard rng_guard(&this->ensure_rng_());
+    distribution<uint64_t> dist;
     if (bitsize_traits<T>::value <= 64) {
       this->value = dist.nextValue();
     } else {

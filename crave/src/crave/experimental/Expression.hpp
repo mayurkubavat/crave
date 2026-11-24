@@ -135,22 +135,11 @@ class expression_list {
 };
 
 /**
- * A pre-defined expression for constraining an integer value to be one-hot
+ * A pre-defined expression for counting bits set to 1 in the binary representation of an expression
  */
-template <typename IntegerType>
-expression onehot(IntegerType const& x) {
-  return crave::make_expression((x > 0) && ((x & (x - 1)) == 0));
-}
-
-/**
- * A pre-defined expression for counting bit in the binary representation of a variable
- */
-template <typename IntegerType>
-expression bitcount(IntegerType const& x) {
-  expression result = value_to_expression(0);
-  for (unsigned i = 0; i < bitsize_traits<IntegerType>::value; i++)
-    result = crave::make_expression(result + ((x >> i) & 1));
-  return result;
+template <typename Expr>
+auto bitcount(Expr&& x) -> decltype(countones(std::forward<Expr>(x))) {
+  return countones(std::forward<Expr>(x));
 }
 
 }  // namespace crave

@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -174,8 +175,8 @@ struct VectorElementTypeVisitor : public NodeVisitor {
   void visitVectorReduction(VectorReduction const& r) {
     if (r.id() == vector_id_) {
       found_ = true;
-      bitsize_ = r.bitsize();
-      sign_ = r.sign();
+      bitsize_ = r.elemBitsize();
+      sign_ = r.elemSign();
     }
   }
   void visitNotOpr(NotOpr const& n) { visitUnaryExpr(n); }
@@ -187,6 +188,7 @@ struct VectorElementTypeVisitor : public NodeVisitor {
   void visitOrOpr(const OrOpr& o) { visitBinaryExpr(o); }
   void visitLogicalAndOpr(LogicalAndOpr const& la) { visitBinaryExpr(la); }
   void visitLogicalOrOpr(LogicalOrOpr const& lo) { visitBinaryExpr(lo); }
+  void visitLogicalIffOpr(LogicalIffOpr const& liff) { visitBinaryExpr(liff); }
   void visitXorOpr(XorOpr const& x) { visitBinaryExpr(x); }
   void visitEqualOpr(EqualOpr const& eq) { visitBinaryExpr(eq); }
   void visitNotEqualOpr(NotEqualOpr const& neq) { visitBinaryExpr(neq); }
@@ -218,6 +220,21 @@ struct VectorElementTypeVisitor : public NodeVisitor {
       vc.child()->visit(this);
     }
   }
+  void visitOneHotExpr(OneHotExpr const& o) { visitUnaryExpr(o); }
+  void visitOneHot0Expr(OneHot0Expr const& o) { visitUnaryExpr(o); }
+  void visitCountOnesExpr(CountOnesExpr const& o) { visitUnaryExpr(o); }
+  void visitClog2Expr(Clog2Expr const& o) { visitUnaryExpr(o); }
+  void visitSelfDeterminedExpr(SelfDeterminedExpr const& s) { visitUnaryExpr(s); }
+  void visitBoundsCheckExpr(BoundsCheckExpr const& b) { visitBinaryExpr(b); }
+  void visitVectorReduceWith(VectorReduceWith const& vrw) {
+    if (vrw.vec_id() == vector_id_) {
+      found_ = true;
+      bitsize_ = vrw.elemBitsize();
+      sign_ = vrw.elemSign();
+    } else if (!found_) {
+      vrw.child()->visit(this);
+    }
+  }
 
  private:
   unsigned vector_id_;
@@ -246,14 +263,19 @@ void VectorSolver::addConstraint(VectorConstraintPtr vc) {
   samplers_.clear();
 }
 
-bool VectorSolver::solve(VariableGenerator& var_gen) {
+bool VectorSolver::solve(VariableGenerator& var_gen, VariableContainer* vcon) {
+  if (!vcon) vcon = variable_container();
   std::string cstr_name_list;
   for(VectorConstraintPtr constraint : constraints_) {
     cstr_name_list += " " + constraint->name();
   }
   LOG(INFO) << "Solve constraints of vector " << vector_id_ << " [" << cstr_name_list << "]";
 
-  __rand_vec_base* vector = vectorBaseMap[vector_id_];
+  __rand_vec_base* vector = nullptr;
+  {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    vector = vectorBaseMap[vector_id_];
+  }
 
   unsigned int size = default_rand_vec_size();
   bool const solved_size = var_gen.read(vector->size_var(), &size);
@@ -264,12 +286,11 @@ bool VectorSolver::solve(VariableGenerator& var_gen) {
   }
   last_size_ = size;
   failed_with_solved_size_ = false;
-  resetSolver(size);
+  resetSolver(size, vcon);
 
   std::vector<int> unpinned_scalars;
   std::vector<std::pair<int, std::string> > materialized_overrides;
   if (!scalar_vars_.empty()) {
-    VariableContainer* vcon = variable_container();
     int const size_var_id = static_cast<int>(vector->size_var().id());
     for (int id : scalar_vars_) {
       auto var_ite = vcon->variables.find(id);
@@ -309,7 +330,6 @@ bool VectorSolver::solve(VariableGenerator& var_gen) {
   if (result) {
     solver_->readVector(vec_elements_, vector);
     if (!materialized_overrides.empty() || !unpinned_scalars.empty()) {
-      VariableContainer* vcon = variable_container();
       for (auto const& ov : materialized_overrides) {
         applyScalarOverrideAndWriteRefs(vcon, var_gen, ov.first, ov.second);
       }
@@ -340,9 +360,9 @@ bool VectorSolver::solve(VariableGenerator& var_gen) {
   return result;
 }
 
-void VectorSolver::resetSolver(unsigned int const size) {
+void VectorSolver::resetSolver(unsigned int const size, VariableContainer const* vcon) {
   solver_.reset(FactoryMetaSMT::getNewInstance());
-  buildSolver(size);
+  buildSolver(size, vcon);
 }
 
 // Without suggestions the solver returns the same solution in every run. So sample the solutions of
@@ -371,7 +391,8 @@ void VectorSolver::makeSuggestions() {
   }
 }
 
-void VectorSolver::buildSolver(unsigned int const size) {
+void VectorSolver::buildSolver(unsigned int const size, VariableContainer const* vcon) {
+  if (!vcon) vcon = variable_container();
   if (vec_elements_.size() != size) {
     unsigned int old_size = vec_elements_.size();
     if (size < old_size) {
@@ -384,8 +405,8 @@ void VectorSolver::buildSolver(unsigned int const size) {
     if (old_size < size) {
       unsigned elem_bitsize = 1u;
       bool elem_sign = true;
-      auto vec_ite = variable_container()->vector_variables.find(vector_id_);
-      if (vec_ite != variable_container()->vector_variables.end()) {
+      auto vec_ite = vcon->vector_variables.find(vector_id_);
+      if (vec_ite != vcon->vector_variables.end()) {
         if (VectorExpr const* vec = dynamic_cast<VectorExpr const*>(vec_ite->second.get())) {
           elem_bitsize = vec->bitsize();
           elem_sign = vec->sign();
@@ -405,35 +426,52 @@ void VectorSolver::buildSolver(unsigned int const size) {
   for(VectorConstraintPtr constraint : constraints_) {
     if (constraint->isReduction()) {
       // a constraint on the reductions of all elements, which is solved once
-      ReplaceVisitor replacer(&vec_elements_);
+      ReplaceVisitor replacer(&vec_elements_, nullptr, -2);
       constraint->expr()->visit(&replacer);
       if (replacer.okay()) {
+        NodePtr res = replacer.result();
+        if (replacer.resultBoundsGuard()) {
+          res = new LogicalAndOpr(replacer.resultBoundsGuard(), res);
+        }
         if (constraint->isSoft())
-          solver_->makeSoftAssertion(*replacer.result());
+          solver_->makeSoftAssertion(*res);
         else
-          solver_->makeAssertion(*replacer.result());
+          solver_->makeAssertion(*res);
       } else if (!constraint->isSoft()) {
         // an element outside the vector is accessed, the constraint does not hold for this size
         LOG(INFO) << "Constraint " << constraint->name() << " accesses an element outside vector " << vector_id_;
         solver_->makeAssertion(Constant(false));
       }
     } else if (!constraint->isUnique()) {
-      ReplaceVisitor replacer(&vec_elements_);
+      ForEach const* fe = dynamic_cast<ForEach const*>(constraint->expr().get());
+      bool const allow_oob_skip = !(fe && dynamic_cast<VectorAccess const*>(fe->rhs().get()));
+      ReplaceVisitor replacer(&vec_elements_, nullptr, -1, allow_oob_skip);
       for (unsigned int i = 0u; i < size; ++i) {
         replacer.setVecIdx(i);
         constraint->expr()->visit(&replacer);
 
         if (replacer.okay()) {
+          NodePtr iter_res = replacer.result();
+          if (replacer.resultBoundsGuard()) {
+            iter_res = new LogicalAndOpr(replacer.resultBoundsGuard(), iter_res);
+          }
           if (constraint->isSoft()) {
-            solver_->makeSoftAssertion(*replacer.result());
+            solver_->makeSoftAssertion(*iter_res);
           } else {
-            solver_->makeAssertion(*replacer.result());
+            solver_->makeAssertion(*iter_res);
 
             GetSupportSetVisitor gssv;
-            replacer.result()->visit(&gssv);
+            iter_res->visit(&gssv);
             std::set<int> const& support = gssv.getSupportVars();
             if (support.size() == 1 && *support.begin() == static_cast<int>(vec_elements_[i]->id()))
-              elem_constraints_[i].push_back(replacer.result());
+              elem_constraints_[i].push_back(iter_res);
+          }
+        } else if (replacer.resultBoundsGuard()) {
+          NodePtr bg = replacer.resultBoundsGuard();
+          if (constraint->isSoft()) {
+            solver_->makeSoftAssertion(*bg);
+          } else {
+            solver_->makeAssertion(*bg);
           }
         }
 
@@ -461,10 +499,97 @@ bool VectorGenerator::failedSize(int* id, unsigned int* size) const {
   return true;
 }
 
+std::set<std::string> VectorGenerator::coupledCovers(std::vector<ConstraintPartition> const& partitions,
+                                                     std::vector<std::string> const& hits,
+                                                     std::set<int>* coupled_vecs) const {
+  if (coupled_vecs) coupled_vecs->clear();
+  std::set<std::string> result;
+  if (!failed_ || hits.empty()) return result;
+
+  int const failed_vec_id = failed_->id();
+  std::set<int> coupled_vars = failed_->scalarVars();
+  {
+    std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+    auto vbm_it = vectorBaseMap.find(failed_vec_id);
+    if (vbm_it != vectorBaseMap.end()) {
+      coupled_vars.insert(static_cast<int>(vbm_it->second->size_var().id()));
+    }
+  }
+
+  std::set<int> included_vecs;
+  included_vecs.insert(failed_vec_id);
+  std::vector<bool> included_parts(partitions.size(), false);
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t i = 0; i < partitions.size(); ++i) {
+      if (included_parts[i]) continue;
+      std::set<int> const& pvars = partitions[i].supportSet();
+      bool intersects = false;
+      for (int id : coupled_vars) {
+        if (pvars.count(id)) {
+          intersects = true;
+          break;
+        }
+      }
+      if (intersects) {
+        included_parts[i] = true;
+        coupled_vars.insert(pvars.begin(), pvars.end());
+        changed = true;
+      }
+    }
+    for (auto const& kv : vector_solvers_) {
+      if (included_vecs.count(kv.first)) continue;
+      std::set<int> const& svars = kv.second.scalarVars();
+      bool intersects = false;
+      for (int id : coupled_vars) {
+        if (svars.count(id)) {
+          intersects = true;
+          break;
+        }
+      }
+      if (!intersects) {
+        std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+        auto kv_vbm = vectorBaseMap.find(kv.first);
+        if (kv_vbm != vectorBaseMap.end() &&
+            coupled_vars.count(static_cast<int>(kv_vbm->second->size_var().id()))) {
+          intersects = true;
+        }
+      }
+      if (intersects) {
+        included_vecs.insert(kv.first);
+        coupled_vars.insert(svars.begin(), svars.end());
+        std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+        auto kv_vbm = vectorBaseMap.find(kv.first);
+        if (kv_vbm != vectorBaseMap.end()) {
+          coupled_vars.insert(static_cast<int>(kv_vbm->second->size_var().id()));
+        }
+        changed = true;
+      }
+    }
+  }
+
+  std::set<std::string> hit_set(hits.begin(), hits.end());
+  for (std::size_t i = 0; i < partitions.size(); ++i) {
+    if (!included_parts[i]) continue;
+    for (ConstraintPtr const& c : partitions[i]) {
+      if (c->isCover() && hit_set.count(c->name())) {
+        result.insert(c->name());
+      }
+    }
+  }
+  if (coupled_vecs) *coupled_vecs = std::move(included_vecs);
+  return result;
+}
+
 bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
                                  std::vector<ConstraintPartition> const& partitions,
                                  int failed_vec_id,
-                                 std::set<int>& solved_vecs) {
+                                 std::set<int>& solved_vecs,
+                                 VariableContainer* vcon,
+                                 std::set<std::string> const* active_covers) {
+  if (!vcon) vcon = variable_container();
   auto failed_it = vector_solvers_.find(failed_vec_id);
   if (failed_it == vector_solvers_.end()) return false;
   if (failed_it->second.scalarVars().empty()) return false;
@@ -511,7 +636,6 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
     }
   }
 
-  VariableContainer* vcon = variable_container();
   bool has_any_part = false;
   for (bool inc : included_parts)
     if (inc) has_any_part = true;
@@ -530,7 +654,12 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
   for (std::size_t i = 0; i < partitions.size(); ++i) {
     if (!included_parts[i]) continue;
     for (ConstraintPtr const& c : partitions[i]) {
-      if (c->isCover()) continue;
+      if (c->isCover()) {
+        if (active_covers && active_covers->count(c->name())) {
+          joint_solver->makeAssertion(*c->expr());
+        }
+        continue;
+      }
       if (c->isSoft())
         joint_solver->makeSoftAssertion(*c->expr());
       else
@@ -541,7 +670,11 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
   std::map<int, VectorSolver::VectorElements> joint_elems;
   for (int vid : included_vecs) {
     VectorSolver& vs = vector_solvers_.at(vid);
-    __rand_vec_base* vector = vectorBaseMap[vid];
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[vid];
+    }
     unsigned int sz = default_rand_vec_size();
     if (vid == failed_vec_id) {
       sz = vs.lastSize();
@@ -576,26 +709,42 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
 
     for (VectorConstraintPtr const& constraint : vs.constraints()) {
       if (constraint->isReduction()) {
-        ReplaceVisitor replacer(&elems);
+        ReplaceVisitor replacer(&elems, nullptr, -2);
         constraint->expr()->visit(&replacer);
         if (replacer.okay()) {
+          NodePtr res = replacer.result();
+          if (replacer.resultBoundsGuard()) {
+            res = new LogicalAndOpr(replacer.resultBoundsGuard(), res);
+          }
           if (constraint->isSoft())
-            joint_solver->makeSoftAssertion(*replacer.result());
+            joint_solver->makeSoftAssertion(*res);
           else
-            joint_solver->makeAssertion(*replacer.result());
+            joint_solver->makeAssertion(*res);
         } else if (!constraint->isSoft()) {
           joint_solver->makeAssertion(Constant(false));
         }
       } else if (!constraint->isUnique()) {
-        ReplaceVisitor replacer(&elems);
-        for (unsigned int i = 0; i < sz; ++i) {
+        ForEach const* fe = dynamic_cast<ForEach const*>(constraint->expr().get());
+        bool const allow_oob_skip = !(fe && dynamic_cast<VectorAccess const*>(fe->rhs().get()));
+        ReplaceVisitor replacer(&elems, nullptr, -1, allow_oob_skip);
+        for (unsigned int i = 0u; i < sz; ++i) {
           replacer.setVecIdx(i);
           constraint->expr()->visit(&replacer);
           if (replacer.okay()) {
+            NodePtr iter_res = replacer.result();
+            if (replacer.resultBoundsGuard()) {
+              iter_res = new LogicalAndOpr(replacer.resultBoundsGuard(), iter_res);
+            }
             if (constraint->isSoft())
-              joint_solver->makeSoftAssertion(*replacer.result());
+              joint_solver->makeSoftAssertion(*iter_res);
             else
-              joint_solver->makeAssertion(*replacer.result());
+              joint_solver->makeAssertion(*iter_res);
+          } else if (replacer.resultBoundsGuard()) {
+            NodePtr bg = replacer.resultBoundsGuard();
+            if (constraint->isSoft())
+              joint_solver->makeSoftAssertion(*bg);
+            else
+              joint_solver->makeAssertion(*bg);
           }
           replacer.reset();
         }
@@ -797,7 +946,12 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
   }
 
   for (auto const& kv : joint_elems) {
-    joint_solver->readVector(kv.second, vectorBaseMap[kv.first]);
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[kv.first];
+    }
+    joint_solver->readVector(kv.second, vector);
     solved_vecs.insert(kv.first);
   }
 
@@ -822,14 +976,16 @@ bool VectorGenerator::solveJoint(VariableGenerator& var_gen,
 }
 
 bool VectorGenerator::solve(VariableGenerator& var_gen, const std::set<int>& vec_ids,
-                            std::vector<ConstraintPartition> const* partitions) {
+                            std::vector<ConstraintPartition> const* partitions, VariableContainer* vcon,
+                            std::set<std::string> const* active_covers) {
+  if (!vcon) vcon = variable_container();
   failed_ = nullptr;
   joint_randc_undo_.clear();
   std::set<int> solved_vecs;
   for(VectorSolverMap::value_type & c_pair : vector_solvers_) {
     if (solved_vecs.count(c_pair.first)) continue;
-    if (!c_pair.second.solve(var_gen)) {
-      if (partitions && solveJoint(var_gen, *partitions, c_pair.first, solved_vecs)) {
+    if (!c_pair.second.solve(var_gen, vcon)) {
+      if (partitions && solveJoint(var_gen, *partitions, c_pair.first, solved_vecs, vcon, active_covers)) {
         continue;
       }
       undoRandcEntries(joint_randc_undo_);
@@ -841,7 +997,11 @@ bool VectorGenerator::solve(VariableGenerator& var_gen, const std::set<int>& vec
   for(int id : vec_ids) {
     if (vector_solvers_.find(id) != vector_solvers_.end()) continue;
     // unconstrained vector
-    __rand_vec_base* vector = vectorBaseMap[id];
+    __rand_vec_base* vector = nullptr;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      vector = vectorBaseMap[id];
+    }
     LOG(INFO) << "Generate unconstrained vector " << id;
     unsigned int size = default_rand_vec_size();
     if (!var_gen.read(vector->size_var(), &size)) {

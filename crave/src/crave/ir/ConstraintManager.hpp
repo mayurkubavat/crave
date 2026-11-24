@@ -56,6 +56,8 @@ struct ConstraintManager {
 
   void resetChanged();
 
+  ConstraintList const& constraints() const { return constraints_; }
+
   template <typename Expr>
   ConstraintPtr makeConstraint(std::string const& name, int c_id, Expr e, Context* ctx, bool const soft = false,
                                bool const cover = false) {

@@ -28,4 +28,9 @@
 
 namespace crave {
 std::map<int, __rand_vec_base*> vectorBaseMap;
+
+std::recursive_mutex& vector_base_map_mutex() {
+  static std::recursive_mutex* m = new std::recursive_mutex();
+  return *m;
+}
 }

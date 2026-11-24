@@ -28,6 +28,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <set>
 #include <utility>
 #include <memory>
@@ -53,5 +54,6 @@ struct VariableContainer {
 };
 
 VariableContainer* variable_container();
+std::recursive_mutex& variable_container_mutex();
 
 }  // end namespace crave

@@ -160,6 +160,7 @@ void init(std::string const&);
  * This predefined placeholder _i can be used with the operator [] to refer to the current element of the vector.
  */
 extern placeholder _i;
+extern item_placeholder _item;
 
 /*! 
  * \internal

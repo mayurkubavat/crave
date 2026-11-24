@@ -43,11 +43,15 @@ struct ConstraintPartitioner {
 
   void mergeConstraints(const ConstraintManager& mng);
 
-  void partition();
+  void partition(VariableContainer const* vcon = variable_container());
 
   std::vector<ConstraintPartition>& getPartitions();
 
+  std::vector<ConstraintPartition> const& getPartitions() const;
+
   std::vector<VectorConstraintPtr>& getVectorConstraints();
+
+  std::vector<VectorConstraintPtr> const& getVectorConstraints() const;
 
  private:
   void maximizePartition(ConstraintPartition* cp, ConstraintList* lc);

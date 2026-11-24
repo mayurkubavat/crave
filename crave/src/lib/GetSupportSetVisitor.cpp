@@ -85,6 +85,8 @@ void GetSupportSetVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) { visitBi
 
 void GetSupportSetVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) { visitBinaryExpr(lo); }
 
+void GetSupportSetVisitor::visitLogicalIffOpr(const LogicalIffOpr& liff) { visitBinaryExpr(liff); }
+
 void GetSupportSetVisitor::visitXorOpr(const XorOpr& x) { visitBinaryExpr(x); }
 
 void GetSupportSetVisitor::visitEqualOpr(const EqualOpr& eq) { visitBinaryExpr(eq); }
@@ -134,6 +136,25 @@ void GetSupportSetVisitor::visitVectorContains(const VectorContains& vc) {
   support_vars.insert(vc.vec_id());
   reduced_vectors.insert(vc.vec_id());
   vector_vars.insert(vc.vec_id());
+}
+
+void GetSupportSetVisitor::visitOneHotExpr(const OneHotExpr& o) { visitUnaryExpr(o); }
+
+void GetSupportSetVisitor::visitOneHot0Expr(const OneHot0Expr& o) { visitUnaryExpr(o); }
+
+void GetSupportSetVisitor::visitCountOnesExpr(const CountOnesExpr& o) { visitUnaryExpr(o); }
+
+void GetSupportSetVisitor::visitClog2Expr(const Clog2Expr& o) { visitUnaryExpr(o); }
+
+void GetSupportSetVisitor::visitSelfDeterminedExpr(const SelfDeterminedExpr& s) { visitUnaryExpr(s); }
+
+void GetSupportSetVisitor::visitBoundsCheckExpr(const BoundsCheckExpr& b) { visitBinaryExpr(b); }
+
+void GetSupportSetVisitor::visitVectorReduceWith(const VectorReduceWith& vrw) {
+  visitUnaryExpr(vrw);
+  support_vars.insert(vrw.vec_id());
+  reduced_vectors.insert(vrw.vec_id());
+  vector_vars.insert(vrw.vec_id());
 }
 
 }  // end namespace crave

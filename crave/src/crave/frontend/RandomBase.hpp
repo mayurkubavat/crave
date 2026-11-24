@@ -28,6 +28,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -88,6 +89,7 @@ class __rand_vec_base {
 };
 
 extern std::map<int, __rand_vec_base*> vectorBaseMap;
+std::recursive_mutex& vector_base_map_mutex();
 
 /**
  * \ingroup oldAPI
@@ -102,7 +104,10 @@ class __rand_vec_base1 : public __rand_vec_base {
   /**
    * \brief Empty Constructor.
    */
-  __rand_vec_base1() { vectorBaseMap[sym_vec.id()] = this; }
+  __rand_vec_base1() {
+    std::lock_guard<std::recursive_mutex> lock(vector_base_map_mutex());
+    vectorBaseMap[sym_vec.id()] = this;
+  }
 
   /**
    * \brief Access to the symbolic vector.
@@ -116,6 +121,34 @@ class __rand_vec_base1 : public __rand_vec_base {
    * \return Value at the given index
    */
   T1& operator[](const int& idx) const { return (T1&)real_vec[idx]; }
+
+ protected:
+  template <typename IdxExpr>
+  auto make_vec_access(IdxExpr const& idx, std::true_type) const
+      -> decltype(boost::proto::deep_copy(std::declval<Vector<T1> const&>()[boost::proto::make_expr<
+          boost::proto::tag::terminal, Constraint_Domain>(idx)])) {
+    return boost::proto::deep_copy(
+        sym_vec[boost::proto::make_expr<boost::proto::tag::terminal, Constraint_Domain>(idx)]);
+  }
+
+  template <typename IdxExpr>
+  auto make_vec_access(IdxExpr const& idx, std::false_type) const -> decltype(std::declval<Vector<T1> const&>()[idx]) {
+    return sym_vec[idx];
+  }
+
+ public:
+  template <typename IdxExpr,
+            typename std::enable_if<
+                boost::proto::is_expr<typename std::decay<IdxExpr>::type>::value ||
+                    detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value,
+                int>::type = 0>
+  auto operator[](IdxExpr const& idx) const
+      -> decltype(make_vec_access(
+          idx, std::integral_constant<bool,
+                                      detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value>{})) {
+    return make_vec_access(
+        idx, std::integral_constant<bool, detail::is_lambda_node_proxy<typename std::decay<IdxExpr>::type>::value>{});
+  }
 
   /**
    * \brief Pushes a value into the real vector.
@@ -162,12 +195,23 @@ class __rand_vec_base1 : public __rand_vec_base {
     }
   }
 
+  template <typename Elem = T1>
+  static typename std::enable_if<std::is_integral<Elem>::value, Elem>::type sample_single_value_() {
+    distribution<Elem> d;
+    return d.nextValue();
+  }
+
+  template <typename Elem = T1>
+  static typename std::enable_if<!std::is_integral<Elem>::value, Elem>::type sample_single_value_() {
+    randv<Elem> r(NULL);
+    r.next();
+    return static_cast<Elem>(r);
+  }
+
   virtual void gen_values(unsigned num) {
-    static randv<T1> r(NULL);
     this->clear();
     for (unsigned i = 0; i < num; i++) {
-      r.next();
-      this->push_back(r);
+      this->push_back(sample_single_value_());
     }
   }
 

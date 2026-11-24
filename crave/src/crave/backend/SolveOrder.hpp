@@ -73,6 +73,8 @@ class SolveOrder {
 
   bool empty() const { return pairs_.empty(); }
 
+  std::set<std::pair<int, int> > const& pairs() const { return pairs_; }
+
   /**
    * Gets the variables, which are ordered before other variables, by level: the variables of a level are only
    * ordered after the ones of the previous levels. A variable, which is not ordered before another one, is in

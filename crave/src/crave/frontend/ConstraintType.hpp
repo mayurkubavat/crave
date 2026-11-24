@@ -67,7 +67,10 @@ struct Constraint : boost::proto::extends<Expr, Constraint<Expr>, Constraint_Dom
 /**
  * Internal implementation details
  */
-struct Constraint_Domain : boost::proto::domain<boost::proto::generator<Constraint>, Constraint_Grammar> {};
+struct Constraint_Domain : boost::proto::domain<boost::proto::generator<Constraint>, Constraint_Grammar> {
+  template <typename T>
+  struct as_child : as_expr<T> {};
+};
 
 /**
  * Internal implementation details

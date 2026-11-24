@@ -54,4 +54,21 @@ struct placeholder : public Constraint<boost::proto::terminal<placeholder_tag>::
    */
   int id() const { return boost::proto::value(*this).id; }
 };
+
+struct item_placeholder_tag {
+  explicit item_placeholder_tag(int id_) : id(id_) {}
+  int id;
+};
+
+struct item_placeholder : public Constraint<boost::proto::terminal<item_placeholder_tag>::type> {
+  typedef Constraint<boost::proto::terminal<item_placeholder_tag>::type> base_type;
+
+  item_placeholder()
+      : base_type(boost::proto::make_expr<boost::proto::tag::terminal>(item_placeholder_tag(new_var_id()))) {}
+
+  int id() const { return boost::proto::value(*this).id; }
+};
+
+extern placeholder _i;
+extern item_placeholder _item;
 }  // namespace crave

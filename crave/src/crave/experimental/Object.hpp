@@ -29,13 +29,18 @@
 
 #include <iostream>
 #include <list>
+#include <memory>
+#include <random>
+#include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 
 namespace crave {
 
 struct Generator;
+struct RandcState;
 
 struct crv_object_name;
 class crv_object;
@@ -165,6 +170,43 @@ class crv_object {
   }
 
   /**
+   * \brief Get whether randomization of this object is enabled.
+   * \return true if enabled, false otherwise.
+   */
+  virtual bool rand_mode() const { return object_rand_mode_; }
+
+  /**
+   * \brief Enables or disables all constraints in this object and its child objects.
+   * \param on true to enable, false to disable constraints.
+   */
+  virtual void constraint_mode(bool on) {
+    for (auto obj : children_) obj->constraint_mode(on);
+    object_constraint_mode_ = on;
+    notify_constraint_mode_changed_();
+  }
+
+  /**
+   * \brief Get whether constraints of this object are enabled.
+   * \return true if enabled, false otherwise.
+   */
+  virtual bool constraint_mode() const { return object_constraint_mode_; }
+
+  /**
+   * \brief Seeds this object's per-object RNG (and deterministically seeds child objects).
+   */
+  virtual void srandom(unsigned int seed);
+
+  /**
+   * \brief Captures this object's per-object RNG state (and any initialized child states).
+   */
+  std::string get_randstate() const;
+
+  /**
+   * \brief Restores this object's per-object RNG state from a string produced by get_randstate().
+   */
+  void set_randstate(std::string const& state);
+
+  /**
    * outputs the object hierarchy (i.e. children and their children, etc.) to std::cout
    */
   void print_object_hierarchy(int level = 0) const;
@@ -188,7 +230,14 @@ class crv_object {
    * copy constructor
    */
   crv_object(const crv_object& other)
-      : name_(other.name_), orig_name_(other.orig_name_), parent_(), children_(), fullname_(other.fullname_) {}
+      : name_(other.name_),
+        orig_name_(other.orig_name_),
+        parent_(),
+        children_(),
+        fullname_(other.fullname_),
+        object_rand_mode_(other.object_rand_mode_),
+        object_constraint_mode_(other.object_constraint_mode_),
+        rng_(other.rng_ ? new std::mt19937(*other.rng_) : nullptr) {}
 
   void remove_child(crv_object*);
 
@@ -210,6 +259,25 @@ class crv_object {
 
   virtual VariableContainer* check_default_constraints(Generator& gen);
 
+  virtual bool has_active_constraint_() const {
+    for (auto obj : children_) {
+      if (obj->has_active_constraint_()) return true;
+    }
+    return false;
+  }
+
+  virtual void on_child_constraint_mode_changed_() {
+    bool any = has_active_constraint_();
+    if (object_constraint_mode_ != any) {
+      object_constraint_mode_ = any;
+      notify_constraint_mode_changed_();
+    }
+  }
+
+  void notify_constraint_mode_changed_() {
+    if (parent_) parent_->on_child_constraint_mode_changed_();
+  }
+
   std::string name_;                                         /** < name of the object*/
   std::string orig_name_;                                    /** < original name of the object*/
   crv_object* parent_;                                       /** < parent node*/
@@ -217,6 +285,25 @@ class crv_object {
   std::string fullname_;                                     /** < fullname*/
   std::unordered_map<std::string, unsigned> local_name_map_; /** < names of children in a map*/
   bool object_rand_mode_ = true;                             /** < set by rand_mode(bool) of this object*/
+  bool object_constraint_mode_ = true;                       /** < set by constraint_mode(bool) of this object*/
+
+ protected:
+  friend struct RandstateCodec;
+  virtual void on_rng_state_changed_() const {}
+  virtual bool has_randc_state_for_randstate_() const { return false; }
+  virtual bool supports_randc_for_randstate_() const { return false; }
+  virtual void collect_var_ids_for_randstate_(std::vector<unsigned>&) const {}
+  virtual bool capture_randc_state_(RandcState&) const { return false; }
+  virtual void restore_randc_state_(bool, RandcState const&) {}
+  virtual void reset_randc_state_() {}
+  std::mt19937& ensure_rng_() const;
+  bool has_any_initialized_rng_() const;
+  void attach_copied_child_(crv_object* child);
+  void collect_subtree_var_ids_(std::vector<unsigned>& out) const;
+  void append_randstate_(std::ostringstream& os) const;
+  void reset_rng_recursive_();
+
+  mutable std::unique_ptr<std::mt19937> rng_;
 
  private:
   /**

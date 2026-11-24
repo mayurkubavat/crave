@@ -817,4 +817,187 @@ BOOST_AUTO_TEST_CASE(inside_ranges_tolerances_mask_eval) {
   set_sv_signedness(old_setting);
 }
 
-BOOST_AUTO_TEST_SUITE_END()  // Evaluations
+BOOST_AUTO_TEST_CASE(sv_signedness_false_evaluator_parity) {
+  struct Guard {
+    Guard() : prev_sv(sv_signedness()) {}
+    ~Guard() {
+      set_sv_signedness(prev_sv);
+      set_solver_backend("Z3");
+    }
+    bool prev_sv;
+  } guard;
+
+  set_sv_signedness(false);
+  Variable<uint8_t> a, b, c;
+  Variable<uint16_t> u16;
+  Evaluator eval;
+
+  eval.assign(a, uint8_t(255));
+  eval.assign(c, uint8_t(0));
+  BOOST_REQUIRE(eval.evaluate(iff(~a, c)));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  eval.assign(a, uint8_t(200));
+  eval.assign(b, uint8_t(56));
+  BOOST_REQUIRE(eval.evaluate(iff(a + b, c)));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  eval.assign(u16, uint16_t(56));
+  BOOST_REQUIRE(eval.evaluate(iff(a + u16, c)));
+  BOOST_REQUIRE(!eval.result<bool>());
+
+  eval.assign(a, uint8_t(0xFF));
+  BOOST_REQUIRE(eval.evaluate(countones(a) > -1));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  eval.assign(a, uint8_t(200));
+  eval.assign(u16, uint16_t(56));
+  BOOST_REQUIRE(eval.evaluate(onehot(a + u16)));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  eval.assign(a, uint8_t(0x50));
+  BOOST_REQUIRE(eval.evaluate(clog2(bitslice(7, 4, a))));
+  BOOST_REQUIRE_EQUAL(eval.result<uint32_t>(), 3u);
+
+  eval.assign(a, uint8_t(0x0F));
+  BOOST_REQUIRE(eval.evaluate(iff(bitslice(7, 4, a), c)));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  eval.assign(a, uint8_t(0xF0));
+  BOOST_REQUIRE(eval.evaluate(iff(bitslice(7, 4, a), c)));
+  BOOST_REQUIRE(!eval.result<bool>());
+  BOOST_REQUIRE(eval.evaluate(iff(bitslice(7, 4, a), uint8_t(1))));
+  BOOST_REQUIRE(eval.result<bool>());
+
+  // Solver parity across Z3 and Cudd under sv_signedness(false)
+  for (const char* backend : {"Z3", "Cudd"}) {
+    if (std::string(backend) == "Cudd" && !FactoryMetaSMT::isDefined(CUDD)) continue;
+    set_solver_backend(backend);
+
+    Generator g1(a == uint8_t(255) && c == uint8_t(0) && iff(~a, c));
+    BOOST_REQUIRE(g1.next());
+    Generator g2(a == uint8_t(200) && b == uint8_t(56) && c == uint8_t(0) && iff(a + b, c));
+    BOOST_REQUIRE(g2.next());
+    Generator g3(a == uint8_t(0xFF) && countones(a) > -1);
+    BOOST_REQUIRE(g3.next());
+    Generator g4(a == uint8_t(200) && u16 == uint16_t(56) && onehot(a + u16));
+    BOOST_REQUIRE(g4.next());
+    Generator g5(a == uint8_t(0x50) && clog2(bitslice(7, 4, a)) == 3u);
+    BOOST_REQUIRE(g5.next());
+    Generator g6(a == uint8_t(0x0F) && c == uint8_t(0) && iff(bitslice(7, 4, a), c));
+    BOOST_REQUIRE(g6.next());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(eval_visitor_bounds_check_and_short_circuit_parity) {
+  struct Guard {
+    Guard() : prev_sv(sv_signedness()) {}
+    ~Guard() { set_sv_signedness(prev_sv); }
+    bool prev_sv;
+  } guard;
+
+  Variable<uint8_t> x, y, unassigned;
+  for (bool sv : {false, true}) {
+    set_sv_signedness(sv);
+    EvalVisitor::eval_map m;
+    m[x.id()] = Constant(5, 8, false);
+    m[y.id()] = Constant(1, 8, false);
+    EvalVisitor ev(&m);
+    ev.set_exact(sv);
+
+    NodePtr vx(new VariableExpr(x.id(), 8, false));
+    NodePtr vy(new VariableExpr(y.id(), 8, false));
+    NodePtr vu(new VariableExpr(unassigned.id(), 8, false));
+    NodePtr guard_fail(new LessOpr(vx, new Constant(4, 8, false)));
+    NodePtr guard_pass(new LessOpr(vy, new Constant(4, 8, false)));
+
+    // Direct boolean BoundsCheckExpr: guard fail -> valid=true, res=false across !, == false, ||
+    NodePtr bool_bce_fail(new BoundsCheckExpr(new EqualOpr(vx, new Constant(5, 8, false)), guard_fail));
+    BOOST_REQUIRE(ev.evaluate(*bool_bce_fail));
+    BOOST_REQUIRE(!ev.result().value());
+
+    NodePtr not_bool_bce(new NotOpr(bool_bce_fail));
+    BOOST_REQUIRE(ev.evaluate(*not_bool_bce));
+    BOOST_REQUIRE(!ev.result().value());
+
+    NodePtr eq_false_bce(new EqualOpr(bool_bce_fail, new Constant(false)));
+    BOOST_REQUIRE(ev.evaluate(*eq_false_bce));
+    BOOST_REQUIRE(!ev.result().value());
+
+    NodePtr or_bool_bce(new LogicalOrOpr(bool_bce_fail, new EqualOpr(vy, new Constant(1, 8, false))));
+    BOOST_REQUIRE(ev.evaluate(*or_bool_bce));
+    BOOST_REQUIRE(!ev.result().value());
+
+    // Direct non-boolean BoundsCheckExpr: guard fail -> valid=false; short-circuited in || / if_then_else -> valid=true
+    NodePtr int_bce_fail(new BoundsCheckExpr(vx, guard_fail));
+    BOOST_REQUIRE(!ev.evaluate(*int_bce_fail));
+
+    NodePtr y_eq_1_or_int_bce(
+        new LogicalOrOpr(new EqualOpr(vy, new Constant(1, 8, false)),
+                         new EqualOpr(int_bce_fail, new Constant(5, 8, false))));
+    BOOST_REQUIRE(ev.evaluate(*y_eq_1_or_int_bce));
+    BOOST_REQUIRE(ev.result().value() != 0);
+
+    NodePtr y_eq_0_or_int_bce(
+        new LogicalOrOpr(new EqualOpr(vy, new Constant(0, 8, false)),
+                         new EqualOpr(int_bce_fail, new Constant(5, 8, false))));
+    BOOST_REQUIRE(ev.evaluate(*y_eq_0_or_int_bce));
+    BOOST_REQUIRE(!ev.result().value());
+
+    NodePtr ite_skip_oob(new IfThenElse(new EqualOpr(vy, new Constant(1, 8, false)),
+                                        new Constant(42, 8, false), int_bce_fail));
+    BOOST_REQUIRE(ev.evaluate(*ite_skip_oob));
+    BOOST_REQUIRE_EQUAL(ev.result().value(), 42u);
+
+    NodePtr ite_take_oob(new IfThenElse(new EqualOpr(vy, new Constant(0, 8, false)),
+                                        new Constant(42, 8, false), int_bce_fail));
+    BOOST_REQUIRE(!ev.evaluate(*ite_take_oob));
+
+    // Guard pass -> normal evaluation
+    NodePtr bool_bce_pass(new BoundsCheckExpr(new EqualOpr(vy, new Constant(1, 8, false)), guard_pass));
+    BOOST_REQUIRE(ev.evaluate(*bool_bce_pass));
+    BOOST_REQUIRE(ev.result().value() != 0);
+    NodePtr int_bce_pass(new BoundsCheckExpr(vy, guard_pass));
+    BOOST_REQUIRE(ev.evaluate(*int_bce_pass));
+    BOOST_REQUIRE_EQUAL(ev.result().value(), 1u);
+
+    // Invalid condition in IfThenElse must return valid=false even if fallback branch is valid
+    NodePtr invalid_cond_ite(new IfThenElse(new EqualOpr(vu, new Constant(1, 8, false)),
+                                            new Constant(10, 8, false), new Constant(20, 8, false)));
+    BOOST_REQUIRE(!ev.evaluate(*invalid_cond_ite));
+
+    // A5 & guard=false preservation across /, %, <<, >>, bitslice, onehot, extend, range
+    NodePtr div_by_bce(new EqualOpr(new DevideOpr(new Constant(10, 8, false), int_bce_fail), new Constant(2, 8, false)));
+    BOOST_REQUIRE(ev.evaluate(*div_by_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr div_or_y(new LogicalOrOpr(div_by_bce, new EqualOpr(vy, new Constant(1, 8, false))));
+    BOOST_REQUIRE(ev.evaluate(*div_or_y));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr mod_by_bce(new EqualOpr(new ModuloOpr(new Constant(10, 8, false), int_bce_fail), new Constant(0, 8, false)));
+    BOOST_REQUIRE(ev.evaluate(*mod_by_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr shl_bce(new EqualOpr(new ShiftLeftOpr(new Constant(1, 8, false), int_bce_fail), new Constant(1, 8, false)));
+    BOOST_REQUIRE(ev.evaluate(*shl_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr shr_bce(new EqualOpr(new ShiftRightOpr(new Constant(4, 8, false), int_bce_fail), new Constant(4, 8, false)));
+    BOOST_REQUIRE(ev.evaluate(*shr_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr bs_bce(new EqualOpr(new Bitslice(int_bce_fail, 3, 0), new Constant(0, 4, false)));
+    BOOST_REQUIRE(ev.evaluate(*bs_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr oh_bce(new OneHotExpr(int_bce_fail));
+    BOOST_REQUIRE(ev.evaluate(*oh_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr ext_bce(new EqualOpr(new ExtendExpression(int_bce_fail, 8), new Constant(0, 16, false)));
+    BOOST_REQUIRE(ev.evaluate(*ext_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    NodePtr rng_bce(new RangeExpr(int_bce_fail, new Constant(0, 8, false), new Constant(10, 8, false)));
+    BOOST_REQUIRE(ev.evaluate(*rng_bce));
+    BOOST_REQUIRE(!ev.result().value());
+    // Non-bool root with guard=false must return evaluate() == false
+    NodePtr raw_div_bce(new DevideOpr(new Constant(10, 8, false), int_bce_fail));
+    BOOST_REQUIRE(!ev.evaluate(*raw_div_bce));
+  }
+}
+
+BOOST_AUTO_TEST_SUITE_END()

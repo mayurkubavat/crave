@@ -31,6 +31,9 @@
 #include "../crave/frontend/RandomBase.hpp"
 #include "../crave/utils/Logging.hpp"
 
+#include <atomic>
+#include <mutex>
+
 namespace crave {
 
 template <typename ostream>
@@ -44,7 +47,7 @@ ostream& operator<<(ostream& os, const ConstraintManager& set) {
 template std::ostream& operator<<<std::ostream>(std::ostream& os, const ConstraintManager& set);
 
 ConstraintManager::ConstraintManager() : changed_(false) {
-  static unsigned ID = 0;
+  static std::atomic<unsigned> ID{0};
   id_ = ++ID;
 }
 
@@ -122,8 +125,13 @@ ConstraintPtr ConstraintManager::makeConstraint(std::string const& name, int c_i
       throw std::runtime_error("Constraint " + name +
                                ": a constraint with a reduction of a vector may refer to the elements of that vector only.");
     int const vector_id = *gssv.getReducedVectors().begin();
-    auto vec_ite = vectorBaseMap.find(vector_id);
-    if (vec_ite != vectorBaseMap.end() && gssv.getSupportVars().count(vec_ite->second->size_var().id()))
+    bool has_size_var = false;
+    {
+      std::lock_guard<std::recursive_mutex> vbm_lock(vector_base_map_mutex());
+      auto vec_ite = vectorBaseMap.find(vector_id);
+      has_size_var = (vec_ite != vectorBaseMap.end() && gssv.getSupportVars().count(vec_ite->second->size_var().id()));
+    }
+    if (has_size_var)
       throw std::runtime_error("Constraint " + name +
                                ": a constraint with a reduction of a vector may not refer to the size of that vector.");
     c = std::make_shared<UserVectorConstraint>(c_id, n, name, gssv.getSupportVars(), vector_id, false, soft, cover,

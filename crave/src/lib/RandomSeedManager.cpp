@@ -27,29 +27,33 @@
 #include "../crave/RandomSeedManager.hpp"
 #include <functional>
 
+std::recursive_mutex& RandomSeedManager::mutex() {
+  static std::recursive_mutex* rng_mutex = new std::recursive_mutex();
+  return *rng_mutex;
+}
+
 RandomSeedManager::RandomSeedManager(unsigned int seed) : default_rng_(seed), seed_(seed) {}
 
 RandomSeedManager::~RandomSeedManager() {
+  std::lock_guard<std::recursive_mutex> lock(mutex());
   for(random_map_t::value_type & entry : randomMap_) { delete entry.second; }
 }
 
 void RandomSeedManager::set_global_seed(unsigned int s) {
+  std::lock_guard<std::recursive_mutex> lock(mutex());
   seed_ = s;
   default_rng_.seed(s);
 }
 
 unsigned int RandomSeedManager::get_seed() {
+  std::lock_guard<std::recursive_mutex> lock(mutex());
   return seed_;
 }
 
-#ifndef WITH_SYSTEMC
-
-std::mt19937* RandomSeedManager::get() { return &default_rng_; }
-
-#else
-
+#ifdef WITH_SYSTEMC
 #include <systemc>
 std::mt19937* RandomSeedManager::get() {
+	std::lock_guard<std::recursive_mutex> lock(mutex());
 	static std::hash<std::string> string_hash;
 	auto process = sc_core::sc_get_current_process_handle();
 	if (!process.valid())
@@ -63,4 +67,17 @@ std::mt19937* RandomSeedManager::get() {
 	return rnd;
 }
 
+#else
+
+std::mt19937* RandomSeedManager::get() { return &default_rng_; }
+
 #endif
+
+namespace crave {
+namespace {
+thread_local std::mt19937* tls_active_rng = nullptr;
+}  // namespace
+
+std::mt19937* active_rng() { return tls_active_rng; }
+void set_active_rng(std::mt19937* g) { tls_active_rng = g; }
+}  // namespace crave

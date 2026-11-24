@@ -69,6 +69,7 @@ class crv_vector : public __rand_vec<T>, public crv_object {
    * \return true
    */
   bool randomize() override {
+    ScopedRngGuard rng_guard(&this->ensure_rng_());
     __rand_vec<T>::gen_values(default_rand_vec_size());
     return true;
   }
@@ -77,37 +78,64 @@ class crv_vector : public __rand_vec<T>, public crv_object {
 
   /**
    * \brief Gets the sum of the elements as a CRAVE expression, see Vector::sum().
-   *
-   * As the sum() reduction method of SystemVerilog, it has the type of the elements, and the number of elements is
-   * the size of the vector. A constraint with it may refer to the elements of this vector only.
-   *
-   * \return sum expression of the elements in the vector
    */
-  expression sum() const { return make_expression((*this)().sum()); }
+  auto sum() const { return (*this)().sum(); }
 
   /**
    * \brief Gets the product of the elements as a CRAVE expression, see Vector::product().
-   * \return product expression of the elements in the vector
    */
-  expression product() const { return make_expression((*this)().product()); }
+  auto product() const { return (*this)().product(); }
 
   /**
    * \brief Gets the bitwise AND of the elements as a CRAVE expression, see Vector::and_().
-   * \return bitwise AND expression of the elements in the vector
    */
-  expression and_() const { return make_expression((*this)().and_()); }
+  auto and_() const { return (*this)().and_(); }
 
   /**
    * \brief Gets the bitwise OR of the elements as a CRAVE expression, see Vector::or_().
-   * \return bitwise OR expression of the elements in the vector
    */
-  expression or_() const { return make_expression((*this)().or_()); }
+  auto or_() const { return (*this)().or_(); }
 
   /**
    * \brief Gets the bitwise XOR of the elements as a CRAVE expression, see Vector::xor_().
-   * \return bitwise XOR expression of the elements in the vector
    */
-  expression xor_() const { return make_expression((*this)().xor_()); }
+  auto xor_() const { return (*this)().xor_(); }
+
+  template <typename Pred>
+  auto sum_with(Pred&& pred) const {
+    return (*this)().sum_with(std::forward<Pred>(pred));
+  }
+
+  template <typename Pred>
+  auto product_with(Pred&& pred) const {
+    return (*this)().product_with(std::forward<Pred>(pred));
+  }
+
+  template <typename Pred>
+  auto and_with(Pred&& pred) const {
+    return (*this)().and_with(std::forward<Pred>(pred));
+  }
+
+  template <typename Pred>
+  auto or_with(Pred&& pred) const {
+    return (*this)().or_with(std::forward<Pred>(pred));
+  }
+
+  template <typename Pred>
+  auto xor_with(Pred&& pred) const {
+    return (*this)().xor_with(std::forward<Pred>(pred));
+  }
+
+  template <typename Pred>
+  auto with(Pred&& pred) const {
+    return (*this)().with(std::forward<Pred>(pred));
+  }
+
+ protected:
+  void collect_var_ids_for_randstate_(std::vector<unsigned>& out) const override {
+    out.push_back(static_cast<unsigned>(__rand_vec<T>::id()));
+    out.push_back(static_cast<unsigned>(__rand_vec<T>::size_var().id()));
+  }
 };
 
 }  // namespace crave

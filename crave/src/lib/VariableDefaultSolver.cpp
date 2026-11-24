@@ -28,14 +28,17 @@
 #include "../crave/utils/Logging.hpp"
 #include "RandomShuffle.hpp"
 
+#include <atomic>
 #include <set>
 #include <functional>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <typeinfo>
 #include <random>
+#include <unordered_map>
 
 #include "BddSampler.hpp"
 #include "../crave/backend/SolveOrder.hpp"
@@ -47,12 +50,20 @@ extern RandomSeedManager rng;
 extern std::function<bool(void)> random_bit;
 
 namespace {
+unsigned canonicalId(std::unordered_map<unsigned, unsigned>& canon_ids, unsigned raw_id) {
+  auto it = canon_ids.find(raw_id);
+  if (it != canon_ids.end()) return it->second;
+  unsigned const next = static_cast<unsigned>(canon_ids.size());
+  canon_ids.emplace(raw_id, next);
+  return next;
+}
+
 // writes the structure of an expression, which identifies the constraints of a cycle of a randc variable
-void writeSignature(Node const& n, std::ostream& os) {
+void writeSignature(Node const& n, std::ostream& os, std::unordered_map<unsigned, unsigned>& canon_ids) {
   os << typeid(n).name();
-  if (VariableExpr const* v = dynamic_cast<VariableExpr const*>(&n)) os << '#' << v->id();
-  if (VectorExpr const* v = dynamic_cast<VectorExpr const*>(&n)) os << '#' << v->id();
-  if (Placeholder const* p = dynamic_cast<Placeholder const*>(&n)) os << '#' << p->id();
+  if (VariableExpr const* v = dynamic_cast<VariableExpr const*>(&n)) os << '#' << canonicalId(canon_ids, v->id());
+  if (VectorExpr const* v = dynamic_cast<VectorExpr const*>(&n)) os << '#' << canonicalId(canon_ids, v->id());
+  if (Placeholder const* p = dynamic_cast<Placeholder const*>(&n)) os << '#' << canonicalId(canon_ids, p->id());
   if (Terminal const* t = dynamic_cast<Terminal const*>(&n)) os << ':' << t->bitsize() << (t->sign() ? 's' : 'u');
   if (Constant const* c = dynamic_cast<Constant const*>(&n)) os << '=' << c->value();
   if (ExtendExpression const* e = dynamic_cast<ExtendExpression const*>(&n)) os << '+' << e->value();
@@ -64,17 +75,17 @@ void writeSignature(Node const& n, std::ostream& os) {
   }
   os << '(';
   if (UnaryExpression const* u = dynamic_cast<UnaryExpression const*>(&n)) {
-    writeSignature(*u->child(), os);
+    writeSignature(*u->child(), os, canon_ids);
   } else if (BinaryExpression const* b = dynamic_cast<BinaryExpression const*>(&n)) {
-    writeSignature(*b->lhs(), os);
+    writeSignature(*b->lhs(), os, canon_ids);
     os << ',';
-    writeSignature(*b->rhs(), os);
+    writeSignature(*b->rhs(), os, canon_ids);
   } else if (TernaryExpression const* t = dynamic_cast<TernaryExpression const*>(&n)) {
-    writeSignature(*t->a(), os);
+    writeSignature(*t->a(), os, canon_ids);
     os << ',';
-    writeSignature(*t->b(), os);
+    writeSignature(*t->b(), os, canon_ids);
     os << ',';
-    writeSignature(*t->c(), os);
+    writeSignature(*t->c(), os, canon_ids);
   }
   os << ')';
 }
@@ -153,8 +164,11 @@ Constant keyValue(VariableExpr const& var, uint64_t key) {
 Constant randomValue(VariableExpr const& var) {
   if (var.isBool()) return Constant(random_unsigned(2) != 0);
   unsigned const width = var.bitsize();
-  uint64_t value = 0;
-  for (unsigned bits = 0; bits < width; bits += 32) value = (value << 32) | (*rng.get())();
+  uint64_t value = with_active_or_global_rng([width](std::mt19937& gen) {
+    uint64_t v = 0;
+    for (unsigned bits = 0; bits < width; bits += 32) v = (v << 32) | gen();
+    return v;
+  });
   if (width < 64) value &= (uint64_t(1) << width) - 1;
   return Constant(signExtend(var, value), width, var.sign());
 }
@@ -169,13 +183,35 @@ void startCycle(RandcState& state, unsigned width) {
 }
 }  // namespace
 
+namespace {
+std::atomic<std::size_t> g_analyse_hards_count{0};
+std::atomic<std::size_t> g_solver_build_count{0};
+}  // namespace
+
 bool VariableDefaultSolver::bypass_constraint_analysis = false;
 
 unsigned VariableDefaultSolver::complexity_limit_for_bdd = 400;
 
+std::size_t VariableDefaultSolver::analyse_hards_count() {
+  return g_analyse_hards_count.load(std::memory_order_relaxed);
+}
+
+void VariableDefaultSolver::reset_analyse_hards_count() {
+  g_analyse_hards_count.store(0, std::memory_order_relaxed);
+}
+
+std::size_t VariableDefaultSolver::solver_build_count() {
+  return g_solver_build_count.load(std::memory_order_relaxed);
+}
+
+void VariableDefaultSolver::reset_solver_build_count() {
+  g_solver_build_count.store(0, std::memory_order_relaxed);
+}
+
 VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, const ConstraintPartition& cp,
                                              std::vector<std::vector<int> > const& solve_levels)
     : VariableSolver(vcon, cp) {
+  g_solver_build_count.fetch_add(1, std::memory_order_relaxed);
   LOG(INFO) << "Create solver for partition " << constr_pttn_;
 
   // the ordering of the variables, which are not in this partition, does not change the distribution
@@ -200,11 +236,10 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
 
   if (bypass_constraint_analysis) return;
 
-  analyseConstraints();
-
   std::set<int> vars_with_dist;
   std::set<int> vars_with_user_dist;
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     assert(var_ctn_.dist_ref_to_var_map.find(pair.first) != var_ctn_.dist_ref_to_var_map.end());
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     vars_with_dist.insert(var_id);
@@ -259,6 +294,7 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   // A distribution of the user or a BDD sampler replaces the default distribution of a variable.
   // Without them, e.g. if the constraints are too complex for a BDD, it stays in effect.
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (var_ctn_.implicit_dist_references.count(pair.first) == 0) continue;
     int var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     if (vars_with_user_dist.count(var_id) || bdd_samplers_.count(var_id) || inside_samplers_.count(var_id))
@@ -274,29 +310,78 @@ VariableDefaultSolver::VariableDefaultSolver(const VariableContainer& vcon, cons
   }
 }
 
-void VariableDefaultSolver::analyseConstraints() {
-  analyseHards();
-  if (contradictions_.empty()) {
-    analyseSofts();
-    LOG(INFO) << "Partition is solvable with " << inactive_softs_.size() << " soft constraint(s) deactivated:";
-
-    for(std::string & s : inactive_softs_) { LOG(INFO) << " " << s; }
-  } else {
-    LOG(INFO) << "Partition has unsatisfiable hard constraints:";
-    unsigned cnt = 0;
-
-    for(std::vector<std::string> & vs : contradictions_) {
-      LOG(INFO) << "  set #" << ++cnt;
-
-      for(std::string & s : vs) { LOG(INFO) << "   " << s; }
+bool VariableDefaultSolver::readRefsUnchanged() const {
+  if (analysed_read_refs_.size() != var_ctn_.read_references.size()) return false;
+  for (std::size_t i = 0; i < var_ctn_.read_references.size(); ++i) {
+    Constant cur = var_ctn_.read_references[i].second->constantValue();
+    Constant const& prev = analysed_read_refs_[i];
+    if (cur.value() != prev.value() || cur.bitsize() != prev.bitsize() || cur.sign() != prev.sign()) {
+      return false;
     }
   }
+  return true;
+}
+
+std::vector<std::vector<std::string> > VariableDefaultSolver::getContradictions() const {
+  if (!hards_analysed_ || !readRefsUnchanged()) {
+    analyseHards();
+  }
+  return contradictions_;
+}
+
+std::vector<std::string> VariableDefaultSolver::getInactiveSofts() const {
+  if (!solve_attempted_ && (!softs_analysed_ || !readRefsUnchanged())) {
+    if (!soft_constraints_.empty() && getContradictions().empty()) {
+      for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+        solver_->makeAssumption(*pair.second->expr());
+      }
+      analyseSofts();
+    } else {
+      inactive_softs_.clear();
+    }
+    softs_analysed_ = true;
+  }
+  return inactive_softs_;
+}
+
+bool VariableDefaultSolver::solveCover(std::set<std::string> const& skip_covers, std::string* hit_name) {
+  if (hit_name) hit_name->clear();
+  solve_attempted_ = true;
+  has_solution_ = false;
+  if (hards_analysed_ && readRefsUnchanged() && !contradictions_.empty()) {
+    inactive_softs_.clear();
+    LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
+    return false;
+  }
+  randc_undo_.clear();
+
+  for (ConstraintPtr c : constr_pttn_) {
+    if (!c->isCover()) continue;
+    if (skip_covers.count(c->name())) continue;
+    std::vector<NodePtr> assumptions(1, c->expr());
+    if (solveWith(assumptions, RandcMap(), false)) {
+      if (soft_constraints_.empty())
+        inactive_softs_.clear();
+      else
+        updateInactiveSofts(solver_->getInactiveSofts());
+      has_solution_ = true;
+      for (VariableContainer::WriteRefPair& pair : var_ctn_.write_references) {
+        solver_->read(*var_ctn_.variables[pair.first], *pair.second);
+      }
+      if (hit_name) *hit_name = c->name();
+      LOG(INFO) << "Solve partition " << constr_pttn_ << " hitting constraint " << c->name();
+      return true;
+    }
+  }
+  return solve();
 }
 
 bool VariableDefaultSolver::solve() {
   LOG(INFO) << "Solve constraints in partition " << constr_pttn_;
+  solve_attempted_ = true;
   has_solution_ = false;
-  if (!contradictions_.empty()) {
+  if (hards_analysed_ && readRefsUnchanged() && !contradictions_.empty()) {
+    inactive_softs_.clear();
     LOG(INFO) << "Failed because partition has been analyzed to be unsolvable";
     return false;
   }
@@ -309,6 +394,7 @@ bool VariableDefaultSolver::solve() {
   }
   // As in SystemVerilog, a randc variable must not have a distribution.
   for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (!var_ctn_.user_dist_references.count(pair.first)) continue;
     if (randc.count(var_ctn_.dist_ref_to_var_map.at(pair.first)))
       throw std::runtime_error("A randc variable must not have a distribution.");
@@ -401,6 +487,7 @@ bool VariableDefaultSolver::solveWith(std::vector<NodePtr> const& assumptions, R
   }
 
   for(VariableContainer::ReadRefPair & pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (replaced_dist_refs_.count(pair.first)) continue;
     int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     if (randc.count(var_id) || (ordered_vars_.count(var_id) && !unordered_vars_.count(var_id))) continue;
@@ -566,6 +653,7 @@ bool VariableDefaultSolver::solveRandc(int id, RandcState& state, std::vector<No
       listed.push_back(value);
     }
     if (listed.empty()) continue;
+    std::sort(listed.begin(), listed.end());
     state.complete = listed.size() < randc_max_listed;
     state.listed.swap(listed);
     if (tryValues(state.listed, randc_max_listed)) return true;
@@ -599,6 +687,7 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
   // a variable with a distribution by dist() takes the values of its distribution
   std::vector<std::shared_ptr<ReferenceExpression> > dists(level.size());
   for (VariableContainer::ReadRefPair& pair : var_ctn_.dist_references) {
+    if (!constr_pttn_.supportSet().count(pair.first)) continue;
     if (!var_ctn_.user_dist_references.count(pair.first)) continue;
     int const var_id = var_ctn_.dist_ref_to_var_map.at(pair.first);
     std::vector<int>::const_iterator ite = std::find(level.begin(), level.end(), var_id);
@@ -654,7 +743,10 @@ bool VariableDefaultSolver::solveLevel(std::size_t index, std::vector<NodePtr>& 
     for (unsigned tries = 0; tries < solve_before_max_tries; ++tries) {
       for (std::size_t i = 0; i < vars.size(); ++i) {
         VariableExpr const& v = static_cast<VariableExpr const&>(*vars[i]);
-        uint64_t const key = std::uniform_int_distribution<uint64_t>(bounds[i].first, bounds[i].second)(*rng.get());
+        uint64_t const lo = bounds[i].first;
+        uint64_t const hi = bounds[i].second;
+        uint64_t const key = with_active_or_global_rng(
+            [lo, hi](std::mt19937& g) { return std::uniform_int_distribution<uint64_t>(lo, hi)(g); });
         assumptions.push_back(new EqualOpr(vars[i], new Constant(keyValue(v, key))));
       }
       if (feasible(assumptions)) return true;
@@ -762,10 +854,11 @@ bool VariableDefaultSolver::feasible(std::vector<NodePtr> const& assumptions) {
 std::string const& VariableDefaultSolver::signature() {
   if (signature_.empty()) {
     std::ostringstream os;
+    std::unordered_map<unsigned, unsigned> canon_ids;
     for (ConstraintPtr c : constr_pttn_) {
       if (c->isCover()) continue;
       os << (c->isSoft() ? "soft " : "");
-      writeSignature(*c->expr(), os);
+      writeSignature(*c->expr(), os, canon_ids);
       os << ';';
     }
     signature_ = os.str();
@@ -773,35 +866,50 @@ std::string const& VariableDefaultSolver::signature() {
   return signature_;
 }
 
-void VariableDefaultSolver::analyseHards() {
-  std::unique_ptr<metaSMTVisitor> solver(FactoryMetaSMT::getNewInstance());
+void VariableDefaultSolver::analyseHards() const {
+  g_analyse_hards_count.fetch_add(1, std::memory_order_relaxed);
+  contradictions_.clear();
+  analysed_read_refs_.clear();
+  analysed_read_refs_.reserve(var_ctn_.read_references.size());
 
   std::map<unsigned int, NodePtr> s;
   std::vector<std::string> out;
-  std::vector<std::vector<unsigned int> > results;
 
-  for(ConstraintPtr c : constr_pttn_) {
+  for (ConstraintPtr c : constr_pttn_) {
     if (!c->isSoft() && !c->isCover()) {
       s.insert(std::make_pair(s.size(), c->expr()));
       out.push_back(c->name());
     }
   }
-  results = solver->analyseContradiction(s);
 
-  for(std::vector<unsigned int> result : results) {
-    std::vector<std::string> vec;
-
-    for(unsigned int i : result) { vec.push_back(out[i]); }
-    contradictions_.push_back(vec);
+  for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+    analysed_read_refs_.push_back(pair.second->constantValue());
   }
+
+  if (!s.empty()) {
+    std::unique_ptr<metaSMTVisitor> solver(FactoryMetaSMT::getNewInstance());
+    for (VariableContainer::ReadRefPair const& pair : var_ctn_.read_references) {
+      solver->makeAssertion(*pair.second->expr());
+    }
+    std::vector<std::vector<unsigned int> > results = solver->analyseContradiction(s);
+
+    for (std::vector<unsigned int> const& result : results) {
+      std::vector<std::string> vec;
+      for (unsigned int i : result) {
+        vec.push_back(out[i]);
+      }
+      contradictions_.push_back(vec);
+    }
+  }
+  hards_analysed_ = true;
 }
 
-void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) {
+void VariableDefaultSolver::updateInactiveSofts(std::vector<unsigned int> const& inactive_indices) const {
   inactive_softs_.clear();
   for (unsigned int idx : inactive_indices) {
     if (idx < soft_constraints_.size()) inactive_softs_.push_back(soft_constraints_[idx]->name());
   }
 }
 
-void VariableDefaultSolver::analyseSofts() { updateInactiveSofts(solver_->resolveSofts()); }
+void VariableDefaultSolver::analyseSofts() const { updateInactiveSofts(solver_->resolveSofts()); }
 }

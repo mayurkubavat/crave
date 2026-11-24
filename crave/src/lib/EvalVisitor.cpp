@@ -36,6 +36,11 @@ namespace crave {
 namespace {
 uint64_t mask(unsigned width) { return width >= 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1; }
 
+uint64_t evalUnsignedBits(Constant const& c) {
+  if (c.isBool()) return c.value() ? 1ULL : 0ULL;
+  return c.value() & mask(c.bitsize());
+}
+
 bool isNegative(Constant const& c) { return c.sign() && !c.isBool() && (c.value() >> 63) != 0; }
 
 __int128 toInt128(Constant const& c) {
@@ -61,7 +66,7 @@ int compare(Constant const& a, Constant const& b) {
 void EvalVisitor::pushExact(uint64_t value, unsigned width, bool sign, bool valid) {
   value &= mask(width);
   if (sign && width > 0 && width < 64 && ((value >> (width - 1)) & 1)) value |= ~mask(width);
-  exprStack_.push(std::make_pair(Constant(value, width, sign), valid));
+  exprStack_.push(StackEntry{Constant(value, width, sign), valid, true});
 }
 
 // evaluates the arithmetic and bitwise operators in the exact mode, as the solver does
@@ -69,9 +74,10 @@ bool EvalVisitor::exactBinExpr(BinaryExpression const& b) {
   if (!exact_) return false;
   stack_entry lhs, rhs;
   evalBinExpr(b, lhs, rhs);
-  Constant const& l = lhs.first;
-  Constant const& r = rhs.first;
-  bool valid = lhs.second && rhs.second;
+  Constant const& l = lhs.value;
+  Constant const& r = rhs.value;
+  bool valid = lhs.valid && rhs.valid;
+  bool guard = lhs.guard && rhs.guard;
   unsigned const width = l.bitsize();
   bool const sign = l.sign() || r.sign();
   uint64_t value = 0;
@@ -89,8 +95,16 @@ bool EvalVisitor::exactBinExpr(BinaryExpression const& b) {
     value = l.value() * r.value();
   } else if (dynamic_cast<DevideOpr const*>(&b) || dynamic_cast<ModuloOpr const*>(&b)) {
     bool const divide = dynamic_cast<DevideOpr const*>(&b) != 0;
+    if (!valid) {
+      exprStack_.push(StackEntry{Constant(), false, guard});
+      return true;
+    }
+    if (!guard) {
+      exprStack_.push(StackEntry{Constant(0, width > 0 ? width : 1u, sign), true, false});
+      return true;
+    }
     if (r.value() == 0) {
-      exprStack_.push(std::make_pair(Constant(), false));
+      exprStack_.push(StackEntry{Constant(), false, guard});
       return true;
     }
     // as the solver, a division is signed if both operands are signed, a remainder if its dividend is
@@ -110,16 +124,18 @@ bool EvalVisitor::exactBinExpr(BinaryExpression const& b) {
     // shifts, whose type is the type of the left operand; a right shift is a logical shift
     uint64_t const amount = r.value() & mask(r.bitsize());
     uint64_t const v = l.value() & mask(width);
-    if (amount >= width)
+    if (amount >= width || amount >= 64)
       value = 0;
     else if (dynamic_cast<ShiftLeftOpr const*>(&b))
       value = v << amount;
     else
       value = v >> amount;
     pushExact(value, width, l.sign(), valid);
+    exprStack_.top().guard = guard;
     return true;
   }
   pushExact(value, width, sign, valid);
+  exprStack_.top().guard = guard;
   return true;
 }
 
@@ -128,8 +144,8 @@ bool EvalVisitor::exactCompare(BinaryExpression const& b) {
   if (!exact_) return false;
   stack_entry lhs, rhs;
   evalBinExpr(b, lhs, rhs);
-  Constant const& l = lhs.first;
-  Constant const& r = rhs.first;
+  Constant const& l = lhs.value;
+  Constant const& r = rhs.value;
   bool result;
   if (dynamic_cast<EqualOpr const*>(&b) || dynamic_cast<NotEqualOpr const*>(&b)) {
     uint64_t const m = mask(std::max(l.bitsize(), r.bitsize()));
@@ -145,7 +161,7 @@ bool EvalVisitor::exactCompare(BinaryExpression const& b) {
     else
       result = c >= 0;
   }
-  exprStack_.push(std::make_pair(Constant(result), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(result), lhs.valid && rhs.valid, lhs.guard && rhs.guard});
   return true;
 }
 
@@ -177,25 +193,25 @@ void EvalVisitor::visitVariableExpr(const VariableExpr& v) {
   if (ite != evalMap_->end())
     visitConstant(ite->second);
   else
-    exprStack_.push(std::make_pair(Constant(), false));
+    exprStack_.push(StackEntry{Constant(), false, true});
 }
 
 void EvalVisitor::visitConstant(const Constant& c) {
   if (exact_ && !c.isBool())
     pushExact(c.value(), c.bitsize(), c.sign(), true);
   else
-    exprStack_.push(std::make_pair(c, true));
+    exprStack_.push(StackEntry{c, true, true});
 }
 
 // The elements of a vector are not assigned, so its reduction has no value.
-void EvalVisitor::visitVectorReduction(const VectorReduction&) { exprStack_.push(std::make_pair(Constant(), false)); }
+void EvalVisitor::visitVectorReduction(const VectorReduction&) { exprStack_.push(StackEntry{Constant(), false, true}); }
 
 void EvalVisitor::visitVectorExpr(const VectorExpr& v) {
   eval_map::const_iterator ite(evalMap_->find(v.id()));
   if (ite != evalMap_->end())
     visitConstant(ite->second);
   else
-    exprStack_.push(std::make_pair(Constant(), false));
+    exprStack_.push(StackEntry{Constant(), false, true});
 }
 
 void EvalVisitor::visitNotOpr(const NotOpr& n) {
@@ -204,7 +220,7 @@ void EvalVisitor::visitNotOpr(const NotOpr& n) {
   stack_entry e;
   pop(e);
 
-  exprStack_.push(std::make_pair(Constant(!e.first.value()), e.second));
+  exprStack_.push(StackEntry{Constant(evalUnsignedBits(e.value) == 0), e.valid, e.guard});
 }
 
 void EvalVisitor::visitNegOpr(const NegOpr& n) {
@@ -213,10 +229,12 @@ void EvalVisitor::visitNegOpr(const NegOpr& n) {
   stack_entry e;
   pop(e);
 
-  if (exact_)
-    pushExact(uint64_t(0) - e.first.value(), e.first.bitsize(), e.first.sign(), e.second);
-  else
-    exprStack_.push(std::make_pair(Constant(-e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
+  if (exact_) {
+    pushExact(uint64_t(0) - e.value.value(), e.value.bitsize(), e.value.sign(), e.valid);
+    exprStack_.top().guard = e.guard;
+  } else {
+    exprStack_.push(StackEntry{Constant(-e.value.value(), e.value.bitsize(), e.value.sign()), e.valid, e.guard});
+  }
 }
 
 void EvalVisitor::visitComplementOpr(const ComplementOpr& c) {
@@ -225,10 +243,12 @@ void EvalVisitor::visitComplementOpr(const ComplementOpr& c) {
   stack_entry e;
   pop(e);
 
-  if (exact_)
-    pushExact(~e.first.value(), e.first.bitsize(), e.first.sign(), e.second);
-  else
-    exprStack_.push(std::make_pair(Constant(~e.first.value(), e.first.bitsize(), e.first.sign()), e.second));
+  if (exact_) {
+    pushExact(~e.value.value(), e.value.bitsize(), e.value.sign(), e.valid);
+    exprStack_.top().guard = e.guard;
+  } else {
+    exprStack_.push(StackEntry{Constant(~e.value.value(), e.value.bitsize(), e.value.sign()), e.valid, e.guard});
+  }
 }
 
 void EvalVisitor::visitInside(const Inside& i) {
@@ -239,11 +259,11 @@ void EvalVisitor::visitInside(const Inside& i) {
 
   bool result = false;
 
-  uint64_t const m = exact_ ? mask(e.first.bitsize()) : ~uint64_t(0);
+  uint64_t const m = exact_ ? mask(e.value.bitsize()) : ~uint64_t(0);
   for (std::set<Constant>::iterator ite = i.collection().begin(); ite != i.collection().end(); ++ite)
-    if ((ite->value() & m) == (e.first.value() & m)) result = true;
+    if ((ite->value() & m) == (e.value.value() & m)) result = true;
 
-  exprStack_.push(std::make_pair(Constant(result), e.second));
+  exprStack_.push(StackEntry{Constant(result), e.valid, e.guard});
 }
 
 void EvalVisitor::visitExtendExpr(const ExtendExpression& e) {
@@ -252,14 +272,15 @@ void EvalVisitor::visitExtendExpr(const ExtendExpression& e) {
   stack_entry entry;
   pop(entry);
 
-  Constant const& child = entry.first;
+  Constant const& child = entry.value;
   if (exact_) {
     // the value of the child is already sign-extended if it is signed
-    pushExact(child.value(), child.bitsize() + e.value(), child.sign(), entry.second);
+    pushExact(child.value(), child.bitsize() + e.value(), child.sign(), entry.valid);
+    exprStack_.top().guard = entry.guard;
     return;
   }
   Constant constant(child.value(), child.bitsize() + e.value(), child.sign());
-  exprStack_.push(std::make_pair(constant, entry.second));
+  exprStack_.push(StackEntry{constant, entry.valid, entry.guard});
 }
 
 void EvalVisitor::visitAndOpr(const AndOpr& a) {
@@ -267,9 +288,10 @@ void EvalVisitor::visitAndOpr(const AndOpr& a) {
   stack_entry lhs, rhs;
   evalBinExpr(a, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() & rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() & rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitOrOpr(const OrOpr& o) {
@@ -277,23 +299,63 @@ void EvalVisitor::visitOrOpr(const OrOpr& o) {
   stack_entry lhs, rhs;
   evalBinExpr(o, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() | rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() | rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitLogicalAndOpr(const LogicalAndOpr& la) {
-  stack_entry lhs, rhs;
-  evalBinExpr(la, lhs, rhs);
-
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() && rhs.first.value()), lhs.second && rhs.second));
+  la.lhs()->visit(this);
+  stack_entry lhs;
+  pop(lhs);
+  if (!lhs.valid) {
+    exprStack_.push(StackEntry{Constant(false), false, false});
+    return;
+  }
+  if (!lhs.guard) {
+    exprStack_.push(StackEntry{Constant(false), true, false});
+    return;
+  }
+  if (evalUnsignedBits(lhs.value) == 0) {
+    exprStack_.push(StackEntry{Constant(false), true, true});
+    return;
+  }
+  la.rhs()->visit(this);
+  stack_entry rhs;
+  pop(rhs);
+  exprStack_.push(StackEntry{Constant(evalUnsignedBits(rhs.value) != 0), rhs.valid, rhs.guard});
 }
 
 void EvalVisitor::visitLogicalOrOpr(const LogicalOrOpr& lo) {
-  stack_entry lhs, rhs;
-  evalBinExpr(lo, lhs, rhs);
+  lo.lhs()->visit(this);
+  stack_entry lhs;
+  pop(lhs);
+  if (!lhs.valid) {
+    exprStack_.push(StackEntry{Constant(false), false, false});
+    return;
+  }
+  if (!lhs.guard) {
+    exprStack_.push(StackEntry{Constant(false), true, false});
+    return;
+  }
+  if (evalUnsignedBits(lhs.value) != 0) {
+    exprStack_.push(StackEntry{Constant(true), true, true});
+    return;
+  }
+  lo.rhs()->visit(this);
+  stack_entry rhs;
+  pop(rhs);
+  exprStack_.push(StackEntry{Constant(evalUnsignedBits(rhs.value) != 0), rhs.valid, rhs.guard});
+}
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() || rhs.first.value()), lhs.second && rhs.second));
+void EvalVisitor::visitLogicalIffOpr(const LogicalIffOpr& liff) {
+  stack_entry lhs, rhs;
+  evalBinExpr(liff, lhs, rhs);
+
+  exprStack_.push(StackEntry{
+      Constant((evalUnsignedBits(lhs.value) != 0) == (evalUnsignedBits(rhs.value) != 0)),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitXorOpr(const XorOpr& x) {
@@ -301,9 +363,10 @@ void EvalVisitor::visitXorOpr(const XorOpr& x) {
   stack_entry lhs, rhs;
   evalBinExpr(x, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() ^ rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() ^ rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
@@ -311,7 +374,8 @@ void EvalVisitor::visitEqualOpr(const EqualOpr& eq) {
   stack_entry lhs, rhs;
   evalBinExpr(eq, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() == rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(lhs.value.value() == rhs.value.value()), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitNotEqualOpr(const NotEqualOpr& neq) {
@@ -319,7 +383,8 @@ void EvalVisitor::visitNotEqualOpr(const NotEqualOpr& neq) {
   stack_entry lhs, rhs;
   evalBinExpr(neq, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() != rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(lhs.value.value() != rhs.value.value()), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitLessOpr(const LessOpr& l) {
@@ -327,7 +392,8 @@ void EvalVisitor::visitLessOpr(const LessOpr& l) {
   stack_entry lhs, rhs;
   evalBinExpr(l, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() < rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(compare(lhs.value, rhs.value) < 0), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitLessEqualOpr(const LessEqualOpr& le) {
@@ -335,7 +401,8 @@ void EvalVisitor::visitLessEqualOpr(const LessEqualOpr& le) {
   stack_entry lhs, rhs;
   evalBinExpr(le, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() <= rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(compare(lhs.value, rhs.value) <= 0), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitGreaterOpr(const GreaterOpr& g) {
@@ -343,7 +410,8 @@ void EvalVisitor::visitGreaterOpr(const GreaterOpr& g) {
   stack_entry lhs, rhs;
   evalBinExpr(g, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() > rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(compare(lhs.value, rhs.value) > 0), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) {
@@ -351,7 +419,8 @@ void EvalVisitor::visitGreaterEqualOpr(const GreaterEqualOpr& ge) {
   stack_entry lhs, rhs;
   evalBinExpr(ge, lhs, rhs);
 
-  exprStack_.push(std::make_pair(Constant(lhs.first.value() >= rhs.first.value()), lhs.second && rhs.second));
+  exprStack_.push(StackEntry{Constant(compare(lhs.value, rhs.value) >= 0), lhs.valid && rhs.valid,
+                             lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitPlusOpr(const PlusOpr& p) {
@@ -359,9 +428,10 @@ void EvalVisitor::visitPlusOpr(const PlusOpr& p) {
   stack_entry lhs, rhs;
   evalBinExpr(p, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() + rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() + rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitMinusOpr(const MinusOpr& m) {
@@ -369,9 +439,10 @@ void EvalVisitor::visitMinusOpr(const MinusOpr& m) {
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() - rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() - rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitMultipliesOpr(const MultipliesOpr& m) {
@@ -379,9 +450,10 @@ void EvalVisitor::visitMultipliesOpr(const MultipliesOpr& m) {
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() * rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  exprStack_.push(StackEntry{
+      Constant(lhs.value.value() * rhs.value.value(), std::max(lhs.value.bitsize(), rhs.value.bitsize()),
+               lhs.value.sign() || rhs.value.sign()),
+      lhs.valid && rhs.valid, lhs.guard && rhs.guard});
 }
 
 void EvalVisitor::visitDevideOpr(const DevideOpr& d) {
@@ -389,22 +461,38 @@ void EvalVisitor::visitDevideOpr(const DevideOpr& d) {
   stack_entry lhs, rhs;
   evalBinExpr(d, lhs, rhs);
 
+  if (!lhs.valid || !rhs.valid) {
+    exprStack_.push(StackEntry{Constant(), false, lhs.guard && rhs.guard});
+    return;
+  }
+  unsigned const width = std::max(lhs.value.bitsize(), rhs.value.bitsize());
+  bool const sign = lhs.value.sign() || rhs.value.sign();
+  if (!lhs.guard || !rhs.guard) {
+    exprStack_.push(StackEntry{Constant(0, width > 0 ? width : 1u, sign), true, false});
+    return;
+  }
+
   bool result;
   Constant constant;
 
-  if (0 == rhs.first.value()) {
+  if (0 == rhs.value.value()) {
     result = false;
     constant = Constant();
   } else {
-    result = lhs.second && rhs.second;
+    result = true;
 
-    if (lhs.first.sign() || rhs.first.sign())
-      constant = Constant(static_cast<long long>(lhs.first.value()) / static_cast<long long>(rhs.first.value()),
-                          lhs.first.bitsize(), true);
-    else
-      constant = Constant(lhs.first.value() / rhs.first.value(), lhs.first.bitsize(), false);
+    if (sign) {
+      long long const x = static_cast<long long>(lhs.value.value());
+      long long const y = static_cast<long long>(rhs.value.value());
+      if (y == -1)
+        constant = Constant(static_cast<uint64_t>(0) - lhs.value.value(), width, true);
+      else
+        constant = Constant(x / y, width, true);
+    } else {
+      constant = Constant(lhs.value.value() / rhs.value.value(), width, false);
+    }
   }
-  exprStack_.push(std::make_pair(constant, result));
+  exprStack_.push(StackEntry{constant, result, true});
 }
 
 void EvalVisitor::visitModuloOpr(const ModuloOpr& m) {
@@ -412,22 +500,38 @@ void EvalVisitor::visitModuloOpr(const ModuloOpr& m) {
   stack_entry lhs, rhs;
   evalBinExpr(m, lhs, rhs);
 
+  if (!lhs.valid || !rhs.valid) {
+    exprStack_.push(StackEntry{Constant(), false, lhs.guard && rhs.guard});
+    return;
+  }
+  unsigned const width = std::max(lhs.value.bitsize(), rhs.value.bitsize());
+  bool const sign = lhs.value.sign() || rhs.value.sign();
+  if (!lhs.guard || !rhs.guard) {
+    exprStack_.push(StackEntry{Constant(0, width > 0 ? width : 1u, sign), true, false});
+    return;
+  }
+
   bool result;
   Constant constant;
 
-  if (0 == rhs.first.value()) {
+  if (0 == rhs.value.value()) {
     result = false;
     constant = Constant();
   } else {
-    result = lhs.second && rhs.second;
+    result = true;
 
-    if (lhs.first.sign() || rhs.first.sign())
-      constant = Constant(static_cast<long long>(lhs.first.value()) % static_cast<long long>(rhs.first.value()),
-                          lhs.first.bitsize(), true);
-    else
-      constant = Constant(lhs.first.value() % rhs.first.value(), lhs.first.bitsize(), false);
+    if (sign) {
+      long long const x = static_cast<long long>(lhs.value.value());
+      long long const y = static_cast<long long>(rhs.value.value());
+      if (y == -1)
+        constant = Constant(0, width, true);
+      else
+        constant = Constant(x % y, width, true);
+    } else {
+      constant = Constant(lhs.value.value() % rhs.value.value(), width, false);
+    }
   }
-  exprStack_.push(std::make_pair(constant, result));
+  exprStack_.push(StackEntry{constant, result, true});
 }
 
 void EvalVisitor::visitShiftLeftOpr(const ShiftLeftOpr& shl) {
@@ -435,9 +539,19 @@ void EvalVisitor::visitShiftLeftOpr(const ShiftLeftOpr& shl) {
   stack_entry lhs, rhs;
   evalBinExpr(shl, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() << rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  if (!lhs.valid || !rhs.valid) {
+    exprStack_.push(StackEntry{Constant(), false, lhs.guard && rhs.guard});
+    return;
+  }
+  unsigned const width = std::max(lhs.value.bitsize(), rhs.value.bitsize());
+  bool const sign = lhs.value.sign() || rhs.value.sign();
+  if (!lhs.guard || !rhs.guard) {
+    exprStack_.push(StackEntry{Constant(0, width > 0 ? width : 1u, sign), true, false});
+    return;
+  }
+  uint64_t const amt = rhs.value.value();
+  uint64_t const val = (amt >= 64) ? 0ULL : (lhs.value.value() << amt);
+  exprStack_.push(StackEntry{Constant(val, width, sign), true, true});
 }
 
 void EvalVisitor::visitShiftRightOpr(const ShiftRightOpr& shr) {
@@ -445,9 +559,19 @@ void EvalVisitor::visitShiftRightOpr(const ShiftRightOpr& shr) {
   stack_entry lhs, rhs;
   evalBinExpr(shr, lhs, rhs);
 
-  exprStack_.push(std::make_pair(
-      Constant(lhs.first.value() >> rhs.first.value(), lhs.first.bitsize(), lhs.first.sign() || rhs.first.sign()),
-      lhs.second && rhs.second));
+  if (!lhs.valid || !rhs.valid) {
+    exprStack_.push(StackEntry{Constant(), false, lhs.guard && rhs.guard});
+    return;
+  }
+  unsigned const width = std::max(lhs.value.bitsize(), rhs.value.bitsize());
+  bool const sign = lhs.value.sign() || rhs.value.sign();
+  if (!lhs.guard || !rhs.guard) {
+    exprStack_.push(StackEntry{Constant(0, width > 0 ? width : 1u, sign), true, false});
+    return;
+  }
+  uint64_t const amt = rhs.value.value();
+  uint64_t const val = (amt >= 64) ? 0ULL : (lhs.value.value() >> amt);
+  exprStack_.push(StackEntry{Constant(val, width, sign), true, true});
 }
 
 void EvalVisitor::visitVectorAccess(const VectorAccess&) {
@@ -459,13 +583,21 @@ void EvalVisitor::visitForEach(const ForEach&) {
 void EvalVisitor::visitUnique(const Unique&) { throw std::runtime_error("Unique is not allowed in EvalVisitor."); }
 
 void EvalVisitor::visitIfThenElse(const IfThenElse& ite) {
-  stack_entry a, b, c;
-  evalTernExpr(ite, a, b, c);
-
-  if (a.first.value())
-    exprStack_.push(b);
+  ite.a()->visit(this);
+  stack_entry a;
+  pop(a);
+  if (!a.valid) {
+    exprStack_.push(StackEntry{Constant(), false, false});
+    return;
+  }
+  if (!a.guard) {
+    exprStack_.push(StackEntry{Constant(false), true, false});
+    return;
+  }
+  if (evalUnsignedBits(a.value) != 0)
+    ite.b()->visit(this);
   else
-    exprStack_.push(c);
+    ite.c()->visit(this);
 }
 
 void EvalVisitor::visitBitslice(const Bitslice& b) {
@@ -474,43 +606,51 @@ void EvalVisitor::visitBitslice(const Bitslice& b) {
   stack_entry entry;
   pop(entry);
 
-  Constant const& child = entry.first;
   if (b.l() < 0 || b.r() < b.l() || b.r() >= 64) {
-    exprStack_.push(std::make_pair(Constant(), false));
+    exprStack_.push(StackEntry{Constant(), false, entry.guard});
     return;
   }
+  if (!entry.valid) {
+    exprStack_.push(StackEntry{Constant(), false, entry.guard});
+    return;
+  }
+  if (!entry.guard) {
+    exprStack_.push(StackEntry{Constant(0, static_cast<unsigned>(b.r() - b.l() + 1), false), true, false});
+    return;
+  }
+  Constant const& child = entry.value;
   unsigned long long v = 0;
   for (int i = b.l(); i <= b.r(); i++) v |= (1ULL << i);
   Constant constant((v & child.value()) >> b.l(), b.r() - b.l() + 1, false);
-  exprStack_.push(std::make_pair(constant, exact_ ? entry.second : false));
+  exprStack_.push(StackEntry{constant, true, true});
 }
 
 void EvalVisitor::visitRangeExpr(const RangeExpr& r) {
   stack_entry a, b, c;
   evalTernExpr(r, a, b, c);
-  __int128 const x = toInt128(a.first);
-  __int128 const lo = toInt128(b.first);
-  __int128 const hi = toInt128(c.first);
+  __int128 const x = toInt128(a.value);
+  __int128 const lo = toInt128(b.value);
+  __int128 const hi = toInt128(c.value);
   bool const res = (lo <= x) && (x <= hi);
-  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+  exprStack_.push(StackEntry{Constant(res), a.valid && b.valid && c.valid, a.guard && b.guard && c.guard});
 }
 
 void EvalVisitor::visitTolPlusMinusExpr(const TolPlusMinusExpr& t) {
   stack_entry a, b, c;
   evalTernExpr(t, a, b, c);
-  __int128 const x = toInt128(a.first);
-  __int128 const val = toInt128(b.first);
-  __int128 const tol = toInt128(c.first);
+  __int128 const x = toInt128(a.value);
+  __int128 const val = toInt128(b.value);
+  __int128 const tol = toInt128(c.value);
   bool const res = ((val - tol) <= x) && (x <= (val + tol));
-  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+  exprStack_.push(StackEntry{Constant(res), a.valid && b.valid && c.valid, a.guard && b.guard && c.guard});
 }
 
 void EvalVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
   stack_entry a, b, c;
   evalTernExpr(t, a, b, c);
-  __int128 const x = toInt128(a.first);
-  __int128 const val = toInt128(b.first);
-  __int128 const pct = toInt128(c.first);
+  __int128 const x = toInt128(a.value);
+  __int128 const val = toInt128(b.value);
+  __int128 const pct = toInt128(c.value);
   bool res = false;
   if (pct >= 0) {
     unsigned __int128 const mag =
@@ -518,11 +658,84 @@ void EvalVisitor::visitTolPlusPctExpr(const TolPlusPctExpr& t) {
     __int128 const delta = static_cast<__int128>((mag * static_cast<unsigned __int128>(pct)) / 100);
     res = ((val - delta) <= x) && (x <= (val + delta));
   }
-  exprStack_.push(std::make_pair(Constant(res), a.second && b.second && c.second));
+  exprStack_.push(StackEntry{Constant(res), a.valid && b.valid && c.valid, a.guard && b.guard && c.guard});
 }
 
 void EvalVisitor::visitVectorContains(const VectorContains&) {
   throw std::runtime_error("VectorContains is not allowed in EvalVisitor.");
+}
+
+void EvalVisitor::visitOneHotExpr(const OneHotExpr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  pop(e);
+  uint64_t const u = evalUnsignedBits(e.value);
+  bool const res = (u != 0) && ((u & (u - 1)) == 0);
+  exprStack_.push(StackEntry{Constant(res), e.valid, e.guard});
+}
+
+void EvalVisitor::visitOneHot0Expr(const OneHot0Expr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  pop(e);
+  uint64_t const u = evalUnsignedBits(e.value);
+  bool const res = (u & (u - 1)) == 0;
+  exprStack_.push(StackEntry{Constant(res), e.valid, e.guard});
+}
+
+void EvalVisitor::visitCountOnesExpr(const CountOnesExpr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  pop(e);
+  uint64_t u = evalUnsignedBits(e.value);
+  uint64_t cnt = 0;
+  for (; u != 0; u &= (u - 1)) ++cnt;
+  exprStack_.push(StackEntry{Constant(cnt, 32, false), e.valid, e.guard});
+}
+
+void EvalVisitor::visitClog2Expr(const Clog2Expr& o) {
+  visitUnaryExpr(o);
+  stack_entry e;
+  pop(e);
+  uint64_t const u = evalUnsignedBits(e.value);
+  uint64_t res = 0;
+  if (u > 1) {
+    uint64_t v = u - 1;
+    while (v > 0) {
+      ++res;
+      v >>= 1;
+    }
+  }
+  exprStack_.push(StackEntry{Constant(res, 32, false), e.valid, e.guard});
+}
+
+void EvalVisitor::visitSelfDeterminedExpr(const SelfDeterminedExpr& s) { visitUnaryExpr(s); }
+
+void EvalVisitor::visitBoundsCheckExpr(const BoundsCheckExpr& b) {
+  b.rhs()->visit(this);
+  stack_entry rhs;
+  pop(rhs);
+  if (!rhs.valid) {
+    exprStack_.push(StackEntry{Constant(), false, false});
+    return;
+  }
+  bool const guard_ok = rhs.guard && (evalUnsignedBits(rhs.value) != 0);
+  if (!guard_ok) {
+    if (is_boolean_ir_node(*b.lhs())) {
+      exprStack_.push(StackEntry{Constant(false), true, false});
+    } else {
+      exprStack_.push(StackEntry{Constant(), true, false});
+    }
+    return;
+  }
+  b.lhs()->visit(this);
+  stack_entry lhs;
+  pop(lhs);
+  exprStack_.push(StackEntry{lhs.value, lhs.valid, lhs.guard && guard_ok});
+}
+
+void EvalVisitor::visitVectorReduceWith(const VectorReduceWith&) {
+  throw std::runtime_error("VectorReduceWith is not allowed in EvalVisitor.");
 }
 
 }  // end namespace crave

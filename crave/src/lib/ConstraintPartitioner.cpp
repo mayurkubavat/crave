@@ -52,7 +52,30 @@ void ConstraintPartitioner::mergeConstraints(const ConstraintManager& mng) {
   }
 }
 
-void ConstraintPartitioner::partition() {
+void ConstraintPartitioner::partition(VariableContainer const* vcon) {
+  if (!vcon) vcon = variable_container();
+  if (!vcon->implicit_dist_references.empty() && !vcon->user_dist_references.empty()) {
+    std::set<int> vars_with_user_dist;
+    for (ConstraintPtr const& c : constraints_) {
+      for (int id : c->support_vars_) {
+        if (vcon->user_dist_references.count(id)) {
+          auto it = vcon->dist_ref_to_var_map.find(id);
+          if (it != vcon->dist_ref_to_var_map.end()) vars_with_user_dist.insert(it->second);
+        }
+      }
+    }
+    if (!vars_with_user_dist.empty()) {
+      constraints_.remove_if([&](ConstraintPtr const& c) {
+        for (int id : c->support_vars_) {
+          if (vcon->implicit_dist_references.count(id)) {
+            auto it = vcon->dist_ref_to_var_map.find(id);
+            if (it != vcon->dist_ref_to_var_map.end() && vars_with_user_dist.count(it->second)) return true;
+          }
+        }
+        return false;
+      });
+    }
+  }
   while (!constraints_.empty()) {
     ConstraintPartition cp;
     maximizePartition(&cp, &constraints_);
@@ -72,7 +95,11 @@ void ConstraintPartitioner::partition() {
 
 std::vector<ConstraintPartition>& ConstraintPartitioner::getPartitions() { return partitions_; }
 
+std::vector<ConstraintPartition> const& ConstraintPartitioner::getPartitions() const { return partitions_; }
+
 std::vector<VectorConstraintPtr>& ConstraintPartitioner::getVectorConstraints() { return vec_constraints_; }
+
+std::vector<VectorConstraintPtr> const& ConstraintPartitioner::getVectorConstraints() const { return vec_constraints_; }
 
 void ConstraintPartitioner::maximizePartition(ConstraintPartition* cp, ConstraintList* lc) {
   ConstraintPtr c = lc->front();

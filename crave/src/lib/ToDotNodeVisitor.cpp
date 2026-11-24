@@ -147,6 +147,8 @@ void ToDotVisitor::visitLogicalAndOpr(LogicalAndOpr const &o) { binaryOperator(o
 
 void ToDotVisitor::visitLogicalOrOpr(LogicalOrOpr const &o) { binaryOperator(o, "or (||)"); }
 
+void ToDotVisitor::visitLogicalIffOpr(LogicalIffOpr const &o) { binaryOperator(o, "iff (<->)"); }
+
 void ToDotVisitor::visitAndOpr(AndOpr const &o) { binaryOperator(o, "and (&)"); }
 
 void ToDotVisitor::visitOrOpr(OrOpr const &o) { binaryOperator(o, "or (|)"); }
@@ -243,6 +245,63 @@ void ToDotVisitor::visitVectorContains(VectorContains const &vc) {
     out_ << " [label=\"vector_contains (vec " << vc.vec_id() << ")\"]" << std::endl;
   }
   visitUnaryExpr(vc);
+}
+
+void ToDotVisitor::visitOneHotExpr(OneHotExpr const &o) {
+  if (putNode(&o)) {
+    visitNode(o);
+    out_ << " [label=\"onehot\"]" << std::endl;
+  }
+  visitUnaryExpr(o);
+}
+
+void ToDotVisitor::visitOneHot0Expr(OneHot0Expr const &o) {
+  if (putNode(&o)) {
+    visitNode(o);
+    out_ << " [label=\"onehot0\"]" << std::endl;
+  }
+  visitUnaryExpr(o);
+}
+
+void ToDotVisitor::visitCountOnesExpr(CountOnesExpr const &o) {
+  if (putNode(&o)) {
+    visitNode(o);
+    out_ << " [label=\"countones\"]" << std::endl;
+  }
+  visitUnaryExpr(o);
+}
+
+void ToDotVisitor::visitClog2Expr(Clog2Expr const &o) {
+  if (putNode(&o)) {
+    visitNode(o);
+    out_ << " [label=\"clog2\"]" << std::endl;
+  }
+  visitUnaryExpr(o);
+}
+
+void ToDotVisitor::visitSelfDeterminedExpr(SelfDeterminedExpr const &s) {
+  if (putNode(&s)) {
+    visitNode(s);
+    out_ << " [label=\"self_determined\"]" << std::endl;
+  }
+  visitUnaryExpr(s);
+}
+
+void ToDotVisitor::visitBoundsCheckExpr(BoundsCheckExpr const &b) {
+  if (putNode(&b)) {
+    visitNode(b);
+    out_ << " [label=\"bounds_check\"]" << std::endl;
+  }
+  visitBinaryExpr(b);
+}
+
+void ToDotVisitor::visitVectorReduceWith(VectorReduceWith const &vrw) {
+  static char const *const names[] = {"sum_with", "product_with", "and_with", "or_with", "xor_with"};
+  if (putNode(&vrw)) {
+    visitNode(vrw);
+    out_ << " [label=\"" << names[vrw.kind()] << " (vec " << vrw.vec_id() << ")\"]" << std::endl;
+  }
+  visitUnaryExpr(vrw);
 }
 
 }  // namespace crave
