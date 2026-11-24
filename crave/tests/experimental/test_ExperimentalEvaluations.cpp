@@ -331,7 +331,7 @@ BOOST_AUTO_TEST_CASE(shiftleft) {
   crv_variable<char> b;
   Evaluator eval;
 
-  int count = 0;
+  unsigned count = 0;
   while (++count < 256) {
     eval.assign(a(), count);
     eval.assign(b(), count % (sizeof(unsigned) << 3u));

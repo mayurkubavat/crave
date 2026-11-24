@@ -35,10 +35,12 @@ using namespace std;
 //----------------------------------------------------------------------
 
 ubus_bus_monitor::ubus_bus_monitor(uvm_component_name name)
-: uvm_monitor(name)
+: uvm_monitor(name),
+  vif(nullptr),
+  num_transactions(0),
+  checks_enable(true),
+  coverage_enable(true)
 {
-  num_transactions = 0;
-
   /* TODO
     cov_trans = new();
     cov_trans.set_inst_name({get_full_name(), ".cov_trans"});

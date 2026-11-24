@@ -29,6 +29,7 @@
 #include <string>
 
 #include <functional>
+#include <cstring>
 
 #include "AssignResult.hpp"
 #include "bitsize_traits.hpp"
@@ -103,7 +104,11 @@ struct AssignResultToRef<bool> : AssignResult {
   explicit AssignResultToRef(bool* ref) : value_(ref) {}
 
  public:
-  Constant value_as_constant() const { return to_constant_expr<bool>()(*value_); }
+  Constant value_as_constant() const {
+    unsigned char raw = 0;
+    std::memcpy(&raw, value_, sizeof(raw));
+    return to_constant_expr<bool>()(raw != 0);
+  }
 
   Constant to_constant(std::string const& str) const {
     bool v;
