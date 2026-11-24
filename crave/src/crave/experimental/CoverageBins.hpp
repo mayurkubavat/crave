@@ -131,14 +131,14 @@ struct crv_transition_fsm_state : std::enable_shared_from_this<crv_transition_fs
  private:
   nodeType type;
   std::shared_ptr<crv_transition_fsm_state> succ; // successor state
-  std::shared_ptr<crv_transition_fsm_state> prev; // previous state
+  std::weak_ptr<crv_transition_fsm_state> prev; // previous state
   expression expr;
   int minHit;
   int maxHit;
 
   template <typename Expr>
   crv_transition_fsm_state(Expr nodeExpr, nodeType pType = CONSEC)
-      : type(pType), succ(NULL), prev(NULL), expr(make_expression(nodeExpr)), minHit(1), maxHit(1) {}
+      : type(pType), succ(NULL), prev(), expr(make_expression(nodeExpr)), minHit(1), maxHit(1) {}
 };
 
 /**
@@ -319,9 +319,10 @@ class crv_transition_bin : public crv_abstract_bin {
     // Check if the previous state was an end of a non-consecutive repetition
     // This is because every node is allowed to fail, if the previous one was
     // a none-consective node (which forces fails after its end)
-    if (current.state->prev && current.state->prev->type == crv_transition_fsm_state::NON_CONSEC) {
+    std::shared_ptr<crv_transition_fsm_state> prevState = current.state->prev.lock();
+    if (prevState && prevState->type == crv_transition_fsm_state::NON_CONSEC) {
       // In that case, make sure we did not get another hit of the finished repetition
-      bool hitAgain = eval_.evaluate(current.state->prev->expr) && eval_.result<bool>();
+      bool hitAgain = eval_.evaluate(prevState->expr) && eval_.result<bool>();
       if (!hitAgain) {
         // If we did not hit again, carry run to next sample
         resultRuns.push_back(current);

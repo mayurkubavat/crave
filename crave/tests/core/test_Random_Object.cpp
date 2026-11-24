@@ -141,28 +141,37 @@ class item2 : public item1 {
 };
 
 BOOST_AUTO_TEST_CASE(t2) {
+  auto bv_add = [](int x, int y) {
+    return static_cast<int>(static_cast<unsigned>(x) + static_cast<unsigned>(y));
+  };
   item it(0);
   BOOST_REQUIRE(it.next());
   std::cout << it.a << " " << it.b << " " << it.c << std::endl;
-  BOOST_REQUIRE(it.a + it.b == it.c);
+  BOOST_REQUIRE(bv_add(it.a, it.b) == it.c);
 }
 
 BOOST_AUTO_TEST_CASE(t3) {
+  auto bv_add = [](int x, int y) {
+    return static_cast<int>(static_cast<unsigned>(x) + static_cast<unsigned>(y));
+  };
   item1 it(0);
   BOOST_REQUIRE(it.next());
   std::cout << it.a << " " << it.b << " " << it.c << std::endl;
-  BOOST_REQUIRE(it.a + it.b == it.c);
+  BOOST_REQUIRE(bv_add(it.a, it.b) == it.c);
   BOOST_REQUIRE(10 <= it.a && it.a <= 20);
-  BOOST_REQUIRE(it.a + it.b + it.c <= 200);
+  BOOST_REQUIRE(bv_add(bv_add(it.a, it.b), it.c) <= 200);
 }
 
 BOOST_AUTO_TEST_CASE(t4) {
+  auto bv_add = [](int x, int y) {
+    return static_cast<int>(static_cast<unsigned>(x) + static_cast<unsigned>(y));
+  };
   item2 it(0);
   BOOST_REQUIRE(it.next());
   std::cout << it.a << " " << it.b << " " << it.c << std::endl;
-  BOOST_REQUIRE(it.a + it.b == it.c);
+  BOOST_REQUIRE(bv_add(it.a, it.b) == it.c);
   BOOST_REQUIRE(10 <= it.a && it.a <= 20);
-  BOOST_REQUIRE(it.a + it.b + it.c == 100);
+  BOOST_REQUIRE(bv_add(bv_add(it.a, it.b), it.c) == 100);
 }
 
 class obj : public rand_obj {
