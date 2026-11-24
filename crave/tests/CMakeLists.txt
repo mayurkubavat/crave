@@ -45,6 +45,14 @@ if (NOT search_test_cmd)
   message(FATAL_ERROR "Cannot search for tests, either awk or python is required!")
 endif()
 
+if (CRAVE_ENABLE_EXPERIMENTAL AND TARGET UVM::uvm-systemc AND TARGET SystemC::systemc)
+  add_executable(crave2uvm_test uvm/test_crave2uvm.cpp)
+  target_include_directories(crave2uvm_test PRIVATE ${CMAKE_SOURCE_DIR}/src/include ${Boost_INCLUDE_DIRS})
+  target_link_libraries(crave2uvm_test PRIVATE ${PROJECT_NAME} UVM::uvm-systemc SystemC::systemc Threads::Threads)
+  add_test(NAME crave2uvm_test COMMAND crave2uvm_test)
+  set_tests_properties(crave2uvm_test PROPERTIES TIMEOUT ${CRAVE_TIMEOUT})
+endif()
+
 function (add_all_tests prog cfile)
   execute_process( COMMAND
     ${search_test_cmd} ${cfile}
